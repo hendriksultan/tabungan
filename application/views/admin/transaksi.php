@@ -10,32 +10,34 @@
         </ol>
     </section>
     <section class="content">
-       <?php 
-    $userLevel = strtolower($this->session->userdata('level'));
-    if($userLevel == 'nasabah') { 
-?>
+        <?php
+        $userLevel = strtolower($this->session->userdata('level'));
+        if ($userLevel == 'nasabah') {
+        ?>
             <div class="row">
                 <div class="col-md-4 col-sm-6 col-xs-12">
                     <div class="info-box bg-green">
                         <span class="info-box-icon"><i class="fa fa-level-up"></i></span>
 
                         <div class="info-box-content">
-                        <span class="info-box-text">Total Masuk</span>
-                        <span class="info-box-number">
-                            <?php
+                            <span class="info-box-text">Total Masuk</span>
+                            <span class="info-box-number">
+                                <?php
                                 // HANYA HITUNG YANG SUKSES
-                                foreach ($this->db->query('SELECT SUM(nominal) AS totalTabunganMasuk FROM tb_transaksi WHERE idNasabah="'.$this->session->userdata('id').'" AND jenis="Masuk" AND status_konfirmasi="Sukses"')->result() as $tbMsk) {}
-                                foreach ($this->db->query('SELECT SUM(nominal) AS totalTransferMasuk FROM tb_transfer WHERE idPenerima="'.$this->session->userdata('id').'"')->result() as $tfMsk) {}
+                                foreach ($this->db->query('SELECT SUM(nominal) AS totalTabunganMasuk FROM tb_transaksi WHERE idNasabah="' . $this->session->userdata('id') . '" AND jenis="Masuk" AND status_konfirmasi="Sukses"')->result() as $tbMsk) {
+                                }
+                                foreach ($this->db->query('SELECT SUM(nominal) AS totalTransferMasuk FROM tb_transfer WHERE idPenerima="' . $this->session->userdata('id') . '"')->result() as $tfMsk) {
+                                }
 
-                                $totalMasuk = $tbMsk->totalTabunganMasuk + $tfMsk->totalTransferMasuk ;
+                                $totalMasuk = $tbMsk->totalTabunganMasuk + $tfMsk->totalTransferMasuk;
 
-                                echo 'Rp. ' . number_format($totalMasuk,0,',','.');
-                            ?>
-                        </span>
+                                echo 'Rp. ' . number_format($totalMasuk, 0, ',', '.');
+                                ?>
+                            </span>
 
-                        <div class="progress">
-                            <div class="progress-bar" style="width: 100%"></div>
-                        </div>
+                            <div class="progress">
+                                <div class="progress-bar" style="width: 100%"></div>
+                            </div>
                             <span class="progress-description">
                                 Transaksi Masuk + Transfer Masuk
                             </span>
@@ -47,22 +49,24 @@
                         <span class="info-box-icon"><i class="fa fa-level-down"></i></span>
 
                         <div class="info-box-content">
-                        <span class="info-box-text">Total Keluar</span>
-                        <span class="info-box-number">
-                            <?php
+                            <span class="info-box-text">Total Keluar</span>
+                            <span class="info-box-number">
+                                <?php
                                 // HANYA HITUNG YANG SUKSES
-                                foreach ($this->db->query('SELECT SUM(nominal) AS totalTabunganKeluar FROM tb_transaksi WHERE idNasabah="'.$this->session->userdata('id').'" AND jenis="Keluar" AND status_konfirmasi="Sukses"')->result() as $tbKlr) {}
-                                foreach ($this->db->query('SELECT SUM(nominal) AS totalTransferKeluar FROM tb_transfer WHERE idPengirim="'.$this->session->userdata('id').'"')->result() as $tfKlr) {}
+                                foreach ($this->db->query('SELECT SUM(nominal) AS totalTabunganKeluar FROM tb_transaksi WHERE idNasabah="' . $this->session->userdata('id') . '" AND jenis="Keluar" AND status_konfirmasi="Sukses"')->result() as $tbKlr) {
+                                }
+                                foreach ($this->db->query('SELECT SUM(nominal) AS totalTransferKeluar FROM tb_transfer WHERE idPengirim="' . $this->session->userdata('id') . '"')->result() as $tfKlr) {
+                                }
 
-                                $totalKeluar = $tbKlr->totalTabunganKeluar + $tfKlr->totalTransferKeluar ;
+                                $totalKeluar = $tbKlr->totalTabunganKeluar + $tfKlr->totalTransferKeluar;
 
-                                echo 'Rp. ' . number_format($totalKeluar,0,',','.');
-                            ?>
-                        </span>
+                                echo 'Rp. ' . number_format($totalKeluar, 0, ',', '.');
+                                ?>
+                            </span>
 
-                        <div class="progress">
-                            <div class="progress-bar" style="width: 100%"></div>
-                        </div>
+                            <div class="progress">
+                                <div class="progress-bar" style="width: 100%"></div>
+                            </div>
                             <span class="progress-description">
                                 Transaksi Keluar + Transfer Keluar
                             </span>
@@ -74,12 +78,12 @@
                         <span class="info-box-icon"><i class="fa fa-money"></i></span>
 
                         <div class="info-box-content">
-                        <span class="info-box-text">Sisa Saldo</span>
-                        <span class="info-box-number"><?= 'Rp. ' . number_format($totalMasuk - $totalKeluar,0,',','.') ?></span>
+                            <span class="info-box-text">Sisa Saldo</span>
+                            <span class="info-box-number"><?= 'Rp. ' . number_format($totalMasuk - $totalKeluar, 0, ',', '.') ?></span>
 
-                        <div class="progress">
-                            <div class="progress-bar" style="width: 100%"></div>
-                        </div>
+                            <div class="progress">
+                                <div class="progress-bar" style="width: 100%"></div>
+                            </div>
                             <span class="progress-description">
                                 Total Masuk - Total Keluar
                             </span>
@@ -89,7 +93,7 @@
             </div>
         <?php } ?>
         <div class="box">
-            <?php if($userLevel == 'administrator' || $userLevel == 'super admin') { ?>
+            <?php if ($userLevel == 'administrator' || $userLevel == 'super admin') { ?>
                 <div class="box-header">
                     <button class="btn btn-primary" style="border-radius: 4px" data-toggle="modal" data-target="#tambahData">
                         <div class="fa fa-plus"></div> Tambah Data
@@ -109,45 +113,67 @@
                             <tr>
                                 <th width="10px">#</th>
                                 <th>Nasabah</th>
+
+                                <?php if ($userLevel == 'super admin'): ?>
+                                    <th>Cabang</th>
+                                <?php endif; ?>
+
                                 <th>Tanggal</th>
                                 <th>Masuk</th>
                                 <th>Keluar</th>
                                 <th>Keterangan</th>
-                                <th>Status</th> <th>Bukti</th> <th>Waktu</th>
-                               <?php if($userLevel == 'administrator' || $userLevel == 'super admin') { ?>
+                                <th>Status</th>
+                                <th>Bukti</th>
+                                <th>Waktu</th>
+                                <?php if ($userLevel == 'administrator' || $userLevel == 'super admin') { ?>
                                     <th>Aksi</th>
                                 <?php } ?>
                             </tr>
                         </thead>
                         <tbody>
                             <?php
-                                $no = 1;
-                                foreach ($transaksi->result_array() as $row) {
+                            $no = 1;
+                            foreach ($transaksi->result_array() as $row) {
                             ?>
                                 <tr>
                                     <td><?= $no++ ?></td>
                                     <td>
-                                        <?php  
-                                            $this->db->where('id', $row['idNasabah']);
-                                            foreach ($this->m_model->get_desc('tb_user')->result() as $dataNasabah) {
-                                                echo $dataNasabah->nama;
-                                            }
-                                        ?>
+                                        <?= html_escape(
+                                            !empty($row['nama_nasabah'])
+                                                ? $row['nama_nasabah']
+                                                : 'Nasabah tidak ditemukan'
+                                        ) ?>
                                     </td>
+
+                                    <?php if ($userLevel == 'super admin'): ?>
+                                        <td>
+                                            <?php if (!empty($row['nama_cabang'])): ?>
+                                                <?= html_escape($row['nama_cabang']) ?>
+                                                <br>
+                                                <span class="label label-info">
+                                                    <?= html_escape($row['kode_cabang']) ?>
+                                                </span>
+                                            <?php else: ?>
+                                                <span class="label label-danger">
+                                                    Belum ada cabang
+                                                </span>
+                                            <?php endif; ?>
+                                        </td>
+                                    <?php endif; ?>
                                     <td><?= date('d M Y', strtotime($row['tanggal'])) ?></td>
-                                    <?php if($row['jenis'] == 'Masuk') { ?>
-                                        <td>Rp. <?= number_format($row['nominal'],0,',','.') ?></td>
+                                    <?php if ($row['jenis'] == 'Masuk') { ?>
+                                        <td>Rp. <?= number_format($row['nominal'], 0, ',', '.') ?></td>
                                         <td></td>
                                     <?php } else { ?>
                                         <td></td>
-                                        <td>Rp. <?= number_format($row['nominal'],0,',','.') ?></td>
+                                        <td>Rp. <?= number_format($row['nominal'], 0, ',', '.') ?></td>
                                     <?php } ?>
                                     <td><?= $row['keterangan'] ?></td>
-                                    
+
                                     <td>
-                                        <?php if($row['status_konfirmasi'] == 'Pending') { ?>
+                                        <?php if ($row['status_konfirmasi'] == 'Pending') { ?>
                                             <span class="label label-warning">Pending</span>
-                                        <?php } elseif($row['status_konfirmasi'] == 'Sukses') { ?>
+                                        <?php } elseif ($row['status_konfirmasi'] == 'Sukses') { ?>
                                             <span class="label label-success">Sukses</span>
                                         <?php } else { ?>
                                             <span class="label label-danger">Ditolak</span>
@@ -155,8 +181,8 @@
                                     </td>
 
                                     <td>
-                                        <?php if(!empty($row['bukti_transfer'])) { ?>
-                                            <a href="<?= base_url('assets/bukti_transfer/'.$row['bukti_transfer']) ?>" target="_blank" class="btn btn-info btn-xs" style="border-radius: 4px;">
+                                        <?php if (!empty($row['bukti_transfer'])) { ?>
+                                            <a href="<?= base_url('assets/bukti_transfer/' . $row['bukti_transfer']) ?>" target="_blank" class="btn btn-info btn-xs" style="border-radius: 4px;">
                                                 <i class="fa fa-image"></i> Lihat
                                             </a>
                                         <?php } else { ?>
@@ -165,15 +191,15 @@
                                     </td>
 
                                     <td><?= date('H:i:s', strtotime($row['terdaftar'])) ?></td>
-                                   <?php if($userLevel == 'administrator' || $userLevel == 'super admin') { ?>
+                                    <?php if ($userLevel == 'administrator' || $userLevel == 'super admin') { ?>
                                         <td>
                                             <?php $row['idPotongan']  ?>
-                                                <button class="btn btn-warning btn-xs" data-toggle="modal" data-target="#editData<?= $row['id'] ?>" style="border-radius: 4px;">
-                                                    <div class="fa fa-edit"></div> Edit
-                                                </button>
-                                                <a href="<?= base_url('admin/transaksi/delete/').$row['id'] ?>" class="btn btn-danger btn-xs tombol-yakin" data-isidata="Ingin menghapus data ini?" style="border-radius: 4px;">
-                                                    <div class="fa fa-trash"></div> Delete
-                                                </a>
+                                            <button class="btn btn-warning btn-xs" data-toggle="modal" data-target="#editData<?= $row['id'] ?>" style="border-radius: 4px;">
+                                                <div class="fa fa-edit"></div> Edit
+                                            </button>
+                                            <a href="<?= base_url('admin/transaksi/delete/') . $row['id'] ?>" class="btn btn-danger btn-xs tombol-yakin" data-isidata="Ingin menghapus data ini?" style="border-radius: 4px;">
+                                                <div class="fa fa-trash"></div> Delete
+                                            </a>
                                             <?php  ?>
                                         </td>
                                     <?php } ?>
@@ -184,7 +210,7 @@
                 </div>
             </div>
         </div>
-        
+
     </section>
 </div>
 
@@ -196,7 +222,7 @@
                 <h4 class="modal-title" id="myModalLabel">Tambah <?= $title ?></h4>
             </div>
             <form action="<?= base_url('admin/transaksi/insert') ?>" method="POST">
-                <input type="hidden" name="<?= $this->security->get_csrf_token_name();?>" value="<?=$this->security->get_csrf_hash();?>" style="display: none">
+                <input type="hidden" name="<?= $this->security->get_csrf_token_name(); ?>" value="<?= $this->security->get_csrf_hash(); ?>" style="display: none">
                 <div class="modal-body">
                     <div class="form-group">
                         <label>Nasabah</label>
@@ -229,8 +255,12 @@
                     </div>
                 </div>
                 <div class="modal-footer">
-                    <button type="reset" class="btn btn-danger" style="border-radius: 4px"><div class="fa fa-trash"></div> Reset</button>
-                    <button type="submit" class="btn btn-primary" style="border-radius: 4px"><div class="fa fa-save"></div> Save</button>
+                    <button type="reset" class="btn btn-danger" style="border-radius: 4px">
+                        <div class="fa fa-trash"></div> Reset
+                    </button>
+                    <button type="submit" class="btn btn-primary" style="border-radius: 4px">
+                        <div class="fa fa-save"></div> Save
+                    </button>
                 </div>
             </form>
         </div>
@@ -245,8 +275,8 @@
                     <button type="button" class="close" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">&times;</span></button>
                     <h4 class="modal-title" id="myModalLabel">Edit <?= $title ?></h4>
                 </div>
-                <form action="<?= base_url('admin/transaksi/update/').$edt->id ?>" method="POST">
-                    <input type="hidden" name="<?= $this->security->get_csrf_token_name();?>" value="<?=$this->security->get_csrf_hash();?>" style="display: none">
+                <form action="<?= base_url('admin/transaksi/update/') . $edt->id ?>" method="POST">
+                    <input type="hidden" name="<?= $this->security->get_csrf_token_name(); ?>" value="<?= $this->security->get_csrf_hash(); ?>" style="display: none">
                     <div class="modal-body">
                         <div class="form-group">
                             <label>Tanggal</label>
@@ -262,8 +292,12 @@
                         </div>
                     </div>
                     <div class="modal-footer">
-                        <button type="reset" class="btn btn-danger" style="border-radius: 4px"><div class="fa fa-trash"></div> Reset</button>
-                        <button type="submit" class="btn btn-primary" style="border-radius: 4px"><div class="fa fa-save"></div> Update</button>
+                        <button type="reset" class="btn btn-danger" style="border-radius: 4px">
+                            <div class="fa fa-trash"></div> Reset
+                        </button>
+                        <button type="submit" class="btn btn-primary" style="border-radius: 4px">
+                            <div class="fa fa-save"></div> Update
+                        </button>
                     </div>
                 </form>
             </div>
@@ -279,7 +313,7 @@
                 <h4 class="modal-title" id="myModalLabel">Cek Saldo</h4>
             </div>
             <form action="<?= base_url('admin/transaksi/carinasabah') ?>" method="POST">
-                <input type="hidden" name="<?= $this->security->get_csrf_token_name();?>" value="<?=$this->security->get_csrf_hash();?>" style="display: none">
+                <input type="hidden" name="<?= $this->security->get_csrf_token_name(); ?>" value="<?= $this->security->get_csrf_hash(); ?>" style="display: none">
                 <div class="modal-body">
                     <div class="form-group">
                         <label>Nasabah</label>
@@ -292,7 +326,9 @@
                     </div>
                 </div>
                 <div class="modal-footer">
-                    <button type="submit" class="btn btn-primary" style="border-radius: 4px"><div class="fa fa-search"></div> Check</button>
+                    <button type="submit" class="btn btn-primary" style="border-radius: 4px">
+                        <div class="fa fa-search"></div> Check
+                    </button>
                 </div>
             </form>
         </div>
@@ -307,7 +343,7 @@
                 <h4 class="modal-title" id="myModalLabel">Rekap <?= $title ?></h4>
             </div>
             <form action="<?= base_url('admin/transaksi/rekap') ?>" method="POST">
-                <input type="hidden" name="<?= $this->security->get_csrf_token_name();?>" value="<?=$this->security->get_csrf_hash();?>" style="display: none">
+                <input type="hidden" name="<?= $this->security->get_csrf_token_name(); ?>" value="<?= $this->security->get_csrf_hash(); ?>" style="display: none">
                 <div class="modal-body">
                     <div class="form-group">
                         <label>Dari Tanggal</label>
@@ -319,8 +355,12 @@
                     </div>
                 </div>
                 <div class="modal-footer">
-                    <button type="reset" class="btn btn-danger" style="border-radius: 4px"><div class="fa fa-trash"></div> Reset</button>
-                    <button type="submit" class="btn btn-primary" style="border-radius: 4px"><div class="fa fa-print"></div> Rekap</button>
+                    <button type="reset" class="btn btn-danger" style="border-radius: 4px">
+                        <div class="fa fa-trash"></div> Reset
+                    </button>
+                    <button type="submit" class="btn btn-primary" style="border-radius: 4px">
+                        <div class="fa fa-print"></div> Rekap
+                    </button>
                 </div>
             </form>
         </div>
