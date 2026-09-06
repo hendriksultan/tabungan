@@ -1,91 +1,192 @@
+<?php
+$userLevel = strtolower(
+    (string) $this->session->userdata('level')
+);
+
+$userId = (int) $this->session->userdata('id');
+?>
+
 <div class="content-wrapper">
     <section class="content-header">
         <h1>
-            <?= $title ?>
-            <small><?= $subtitle ?></small>
+            <?= html_escape($title) ?>
+            <small><?= html_escape($subtitle) ?></small>
         </h1>
+
         <ol class="breadcrumb">
-            <li><a href="<?= base_url('admin/dashboard') ?>"><i class="fa fa-dashboard"></i> Dashboard</a></li>
-            <li class="active"><?= $title ?></li>
+            <li>
+                <a href="<?= base_url('admin/dashboard') ?>">
+                    <i class="fa fa-dashboard"></i> Dashboard
+                </a>
+            </li>
+            <li class="active">Data Transfer</li>
         </ol>
     </section>
+
     <section class="content">
-        <div class="box">
-           <?php 
-    $userLevel = strtolower($this->session->userdata('level'));
-    if($userLevel == 'nasabah') { 
-?>
-                <div class="box-header">
-                    <button class="btn btn-warning" data-toggle="modal" data-target="#tambahData">
-                        <div class="fa fa-send"></div>&nbsp; Transfer Saldo
+        <div class="box box-primary">
+            <?php if ($userLevel === 'nasabah'): ?>
+                <div class="box-header with-border">
+                    <button
+                        class="btn btn-warning"
+                        data-toggle="modal"
+                        data-target="#tambahData">
+                        <i class="fa fa-send"></i>
+                        Transfer Saldo
                     </button>
                 </div>
-            <?php } ?>
+            <?php endif; ?>
+
             <div class="box-body">
                 <div class="table-responsive">
-                    <table class="table table-bordered table-striped table-hover" id="dataTable">
+                    <table
+                        class="table table-bordered table-striped table-hover"
+                        id="dataTable">
                         <thead>
                             <tr>
-                                <th width="10px">#</th>
+                                <th width="40">No.</th>
+                                <th>Kode</th>
                                 <th>Dari</th>
                                 <th>Kepada</th>
-                               <?php if($userLevel == 'administrator' || $userLevel == 'super admin') { ?>
+
+                                <?php if (
+                                    $userLevel === 'administrator' ||
+                                    $userLevel === 'super admin'
+                                ): ?>
                                     <th>Nominal</th>
-                                <?php } else { ?>
+                                <?php else: ?>
                                     <th>Masuk</th>
                                     <th>Keluar</th>
-                                <?php } ?>
+                                <?php endif; ?>
+
                                 <th>Keterangan</th>
+                                <th>Status</th>
                                 <th>Waktu</th>
-                                <?php if($userLevel == 'administrator' || $userLevel == 'super admin') { ?>
-                                    <th>Aksi</th>
-                                <?php } ?>
                             </tr>
                         </thead>
+
                         <tbody>
-                            <?php
-                                $no = 1;
-                                foreach ($transfer->result_array() as $row) {
-                            ?>
+                            <?php $no = 1; ?>
+
+                            <?php foreach (
+                                $transfer->result_array() as $row
+                            ): ?>
                                 <tr>
                                     <td><?= $no++ ?></td>
+
                                     <td>
-                                        <?php  
-                                            $this->db->where('id', $row['idPengirim']);
-                                            foreach ($this->m_model->get_desc('tb_user')->result() as $dPeng) {
-                                                echo $dPeng->nama;
-                                            }
-                                        ?>
+                                        <code>
+                                            <?= html_escape(
+                                                $row['kode_transfer']
+                                            ) ?>
+                                        </code>
                                     </td>
+
                                     <td>
-                                        <?php  
-                                            $this->db->where('id', $row['idPenerima']);
-                                            foreach ($this->m_model->get_desc('tb_user')->result() as $dPene) {
-                                                echo $dPene->nama;
-                                            }
-                                        ?>
+                                        <strong>
+                                            <?= html_escape(
+                                                $row['nama_pengirim']
+                                                    ?: 'Tidak ditemukan'
+                                            ) ?>
+                                        </strong>
+                                        <br>
+                                        <small class="text-muted">
+                                            <i class="fa fa-building"></i>
+                                            <?= html_escape(
+                                                $row['nama_cabang_asal']
+                                                    ?: '-'
+                                            ) ?>
+                                        </small>
                                     </td>
-                                    <?php if($userLevel == 'administrator' || $userLevel == 'super admin') { ?>
-                                        <td>Rp. <?= number_format($row['nominal'],0,',','.') ?></td>
-                                    <?php } else { ?>
-                                        <?php if($row['idPengirim'] == $this->session->userdata('id')) { ?>
-                                            <td></td>
-                                            <td>Rp. <?= number_format($row['nominal'],0,',','.') ?></td>
-                                        <?php } else { ?>
-                                            <td>Rp. <?= number_format($row['nominal'],0,',','.') ?></td>
-                                            <td></td>
-                                        <?php } ?>
-                                    <?php } ?>
-                                    <td><?= $row['keterangan'] ?></td>
-                                    <td><?= date('d F Y H:i:s', strtotime($row['terdaftar'])) ?></td>
-                                  <?php if($userLevel == 'administrator' || $userLevel == 'super admin') { ?>
+
                                     <td>
-                                        <a href="<?= base_url('admin/transfer/delete/').$row['id'] ?>" class="btn btn-danger btn-xs tombol-yakin" data-isidata="Ingin menghapus data ini?">
-                                                    <div class="fa fa-trash"></div> Delete</a>
-                                                    <?php } ?>
+                                        <strong>
+                                            <?= html_escape(
+                                                $row['nama_penerima']
+                                                    ?: 'Tidak ditemukan'
+                                            ) ?>
+                                        </strong>
+                                        <br>
+                                        <small class="text-muted">
+                                            <i class="fa fa-building"></i>
+                                            <?= html_escape(
+                                                $row['nama_cabang_tujuan']
+                                                    ?: '-'
+                                            ) ?>
+                                        </small>
+                                    </td>
+
+                                    <?php if (
+                                        $userLevel === 'administrator' ||
+                                        $userLevel === 'super admin'
+                                    ): ?>
+                                        <td>
+                                            Rp
+                                            <?= number_format(
+                                                (float) $row['nominal'],
+                                                0,
+                                                ',',
+                                                '.'
+                                            ) ?>
+                                        </td>
+                                    <?php else: ?>
+                                        <?php if (
+                                            (int) $row['idPengirim'] ===
+                                            $userId
+                                        ): ?>
+                                            <td></td>
+                                            <td class="text-danger">
+                                                - Rp
+                                                <?= number_format(
+                                                    (float) $row['nominal'],
+                                                    0,
+                                                    ',',
+                                                    '.'
+                                                ) ?>
+                                            </td>
+                                        <?php else: ?>
+                                            <td class="text-success">
+                                                + Rp
+                                                <?= number_format(
+                                                    (float) $row['nominal'],
+                                                    0,
+                                                    ',',
+                                                    '.'
+                                                ) ?>
+                                            </td>
+                                            <td></td>
+                                        <?php endif; ?>
+                                    <?php endif; ?>
+
+                                    <td>
+                                        <?= html_escape(
+                                            $row['keterangan']
+                                        ) ?>
+                                    </td>
+
+                                    <td>
+                                        <?php if (
+                                            $row['status_transfer'] ===
+                                            'Sukses'
+                                        ): ?>
+                                            <span class="label label-success">
+                                                Sukses
+                                            </span>
+                                        <?php else: ?>
+                                            <span class="label label-danger">
+                                                Dibatalkan
+                                            </span>
+                                        <?php endif; ?>
+                                    </td>
+
+                                    <td>
+                                        <?= date(
+                                            'd-m-Y H:i:s',
+                                            strtotime($row['terdaftar'])
+                                        ) ?>
                                     </td>
                                 </tr>
-                            <?php } ?>
+                            <?php endforeach; ?>
                         </tbody>
                     </table>
                 </div>
@@ -94,41 +195,116 @@
     </section>
 </div>
 
-<!-- Modal Tambah Data -->
-<div class="modal fade" id="tambahData" tabindex="-1" role="dialog" aria-labelledby="myModalLabel">
+<!-- Modal transfer -->
+<div
+    class="modal fade"
+    id="tambahData"
+    tabindex="-1"
+    role="dialog">
     <div class="modal-dialog" role="document">
         <div class="modal-content">
-            <div class="modal-header">
-                <button type="button" class="close" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">&times;</span></button>
-                <h4 class="modal-title" id="myModalLabel">Tambah <?= $title ?></h4>
-            </div>
-            <form action="<?= base_url('admin/transfer/insert') ?>" method="POST">
-                <input type="hidden" name="<?= $this->security->get_csrf_token_name();?>" value="<?=$this->security->get_csrf_hash();?>" style="display: none">
+            <form
+                action="<?= base_url('admin/transfer/insert') ?>"
+                method="post">
+                <input
+                    type="hidden"
+                    name="<?= $this->security->get_csrf_token_name() ?>"
+                    value="<?= $this->security->get_csrf_hash() ?>">
+
+                <div class="modal-header">
+                    <button
+                        type="button"
+                        class="close"
+                        data-dismiss="modal">
+                        <span>&times;</span>
+                    </button>
+
+                    <h4 class="modal-title">
+                        Transfer Saldo
+                    </h4>
+                </div>
+
                 <div class="modal-body">
                     <div class="form-group">
-                        <label>Nasabah Penerima</label>
-                        <select name="idPenerima" class="form-control select2" required style="width: 100%">
-                            <option value="" selected disabled>-- Pilih Nasabah Penerima --</option>
-                            <?php foreach ($nasabah->result() as $nsbh) { ?>
-                                <option value="<?= $nsbh->id ?>"><?= $nsbh->nama ?></option>
-                            <?php } ?>
+                        <label>Nasabah penerima</label>
+
+                        <select
+                            name="idPenerima"
+                            class="form-control select2"
+                            required
+                            style="width:100%;">
+                            <option value="">
+                                -- Pilih Nasabah Penerima --
+                            </option>
+
+                            <?php foreach (
+                                $nasabah->result_array() as $item
+                            ): ?>
+                                <option value="<?= (int) $item['id'] ?>">
+                                    <?= html_escape(
+                                        $item['nama'] .
+                                            ' — ' .
+                                            $item['nama_cabang']
+                                    ) ?>
+                                </option>
+                            <?php endforeach; ?>
                         </select>
                     </div>
+
                     <div class="form-group">
                         <label>Nominal</label>
-                        <input type="text" name="nominal" class="form-control" placeholder="Nominal" required>
+
+                        <input
+                            type="text"
+                            name="nominal"
+                            class="form-control"
+                            placeholder="Contoh: 100000"
+                            inputmode="numeric"
+                            required>
                     </div>
+
                     <div class="form-group">
                         <label>Keterangan</label>
-                        <input type="text" name="keterangan" class="form-control" placeholder="Keterangan" required>
+
+                        <input
+                            type="text"
+                            name="keterangan"
+                            class="form-control"
+                            maxlength="255"
+                            placeholder="Keterangan transfer"
+                            required>
                     </div>
-                    <div class="form-group">
-                        <input type="checkbox" name="setuju" id="setujuCheckbox" required> Saya mengerti transfer tidak dapat dibatalkan!
+
+                    <div class="checkbox">
+                        <label>
+                            <input
+                                type="checkbox"
+                                name="setuju"
+                                value="1"
+                                id="setujuCheckbox"
+                                required>
+                            Saya memahami bahwa transfer yang berhasil
+                            tidak dapat dihapus.
+                        </label>
                     </div>
                 </div>
+
                 <div class="modal-footer">
-                    <button type="reset" class="btn btn-danger"><div class="fa fa-trash"></div>&nbsp; Reset</button>
-                    <button type="submit" class="btn btn-primary" id="saveButton" disabled><div class="fa fa-send"></div>&nbsp; Transfer</button>
+                    <button
+                        type="button"
+                        class="btn btn-default"
+                        data-dismiss="modal">
+                        Batal
+                    </button>
+
+                    <button
+                        type="submit"
+                        class="btn btn-primary"
+                        id="saveButton"
+                        disabled>
+                        <i class="fa fa-send"></i>
+                        Transfer
+                    </button>
                 </div>
             </form>
         </div>

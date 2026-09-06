@@ -420,8 +420,9 @@ class Transaksi extends CI_Controller
 
         $totalMasukTransfer = $this->db->query(
             "SELECT IFNULL(SUM(nominal), 0) AS total
-             FROM tb_transfer
-             WHERE idPenerima = ?",
+            FROM tb_transfer
+            WHERE idPenerima = ?
+            AND status_transfer = 'Sukses'",
             [$idNasabah]
         )->row()->total;
 
@@ -436,8 +437,9 @@ class Transaksi extends CI_Controller
 
         $totalKeluarTransfer = $this->db->query(
             "SELECT IFNULL(SUM(nominal), 0) AS total
-             FROM tb_transfer
-             WHERE idPengirim = ?",
+                FROM tb_transfer
+                WHERE idPengirim = ?
+                AND status_transfer = 'Sukses'",
             [$idNasabah]
         )->row()->total;
 
@@ -584,8 +586,9 @@ class Transaksi extends CI_Controller
 
         $masukTransfer = $this->db->query(
             "SELECT IFNULL(SUM(nominal), 0) AS total
-             FROM tb_transfer
-             WHERE idPenerima = ?",
+            FROM tb_transfer
+            WHERE idPenerima = ?
+            AND status_transfer = 'Sukses'",
             [$idNasabah]
         )->row()->total;
 
@@ -600,8 +603,9 @@ class Transaksi extends CI_Controller
 
         $keluarTransfer = $this->db->query(
             "SELECT IFNULL(SUM(nominal), 0) AS total
-             FROM tb_transfer
-             WHERE idPengirim = ?",
+            FROM tb_transfer
+            WHERE idPengirim = ?
+            AND status_transfer = 'Sukses'",
             [$idNasabah]
         )->row()->total;
 
