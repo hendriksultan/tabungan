@@ -110,6 +110,15 @@ $isSuperAdmin = ($userLevel === 'super admin');
                             </a>
                         </li>
 
+                        <?php if ($isSuperAdmin): ?>
+                            <li>
+                                <a href="<?= base_url('admin/cabang') ?>">
+                                    <i class="fa fa-building"></i>
+                                    Manajemen Cabang
+                                </a>
+                            </li>
+                        <?php endif; ?>
+
                         <li>
                             <a href="<?= base_url('admin/aplikasi') ?>">
                                 <i class="fa fa-info-circle"></i>
