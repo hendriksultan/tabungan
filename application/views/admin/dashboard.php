@@ -1,425 +1,486 @@
 <div class="content-wrapper">
     <section class="content-header">
         <h1>
-            <?= $title ?>
-            <small><?= $subtitle ?></small>
+            <?= html_escape($title) ?>
+            <small><?= html_escape($subtitle) ?></small>
         </h1>
+
         <ol class="breadcrumb">
-            <li><a href="<?= base_url('admin/dashboard') ?>"><i class="fa fa-dashboard"></i> Dashboard</a></li>
-            <li class="active"><?= $title ?></li>
+            <li class="active">
+                <i class="fa fa-dashboard"></i> Dashboard
+            </li>
         </ol>
     </section>
 
     <section class="content">
-
         <style>
-            .info-box {
+            .dashboard-scope {
+                background: #ffffff;
+                border-left: 4px solid #3c8dbc;
                 border-radius: 4px;
-                box-shadow: 0 4px 8px rgba(0,0,0,0.1);
-                transition: transform 0.3s, box-shadow 0.3s;
-                color: #fff;
-                height: 100%;
+                padding: 12px 15px;
+                margin-bottom: 20px;
+                box-shadow: 0 1px 3px rgba(0, 0, 0, .08);
             }
-            .info-box:hover {
-                transform: translateY(-5px);
-                box-shadow: 0 8px 16px rgba(0,0,0,0.2);
-            }
-            .info-box .info-box-icon {
-                border-top-left-radius: 4px;
-                border-bottom-left-radius: 4px;
-                font-size: 40px;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-            }
-            .progress { height: 5px; background-color: rgba(255,255,255,0.3); margin: 5px 0; }
-            .progress-bar { background-color: rgba(255,255,255,0.7); }
-            .more-info { display: block; margin-top: 8px; font-size: 14px; font-weight: 500; color: #fff; text-decoration: none; transition: opacity 0.2s; }
-            .more-info i { margin-left: 5px; transition: transform 0.3s; }
-            .more-info:hover { opacity: 0.9; }
-            .more-info:hover i { transform: translateX(4px); }
-            .info-box-number1 { display: block; font-weight: bold; font-size: 18px; padding-top: 2px; margin-top: 4px; }
-            .bg-green { background: linear-gradient(45deg, #28a745, #71dd8a); }
-            .bg-red { background: linear-gradient(45deg, #dc3545, #ff7b7b); }
-            .bg-orange { background: linear-gradient(45deg, #fd7e14, #ffb366); }
-            .bg-blue { background: linear-gradient(45deg, #007bff, #66b0ff); }
-            .bg-purple { background: linear-gradient(45deg, #6f42c1, #b18eff); }
-            .bg-yellow { background: linear-gradient(45deg, #ffc107, #ffe066); }
-            .bg-teal { background: linear-gradient(45deg, #20c997, #70e1d5); }
 
-            /* Card styling untuk chart */
-            .card {
-                background: #fff;
-                border-radius: 4px;
-                padding: 20px;
-                box-shadow: 0 4px 10px rgba(0,0,0,0.1);
-                margin-bottom: 15px;
-                margin-top: 4px;
-                height: 100%;
+            .dashboard-scope strong {
+                color: #3c8dbc;
             }
-            .card h4 {
-                font-size: 16px;
-                margin-bottom: 15px;
+
+            .info-box {
+                border-radius: 5px;
+                box-shadow: 0 4px 8px rgba(0, 0, 0, .1);
+                transition: transform .2s, box-shadow .2s;
+            }
+
+            .info-box:hover {
+                transform: translateY(-3px);
+                box-shadow: 0 7px 14px rgba(0, 0, 0, .15);
+            }
+
+            .bg-green {
+                background: linear-gradient(45deg, #28a745, #71dd8a);
+            }
+
+            .bg-red {
+                background: linear-gradient(45deg, #dc3545, #ff7b7b);
+            }
+
+            .bg-orange {
+                background: linear-gradient(45deg, #fd7e14, #ffb366);
+            }
+
+            .bg-blue {
+                background: linear-gradient(45deg, #007bff, #66b0ff);
+            }
+
+            .bg-purple {
+                background: linear-gradient(45deg, #6f42c1, #b18eff);
+            }
+
+            .dashboard-card {
+                background: #ffffff;
+                border-radius: 5px;
+                padding: 20px;
+                margin-bottom: 20px;
+                box-shadow: 0 4px 10px rgba(0, 0, 0, .1);
+            }
+
+            .dashboard-card h4 {
+                margin-top: 0;
+                margin-bottom: 18px;
                 font-weight: 600;
             }
-            .card canvas {
+
+            .dashboard-card canvas {
                 width: 100% !important;
                 height: 280px !important;
             }
+
+            .info-box-number {
+                white-space: normal;
+            }
         </style>
 
-        <?php 
-    $userLevel = strtolower($this->session->userdata('level'));
-    if($userLevel == 'administrator' || $userLevel == 'super admin') { 
-?>
-        <div class="row">
-            <!-- Total Masuk -->
-            <div class="col-12 col-sm-6 col-md-4 mb-3">
-                <div class="info-box bg-green">
-                    <span class="info-box-icon"><i class="fa fa-level-down"></i></span>
-                    <div class="info-box-content">
-                        <span class="info-box-text">Total Masuk</span>
-                        <span class="info-box-number"><?= 'Rp. ' . number_format($saldo_detail['totalMasuk'],0,',','.') ?></span>
-                        <div class="progress"><div class="progress-bar" style="width:100%"></div></div>
-                        <span class="progress-description">Transaksi Masuk + Transfer Masuk</span>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Total Keluar -->
-            <div class="col-12 col-sm-6 col-md-4 mb-3">
-                <div class="info-box bg-red">
-                    <span class="info-box-icon"><i class="fa fa-level-up"></i></span>
-                    <div class="info-box-content">
-                        <span class="info-box-text">Total Keluar</span>
-                        <span class="info-box-number"><?= 'Rp. ' . number_format($saldo_detail['totalKeluar'],0,',','.') ?></span>
-                        <div class="progress"><div class="progress-bar" style="width:100%"></div></div>
-                        <span class="progress-description">Transaksi Keluar + Transfer Keluar</span>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Sisa Saldo -->
-            <div class="col-12 col-sm-6 col-md-4 mb-3">
-                <div class="info-box bg-orange">
-                    <span class="info-box-icon"><i class="fa fa-money"></i></span>
-                    <div class="info-box-content">
-                        <span class="info-box-text">Sisa Saldo</span>
-                        <span class="info-box-number"><?= 'Rp. ' . number_format($saldo_detail['sisaSaldo'],0,',','.') ?></span>
-                        <div class="progress"><div class="progress-bar" style="width:100%"></div></div>
-                        <span class="progress-description">Sisa Saldo Seluruh Nasabah</span>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Total Transaksi -->
-            <div class="col-12 col-sm-6 col-md-4 mb-3">
-                <div class="info-box bg-red">
-                    <span class="info-box-icon"><i class="fa fa-book"></i></span>
-                    <div class="info-box-content">
-                        <span class="info-box-text">Total Transaksi</span>
-                        <span class="info-box-number1"><?= $this->db->query('SELECT id FROM tb_transaksi')->num_rows(); ?></span>
-                        <a href="<?= base_url('admin/transaksi') ?>" class="more-info">More info <i class="fa fa-arrow-circle-right"></i></a>
-                    </div>
-                </div>
-            </div>
-            
-            <!-- Total Transfer -->
-            <div class="col-12 col-sm-6 col-md-4 mb-3">
-                <div class="info-box bg-purple">
-                    <span class="info-box-icon"><i class="fa fa-send"></i></span>
-                    <div class="info-box-content">
-                        <span class="info-box-text">Total Transfer</span>
-                        <span class="info-box-number1"><?= $this->db->query('SELECT id FROM tb_transfer')->num_rows(); ?></span>
-                        <a href="<?= base_url('admin/transfer') ?>" class="more-info">More info <i class="fa fa-arrow-circle-right"></i></a>
-                    </div>
-                </div>
-            </div>
-            
-            
-            <!-- Total Nasabah -->
-            <div class="col-12 col-sm-6 col-md-4 mb-3">
-                <div class="info-box bg-blue">
-                    <span class="info-box-icon"><i class="fa fa-user-plus"></i></span>
-                    <div class="info-box-content">
-                        <span class="info-box-text">Total Nasabah</span>
-                        <span class="info-box-number1"><?= $this->db->query('SELECT id FROM tb_user WHERE level="Nasabah"')->num_rows(); ?></span>
-                        <a href="<?= base_url('admin/user') ?>" class="more-info">More info <i class="fa fa-arrow-circle-right"></i></a>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Total Nasabah Laki-Laki -->
-            <!--<div class="col-12 col-sm-6 col-md-4 mb-3">
-                <div class="info-box bg-green">
-                    <span class="info-box-icon"><i class="fa fa-male"></i></span>
-                    <div class="info-box-content">
-                        <span class="info-box-text">Total Nasabah Laki-Laki</span>
-                        <span class="info-box-number1"><?= $this->db->query('SELECT id FROM tb_user WHERE jenisKelamin="Laki-Laki" AND level="Nasabah"')->num_rows(); ?></span>
-                        <a href="<?= base_url('admin/user') ?>" class="more-info">More info <i class="fa fa-arrow-circle-right"></i></a>
-                    </div>
-                </div>
-            </div>-->
-
-            <!-- Total Nasabah Perempuan -->
-            <!--<div class="col-12 col-sm-6 col-md-4 mb-3">
-                <div class="info-box bg-yellow">
-                    <span class="info-box-icon"><i class="fa fa-female"></i></span>
-                    <div class="info-box-content">
-                        <span class="info-box-text">Total Nasabah Perempuan</span>
-                        <span class="info-box-number1"><?= $this->db->query('SELECT id FROM tb_user WHERE jenisKelamin="Perempuan" AND level="Nasabah"')->num_rows(); ?></span>
-                        <a href="<?= base_url('admin/user') ?>" class="more-info">More info <i class="fa fa-arrow-circle-right"></i></a>
-                    </div>
-                </div>
-            </div>-->
-
-            <!-- Total Administrator -->
-            <!--<div class="col-12 col-sm-6 col-md-4 mb-3">
-                <div class="info-box bg-teal">
-                    <span class="info-box-icon"><i class="fa fa-users"></i></span>
-                    <div class="info-box-content">
-                        <span class="info-box-text">Total Administrator</span>
-                        <span class="info-box-number1"><?= $this->db->query('SELECT id FROM tb_user WHERE level="Administrator"')->num_rows(); ?></span>
-                        <a href="<?= base_url('admin/user') ?>" class="more-info">More info <i class="fa fa-arrow-circle-right"></i></a>
-                    </div>
-                </div>
-            </div>-->
-        </div> <!-- end row -->
-
-        <!-- Chart Section -->
-        <div class="row">
-            <!-- Grafik Transaksi -->
-            <div class="col-lg-6 col-md-6 mb-3">
-                <div class="card">
-                    <h4>Grafik Transaksi</h4>
-                    <canvas id="transaksiChart"></canvas>
-                </div>
-            </div>
-
-            <!-- Grafik Nasabah -->
-            <div class="col-lg-6 col-md-6 mb-3">
-                <div class="card">
-                    <h4>Grafik Nasabah</h4>
-                    <canvas id="nasabahChart"></canvas>
-                </div>
-            </div>
+        <div class="dashboard-scope">
+            <i class="fa fa-building"></i>
+            Data yang sedang ditampilkan:
+            <strong><?= html_escape($nama_scope) ?></strong>
         </div>
 
-        <!-- Grafik Bulanan -->
-        <div class="row">
-            <div class="col-lg-12 col-md-12 mb-3">
-                <div class="card">
-                    <h4>Grafik Transaksi Bulanan (<?= date('Y') ?>)</h4>
-                    <canvas id="bulananChart"></canvas>
-                </div>
-            </div>
-        </div>
-
-
-<?php } elseif($userLevel == 'nasabah') { ?>
-        <!-- NASABAH -->
-          <div class="row">
-            <div class="col-12 col-sm-6 col-md-4 mb-3">
-                <div class="info-box bg-red">
-                    <span class="info-box-icon"><i class="fa fa-book"></i></span>
-                    <div class="info-box-content">
-                        <span class="info-box-text">Total Transaksi Saya</span>
-                        <span class="info-box-number"><?= $this->db->query('SELECT id FROM tb_transaksi WHERE idNasabah="'.$this->session->userdata('id').'"')->num_rows(); ?></span>
-                        <a href="<?= base_url('admin/transaksi') ?>" class="more-info" style="color:#fff; text-decoration: none;">More info <i class="fa fa-arrow-circle-right"></i></a>
-                    </div>
-                </div>
-            </div>
-
-            <div class="col-12 col-sm-6 col-md-4 mb-3">
-                <div class="info-box bg-blue">
-                    <span class="info-box-icon"><i class="fa fa-pencil"></i></span>
-                    <div class="info-box-content">
-                        <span class="info-box-text">Total Transfer Saya</span>
-                        <span class="info-box-number"><?= $this->db->query('SELECT id FROM tb_transfer WHERE idPengirim="'.$this->session->userdata('id').'" OR idPenerima="'.$this->session->userdata('id').'"')->num_rows(); ?></span>
-                        <a href="<?= base_url('admin/transfer') ?>" class="more-info" style="color:#fff; text-decoration: none;">More info <i class="fa fa-arrow-circle-right"></i></a>
-                    </div>
-                </div>
-            </div>
-
-            <div class="col-12 col-sm-6 col-md-4 mb-3">
-                <div class="info-box bg-green">
-                    <span class="info-box-icon"><i class="fa fa-money"></i></span>
-                    <div class="info-box-content">
-                        <span class="info-box-text">Sisa Saldo</span>
-                        <span class="info-box-number">
-                            <?php
-                                foreach ($this->db->query('SELECT SUM(nominal) AS totalTabunganMasuk FROM tb_transaksi WHERE idNasabah="'.$this->session->userdata('id').'" AND jenis="Masuk"')->result() as $tbMsk) {}
-                                foreach ($this->db->query('SELECT SUM(nominal) AS totalTransferMasuk FROM tb_transfer WHERE idPenerima="'.$this->session->userdata('id').'"')->result() as $tfMsk) {}
-                                $totalMasuk = $tbMsk->totalTabunganMasuk + $tfMsk->totalTransferMasuk ;
-                                foreach ($this->db->query('SELECT SUM(nominal) AS totalTabunganKeluar FROM tb_transaksi WHERE idNasabah="'.$this->session->userdata('id').'" AND jenis="Keluar"')->result() as $tbKlr) {}
-                                foreach ($this->db->query('SELECT SUM(nominal) AS totalTransferKeluar FROM tb_transfer WHERE idPengirim="'.$this->session->userdata('id').'"')->result() as $tfKlr) {}
-                                $totalKeluar = $tbKlr->totalTabunganKeluar + $tfKlr->totalTransferKeluar;
-                                $sisaSaldo = $totalMasuk - $totalKeluar;
-                                echo 'Rp. ' . number_format($sisaSaldo,0,',','.');
-                            ?>
+        <?php if ($is_pengelola): ?>
+            <div class="row">
+                <div class="col-md-4 col-sm-6 col-xs-12">
+                    <div class="info-box bg-green">
+                        <span class="info-box-icon">
+                            <i class="fa fa-level-down"></i>
                         </span>
-                        <a href="<?= base_url('admin/transaksi') ?>" class="more-info" style="color:#fff; text-decoration: none;">More info <i class="fa fa-arrow-circle-right"></i></a>
+
+                        <div class="info-box-content">
+                            <span class="info-box-text">
+                                Total Masuk
+                            </span>
+
+                            <span class="info-box-number">
+                                Rp
+                                <?= number_format(
+                                    $saldo_detail['totalMasuk'],
+                                    0,
+                                    ',',
+                                    '.'
+                                ) ?>
+                            </span>
+
+                            <span class="progress-description">
+                                Transaksi dan transfer masuk
+                            </span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="col-md-4 col-sm-6 col-xs-12">
+                    <div class="info-box bg-red">
+                        <span class="info-box-icon">
+                            <i class="fa fa-level-up"></i>
+                        </span>
+
+                        <div class="info-box-content">
+                            <span class="info-box-text">
+                                Total Keluar
+                            </span>
+
+                            <span class="info-box-number">
+                                Rp
+                                <?= number_format(
+                                    $saldo_detail['totalKeluar'],
+                                    0,
+                                    ',',
+                                    '.'
+                                ) ?>
+                            </span>
+
+                            <span class="progress-description">
+                                Transaksi dan transfer keluar
+                            </span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="col-md-4 col-sm-6 col-xs-12">
+                    <div class="info-box bg-orange">
+                        <span class="info-box-icon">
+                            <i class="fa fa-money"></i>
+                        </span>
+
+                        <div class="info-box-content">
+                            <span class="info-box-text">
+                                Saldo Kelolaan
+                            </span>
+
+                            <span class="info-box-number">
+                                Rp
+                                <?= number_format(
+                                    $saldo_detail['sisaSaldo'],
+                                    0,
+                                    ',',
+                                    '.'
+                                ) ?>
+                            </span>
+
+                            <span class="progress-description">
+                                Saldo termasuk celengan impian
+                            </span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="col-md-4 col-sm-6 col-xs-12">
+                    <div class="info-box bg-red">
+                        <span class="info-box-icon">
+                            <i class="fa fa-book"></i>
+                        </span>
+
+                        <div class="info-box-content">
+                            <span class="info-box-text">
+                                Total Transaksi
+                            </span>
+
+                            <span class="info-box-number">
+                                <?= number_format($total_transaksi) ?>
+                            </span>
+
+                            <a
+                                href="<?= base_url('admin/transaksi') ?>"
+                                class="progress-description"
+                                style="color:#fff;">
+                                Lihat transaksi
+                                <i class="fa fa-arrow-circle-right"></i>
+                            </a>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="col-md-4 col-sm-6 col-xs-12">
+                    <div class="info-box bg-purple">
+                        <span class="info-box-icon">
+                            <i class="fa fa-send"></i>
+                        </span>
+
+                        <div class="info-box-content">
+                            <span class="info-box-text">
+                                Total Transfer
+                            </span>
+
+                            <span class="info-box-number">
+                                <?= number_format($total_transfer) ?>
+                            </span>
+
+                            <a
+                                href="<?= base_url('admin/transfer') ?>"
+                                class="progress-description"
+                                style="color:#fff;">
+                                Lihat transfer
+                                <i class="fa fa-arrow-circle-right"></i>
+                            </a>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="col-md-4 col-sm-6 col-xs-12">
+                    <div class="info-box bg-blue">
+                        <span class="info-box-icon">
+                            <i class="fa fa-users"></i>
+                        </span>
+
+                        <div class="info-box-content">
+                            <span class="info-box-text">
+                                Total Nasabah
+                            </span>
+
+                            <span class="info-box-number">
+                                <?= number_format($total_nasabah) ?>
+                            </span>
+
+                            <a
+                                href="<?= base_url('admin/user') ?>"
+                                class="progress-description"
+                                style="color:#fff;">
+                                Lihat nasabah
+                                <i class="fa fa-arrow-circle-right"></i>
+                            </a>
+                        </div>
                     </div>
                 </div>
             </div>
-        </div> <!-- end row nasabah -->
-        <?php } ?>
+
+            <div class="row">
+                <div class="col-md-6">
+                    <div class="dashboard-card">
+                        <h4>Ringkasan Keuangan</h4>
+                        <canvas id="transaksiChart"></canvas>
+                    </div>
+                </div>
+
+                <div class="col-md-6">
+                    <div class="dashboard-card">
+                        <h4>Komposisi Nasabah</h4>
+                        <canvas id="nasabahChart"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <div class="dashboard-card">
+                <h4>
+                    Transaksi Bulanan Tahun <?= date('Y') ?>
+                </h4>
+
+                <canvas id="bulananChart"></canvas>
+            </div>
+        <?php else: ?>
+            <div class="row">
+                <div class="col-md-4 col-sm-6 col-xs-12">
+                    <div class="info-box bg-red">
+                        <span class="info-box-icon">
+                            <i class="fa fa-book"></i>
+                        </span>
+
+                        <div class="info-box-content">
+                            <span class="info-box-text">
+                                Transaksi Saya
+                            </span>
+
+                            <span class="info-box-number">
+                                <?= number_format(
+                                    $total_transaksi_saya
+                                ) ?>
+                            </span>
+
+                            <a
+                                href="<?= base_url('admin/transaksi') ?>"
+                                class="progress-description"
+                                style="color:#fff;">
+                                Lihat transaksi
+                            </a>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="col-md-4 col-sm-6 col-xs-12">
+                    <div class="info-box bg-blue">
+                        <span class="info-box-icon">
+                            <i class="fa fa-send"></i>
+                        </span>
+
+                        <div class="info-box-content">
+                            <span class="info-box-text">
+                                Transfer Saya
+                            </span>
+
+                            <span class="info-box-number">
+                                <?= number_format(
+                                    $total_transfer_saya
+                                ) ?>
+                            </span>
+
+                            <a
+                                href="<?= base_url('admin/transfer') ?>"
+                                class="progress-description"
+                                style="color:#fff;">
+                                Lihat transfer
+                            </a>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="col-md-4 col-sm-6 col-xs-12">
+                    <div class="info-box bg-green">
+                        <span class="info-box-icon">
+                            <i class="fa fa-money"></i>
+                        </span>
+
+                        <div class="info-box-content">
+                            <span class="info-box-text">
+                                Sisa Saldo
+                            </span>
+
+                            <span class="info-box-number">
+                                Rp
+                                <?= number_format(
+                                    $saldo_nasabah,
+                                    0,
+                                    ',',
+                                    '.'
+                                ) ?>
+                            </span>
+
+                            <a
+                                href="<?= base_url('admin/transaksi') ?>"
+                                class="progress-description"
+                                style="color:#fff;">
+                                Lihat rincian saldo
+                            </a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        <?php endif; ?>
     </section>
 </div>
 
-<!-- Tambahkan Chart.js -->
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-<script>
-    // Grafik Transaksi
-    const ctx1 = document.getElementById('transaksiChart').getContext('2d');
-    const transaksiChart = new Chart(ctx1, {
-        type: 'bar',
-        data: {
-            labels: ['Total Masuk', 'Total Keluar', 'Sisa Saldo'],
-            datasets: [{
-                label: 'Jumlah (Rp)',
-                data: [
-                    <?= $saldo_detail['totalMasuk'] ?>,
-                    <?= $saldo_detail['totalKeluar'] ?>,
-                    <?= $saldo_detail['sisaSaldo'] ?>
-                ],
-                backgroundColor: [
-                    'rgba(40, 167, 69, 0.7)',
-                    'rgba(220, 53, 69, 0.7)',
-                    'rgba(255, 193, 7, 0.7)'
-                ],
-                borderColor: [
-                    'rgba(40, 167, 69, 1)',
-                    'rgba(220, 53, 69, 1)',
-                    'rgba(255, 193, 7, 1)'
-                ],
-                borderWidth: 1,
-                borderRadius: 5, // sudut bar melengkung
-                barPercentage: 1,
-                categoryPercentage: 0.6
-            }]
-        },
-        options: { 
-            responsive: true, 
-            maintainAspectRatio: false,
-            plugins: { 
-                legend: { display:false },
-                tooltip: {
-                    callbacks: {
-                        label: function(context) {
-                            let value = context.raw || 0;
-                            return 'Rp ' + value.toLocaleString('id-ID');
-                        }
-                    }
-                }
-            }, 
-            scales: { 
-                y: { 
-                    beginAtZero: true,
-                    ticks: {
-                        callback: function(value) {
-                            return 'Rp ' + value.toLocaleString('id-ID');
-                        }
-                    }
-                } 
-            } 
-        }
-    });
+<?php if ($is_pengelola): ?>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
-        
-    // Grafik Nasabah
-        const ctx2 = document.getElementById('nasabahChart').getContext('2d');
-        const nasabahChart = new Chart(ctx2, {
-            type: 'doughnut',
-            data: {
-                labels: ['Laki-Laki', 'Perempuan'],
-                datasets: [{
-                    data: [
-                        <?= $this->db->query('SELECT id FROM tb_user WHERE jenisKelamin="Laki-Laki" AND level="Nasabah"')->num_rows(); ?>,
-                        <?= $this->db->query('SELECT id FROM tb_user WHERE jenisKelamin="Perempuan" AND level="Nasabah"')->num_rows(); ?>
+    <script>
+        const transaksiChart = new Chart(
+            document.getElementById('transaksiChart'), {
+                type: 'bar',
+                data: {
+                    labels: [
+                        'Total Masuk',
+                        'Total Keluar',
+                        'Saldo Kelolaan'
                     ],
-                    backgroundColor: [
-                        'rgba(0, 123, 255, 0.7)',
-                        'rgba(255, 193, 7, 0.7)'
-                    ],
-                    borderColor: [
-                        'rgba(0, 123, 255, 1)',
-                        'rgba(255, 193, 7, 1)'
-                    ],
-                    borderWidth: 1,
-                    borderRadius: 5 // <<-- bikin potongan donut lebih "rounded"
-                }]
-            },
-            options: { 
-                responsive: true, 
-                maintainAspectRatio: false,
-                plugins: { legend: { position:'bottom' } } 
-            }
-        });
-
-
-    // Grafik Bulanan
-    const ctx3 = document.getElementById('bulananChart').getContext('2d');
-    const bulananChart = new Chart(ctx3, {
-        type: 'line',
-        data: {
-            labels: <?= $bulan ?>, // array bulan dari PHP
-            datasets: [
-                {
-                    label: 'Total Masuk',
-                    data: <?= $masuk ?>,
-                    borderColor: 'rgba(40, 167, 69, 1)',
-                    backgroundColor: 'rgba(40, 167, 69, 0.2)',
-                    borderWidth: 2,
-                    tension: 0.4,
-                    pointBackgroundColor: 'rgba(40, 167, 69, 1)',
-                    pointRadius: 4,
-                    fill: true
+                    datasets: [{
+                        data: [
+                            <?= (float) $saldo_detail['totalMasuk'] ?>,
+                            <?= (float) $saldo_detail['totalKeluar'] ?>,
+                            <?= (float) $saldo_detail['sisaSaldo'] ?>
+                        ],
+                        backgroundColor: [
+                            'rgba(40, 167, 69, .75)',
+                            'rgba(220, 53, 69, .75)',
+                            'rgba(253, 126, 20, .75)'
+                        ],
+                        borderWidth: 1
+                    }]
                 },
-                {
-                    label: 'Total Keluar',
-                    data: <?= $keluar ?>,
-                    borderColor: 'rgba(220, 53, 69, 1)',
-                    backgroundColor: 'rgba(220, 53, 69, 0.2)',
-                    borderWidth: 2,
-                    tension: 0.4,
-                    pointBackgroundColor: 'rgba(220, 53, 69, 1)',
-                    pointRadius: 4,
-                    fill: true
-                }
-            ]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            interaction: {
-                mode: 'index',
-                intersect: false
-            },
-            plugins: {
-                legend: { position: 'bottom' },
-                tooltip: {
-                    callbacks: {
-                        label: function(context) {
-                            let value = context.raw || 0;
-                            return context.dataset.label + ': Rp ' + value.toLocaleString('id-ID');
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            display: false
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true
                         }
                     }
-                }
-            },
-            scales: {
-                y: {
-                    beginAtZero: true,
-                    ticks: {
-                        callback: function(value) {
-                            return 'Rp ' + value.toLocaleString('id-ID');
-                        }
-                    }
-                },
-                x: {
-                    grid: { display: false }
                 }
             }
-        }
-    });
-</script>
+        );
+
+        const nasabahChart = new Chart(
+            document.getElementById('nasabahChart'), {
+                type: 'doughnut',
+                data: {
+                    labels: ['Laki-Laki', 'Perempuan'],
+                    datasets: [{
+                        data: [
+                            <?= (int) $nasabah_laki ?>,
+                            <?= (int) $nasabah_perempuan ?>
+                        ],
+                        backgroundColor: [
+                            'rgba(0, 123, 255, .75)',
+                            'rgba(255, 193, 7, .75)'
+                        ]
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'bottom'
+                        }
+                    }
+                }
+            }
+        );
+
+        const bulananChart = new Chart(
+            document.getElementById('bulananChart'), {
+                type: 'line',
+                data: {
+                    labels: <?= $bulan ?>,
+                    datasets: [{
+                            label: 'Total Masuk',
+                            data: <?= $masuk ?>,
+                            borderColor: '#28a745',
+                            backgroundColor: 'rgba(40,167,69,.15)',
+                            fill: true,
+                            tension: .35
+                        },
+                        {
+                            label: 'Total Keluar',
+                            data: <?= $keluar ?>,
+                            borderColor: '#dc3545',
+                            backgroundColor: 'rgba(220,53,69,.12)',
+                            fill: true,
+                            tension: .35
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {
+                        mode: 'index',
+                        intersect: false
+                    },
+                    plugins: {
+                        legend: {
+                            position: 'bottom'
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true
+                        }
+                    }
+                }
+            }
+        );
+    </script>
+<?php endif; ?>
