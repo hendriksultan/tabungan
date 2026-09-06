@@ -1,0 +1,26 @@
+# Environment dan kredensial
+.env
+.env.*
+application/config/database.php
+
+# Cache dan log CodeIgniter
+application/cache/*
+!application/cache/index.html
+application/logs/*
+!application/logs/index.html
+
+# Dependency
+vendor/
+node_modules/
+
+# File editor dan sistem
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
+
+# Backup dan database asli
+*.sql
+*.zip
+*.bak
