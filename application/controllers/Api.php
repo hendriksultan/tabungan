@@ -351,38 +351,201 @@ class Api extends CI_Controller
   // ==========================================
   // 2. ENDPOINT SALDO 
   // ==========================================
+  // ==========================================
+  // ENDPOINT SALDO TERPROTEKSI BEARER TOKEN
+  // ==========================================
   public function saldo()
   {
-    $request = json_decode($this->input->raw_input_stream, true);
-    $id_user = $request['id_user'] ?? '';
-    $level = $request['level'] ?? '';
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gunakan metode POST.'
+      ], 405);
 
-    if ($level === 'Administrator' || $level === 'Super Admin') {
-      $tbMsk = $this->db->query('SELECT SUM(nominal) AS total FROM tb_transaksi WHERE jenis="Masuk" AND status_konfirmasi="Sukses"')->row()->total ?? 0;
-      $tbKlr = $this->db->query('SELECT SUM(nominal) AS total FROM tb_transaksi WHERE jenis="Keluar" AND status_konfirmasi="Sukses"')->row()->total ?? 0;
-
-      // 🔥 TAMBAHAN BARU: Ambil total uang yang sedang ditabung (mengendap) di seluruh Celengan Impian
-      $tbTarget = $this->db->query('SELECT SUM(terkumpul) AS total FROM tb_target')->row()->total ?? 0;
-
-      // Total Kas Admin = (Uang Masuk - Uang Keluar) + Uang di Celengan
-      $sisaSaldo = ($tbMsk - $tbKlr) + $tbTarget;
-    } else {
-      // Perhitungan Nasabah yang AMAN DARI SQL INJECTION
-      $tbMsk = $this->db->query('SELECT SUM(nominal) AS total FROM tb_transaksi WHERE idNasabah=? AND jenis="Masuk" AND status_konfirmasi="Sukses"', [$id_user])->row()->total ?? 0;
-      $tfMsk = $this->db->query('SELECT SUM(nominal) AS total FROM tb_transfer WHERE idPenerima=?', [$id_user])->row()->total ?? 0;
-      $totalMasuk = $tbMsk + $tfMsk;
-
-      $tbKlr = $this->db->query('SELECT SUM(nominal) AS total FROM tb_transaksi WHERE idNasabah=? AND jenis="Keluar" AND status_konfirmasi="Sukses"', [$id_user])->row()->total ?? 0;
-      $tfKlr = $this->db->query('SELECT SUM(nominal) AS total FROM tb_transfer WHERE idPengirim=?', [$id_user])->row()->total ?? 0;
-      $totalKeluar = $tbKlr + $tfKlr;
-
-      $sisaSaldo = $totalMasuk - $totalKeluar;
+      return;
     }
 
-    echo json_encode([
-      'status' => true,
-      'saldo_raw' => $sisaSaldo,
-      'saldo_format' => 'Rp ' . number_format($sisaSaldo, 0, ',', '.')
+    $auth = $this->authenticate_api();
+
+    if (!$auth) {
+      return;
+    }
+
+    $id_user  = (int) $auth->id_user;
+    $level    = $auth->level;
+    $cabang_id = (int) $auth->cabang_id;
+
+    $total_masuk          = 0;
+    $total_keluar         = 0;
+    $total_target         = 0;
+    $transfer_masuk       = 0;
+    $transfer_keluar      = 0;
+    $sisa_saldo           = 0;
+
+    /*
+     * SUPER ADMIN
+     * Melihat saldo keseluruhan dari seluruh cabang.
+     */
+    if ($level === 'Super Admin') {
+      $this->db->select_sum('nominal', 'total');
+      $this->db->where('jenis', 'Masuk');
+      $this->db->where('status_konfirmasi', 'Sukses');
+      $total_masuk = (int) (
+        $this->db->get('tb_transaksi')->row()->total ?? 0
+      );
+
+      $this->db->select_sum('nominal', 'total');
+      $this->db->where('jenis', 'Keluar');
+      $this->db->where('status_konfirmasi', 'Sukses');
+      $total_keluar = (int) (
+        $this->db->get('tb_transaksi')->row()->total ?? 0
+      );
+
+      $this->db->select_sum('terkumpul', 'total');
+      $total_target = (int) (
+        $this->db->get('tb_target')->row()->total ?? 0
+      );
+
+      // Transfer antar pengguna tidak mengubah total dana pusat.
+      $sisa_saldo = (
+        $total_masuk -
+        $total_keluar +
+        $total_target
+      );
+    }
+
+    /*
+     * ADMINISTRATOR CABANG
+     * Hanya melihat saldo cabangnya sendiri.
+     */ elseif ($level === 'Administrator') {
+      $this->db->select_sum('nominal', 'total');
+      $this->db->where('jenis', 'Masuk');
+      $this->db->where('status_konfirmasi', 'Sukses');
+      $this->db->where('cabang_id', $cabang_id);
+      $total_masuk = (int) (
+        $this->db->get('tb_transaksi')->row()->total ?? 0
+      );
+
+      $this->db->select_sum('nominal', 'total');
+      $this->db->where('jenis', 'Keluar');
+      $this->db->where('status_konfirmasi', 'Sukses');
+      $this->db->where('cabang_id', $cabang_id);
+      $total_keluar = (int) (
+        $this->db->get('tb_transaksi')->row()->total ?? 0
+      );
+
+      // Dana Celengan Impian milik nasabah cabang tersebut
+      $this->db->select_sum('t.terkumpul', 'total');
+      $this->db->from('tb_target AS t');
+      $this->db->join(
+        'tb_user AS u',
+        'u.id = t.id_nasabah',
+        'inner'
+      );
+      $this->db->where('u.cabang_id', $cabang_id);
+      $total_target = (int) (
+        $this->db->get()->row()->total ?? 0
+      );
+
+      // Transfer yang masuk dari cabang lain
+      $this->db->select_sum('nominal', 'total');
+      $this->db->where('cabang_tujuan_id', $cabang_id);
+      $this->db->where('status_transfer', 'Sukses');
+      $transfer_masuk = (int) (
+        $this->db->get('tb_transfer')->row()->total ?? 0
+      );
+
+      // Transfer yang keluar menuju cabang lain
+      $this->db->select_sum('nominal', 'total');
+      $this->db->where('cabang_asal_id', $cabang_id);
+      $this->db->where('status_transfer', 'Sukses');
+      $transfer_keluar = (int) (
+        $this->db->get('tb_transfer')->row()->total ?? 0
+      );
+
+      $sisa_saldo = (
+        $total_masuk -
+        $total_keluar +
+        $total_target +
+        $transfer_masuk -
+        $transfer_keluar
+      );
+    }
+
+    /*
+     * NASABAH
+     * Hanya melihat saldo miliknya sendiri.
+     */ elseif ($level === 'Nasabah') {
+      $this->db->select_sum('nominal', 'total');
+      $this->db->where('idNasabah', $id_user);
+      $this->db->where('jenis', 'Masuk');
+      $this->db->where('status_konfirmasi', 'Sukses');
+      $total_masuk = (int) (
+        $this->db->get('tb_transaksi')->row()->total ?? 0
+      );
+
+      $this->db->select_sum('nominal', 'total');
+      $this->db->where('idNasabah', $id_user);
+      $this->db->where('jenis', 'Keluar');
+      $this->db->where('status_konfirmasi', 'Sukses');
+      $total_keluar = (int) (
+        $this->db->get('tb_transaksi')->row()->total ?? 0
+      );
+
+      $this->db->select_sum('nominal', 'total');
+      $this->db->where('idPenerima', $id_user);
+      $this->db->where('status_transfer', 'Sukses');
+      $transfer_masuk = (int) (
+        $this->db->get('tb_transfer')->row()->total ?? 0
+      );
+
+      $this->db->select_sum('nominal', 'total');
+      $this->db->where('idPengirim', $id_user);
+      $this->db->where('status_transfer', 'Sukses');
+      $transfer_keluar = (int) (
+        $this->db->get('tb_transfer')->row()->total ?? 0
+      );
+
+      $sisa_saldo = (
+        $total_masuk +
+        $transfer_masuk -
+        $total_keluar -
+        $transfer_keluar
+      );
+    }
+
+    /*
+     * Level selain tiga level resmi ditolak.
+     */ else {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Level pengguna tidak memiliki akses.'
+      ], 403);
+
+      return;
+    }
+
+    $this->api_response([
+      'status'        => true,
+      'saldo_raw'     => $sisa_saldo,
+      'saldo_format'  => 'Rp ' . number_format(
+        $sisa_saldo,
+        0,
+        ',',
+        '.'
+      ),
+      'cabang'        => [
+        'id'   => $cabang_id,
+        'kode' => $auth->kode_cabang,
+        'nama' => $auth->nama_cabang
+      ],
+      'rincian'       => [
+        'transaksi_masuk'  => $total_masuk,
+        'transaksi_keluar' => $total_keluar,
+        'transfer_masuk'   => $transfer_masuk,
+        'transfer_keluar'  => $transfer_keluar,
+        'dana_target'      => $total_target
+      ]
     ]);
   }
 
