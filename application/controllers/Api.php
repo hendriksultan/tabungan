@@ -234,10 +234,15 @@ class Api extends CI_Controller
  * Super Admin dan Administrator lama tetap harus berstatus Ya.
  */
     if ($user->login !== 'Ya') {
+      $message = $user->login === 'Ditolak'
+        ? 'Pendaftaran akun Anda telah ditolak.'
+        : 'Akun Anda belum diverifikasi oleh Administrator.';
+
       echo json_encode([
         'status'  => false,
-        'message' => 'Akun Anda belum diverifikasi oleh Administrator.'
+        'message' => $message
       ]);
+
       return;
     }
 
@@ -4285,27 +4290,169 @@ class Api extends CI_Controller
     ]);
   }
 
+  // ==========================================
+  // ENDPOINT TOLAK PENDAFTAR NASABAH
+  // ==========================================
   public function tolak_nasabah()
   {
-    header("Access-Control-Allow-Origin: *");
-    header("Content-Type: application/json; charset=UTF-8");
-    header("Access-Control-Allow-Methods: POST");
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gunakan metode POST.'
+      ], 405);
 
-    $json = file_get_contents('php://input');
-    $data = json_decode($json, true);
-
-    if (!empty($data['id_user'])) {
-      $this->db->where('id', $data['id_user']);
-      $delete = $this->db->delete('tb_user');
-
-      if ($delete) {
-        echo json_encode(['status' => true, 'message' => 'Pendaftaran nasabah berhasil ditolak (dihapus).']);
-      } else {
-        echo json_encode(['status' => false, 'message' => 'Gagal menolak pendaftaran.']);
-      }
-    } else {
-      echo json_encode(['status' => false, 'message' => 'ID User tidak valid.']);
+      return;
     }
+
+    $auth = $this->authenticate_api();
+
+    if (!$auth) {
+      return;
+    }
+
+    if (
+      !in_array(
+        $auth->level,
+        ['Super Admin', 'Administrator'],
+        true
+      )
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Akses ditolak. Khusus pengelola.'
+      ], 403);
+
+      return;
+    }
+
+    $request = json_decode($this->input->raw_input_stream, true);
+
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format permintaan tidak valid.'
+      ], 400);
+
+      return;
+    }
+
+    $id_nasabah = (int) ($request['id_user'] ?? 0);
+
+    if ($id_nasabah <= 0) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'ID nasabah tidak valid.'
+      ], 422);
+
+      return;
+    }
+
+    $this->db->trans_begin();
+
+    $nasabah = $this->db->query(
+      'SELECT
+            u.id,
+            u.nama,
+            u.username,
+            u.level,
+            u.login,
+            u.cabang_id,
+            c.kode AS kode_cabang,
+            c.nama AS nama_cabang
+         FROM tb_user AS u
+         INNER JOIN tb_cabang AS c
+            ON c.id = u.cabang_id
+         WHERE u.id = ?
+         FOR UPDATE',
+      [$id_nasabah]
+    )->row();
+
+    if (!$nasabah || $nasabah->level !== 'Nasabah') {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Data pendaftar tidak ditemukan.'
+      ], 404);
+
+      return;
+    }
+
+    if (
+      $auth->level === 'Administrator' &&
+      (int) $nasabah->cabang_id !== (int) $auth->cabang_id
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Pendaftar berasal dari cabang lain.'
+      ], 403);
+
+      return;
+    }
+
+    if ($nasabah->login !== 'Tidak') {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Pendaftaran sudah pernah diproses.',
+        'status_sekarang' => $nasabah->login
+      ], 409);
+
+      return;
+    }
+
+    $waktu_penolakan = date('Y-m-d H:i:s');
+
+    /*
+     * Pendaftar tidak dihapus agar jejak keputusan tetap ada.
+     */
+    $this->db->where('id', $id_nasabah);
+    $updated = $this->db->update('tb_user', [
+      'login'              => 'Ditolak',
+      'diverifikasi_oleh'  => (int) $auth->id_user,
+      'diverifikasi_pada'  => $waktu_penolakan
+    ]);
+
+    if (!$updated || $this->db->trans_status() === false) {
+      $database_error = $this->db->error();
+      $this->db->trans_rollback();
+
+      log_message(
+        'error',
+        'Gagal menolak pendaftar: ' .
+          json_encode($database_error)
+      );
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Pendaftaran gagal ditolak.'
+      ], 500);
+
+      return;
+    }
+
+    $this->db->trans_commit();
+
+    $this->api_response([
+      'status'  => true,
+      'message' => 'Pendaftaran nasabah berhasil ditolak.',
+      'data'    => [
+        'id_nasabah'       => $id_nasabah,
+        'nama_nasabah'     => $nasabah->nama,
+        'username'          => $nasabah->username,
+        'status_sebelumnya' => 'Tidak',
+        'status_sekarang'   => 'Ditolak',
+        'cabang_id'         => (int) $nasabah->cabang_id,
+        'kode_cabang'       => $nasabah->kode_cabang,
+        'nama_cabang'       => $nasabah->nama_cabang,
+        'diproses_oleh'     => (int) $auth->id_user,
+        'nama_operator'     => $auth->nama,
+        'diproses_pada'     => $waktu_penolakan
+      ]
+    ]);
   }
 
   public function tambah_nasabah()
