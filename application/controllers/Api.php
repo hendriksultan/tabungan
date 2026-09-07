@@ -5057,210 +5057,828 @@ class Api extends CI_Controller
   // A. Mengambil daftar target milik nasabah
   public function get_target()
   {
-    header("Access-Control-Allow-Origin: *");
-    header("Content-Type: application/json; charset=UTF-8");
-    header("Access-Control-Allow-Methods: POST");
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
 
-    $request = json_decode($this->input->raw_input_stream, true);
-    $id_nasabah = $request['id_nasabah'] ?? '';
-
-    if (empty($id_nasabah)) {
-      echo json_encode(['status' => false, 'message' => 'ID Nasabah tidak valid.']);
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
       return;
     }
 
-    $this->db->where('id_nasabah', $id_nasabah);
-    $this->db->order_by('id', 'DESC');
-    $data = $this->db->get('tb_target')->result_array();
+    $auth = $this->authenticate_api();
 
-    // Hitung persentase terkumpul
+    if (!$auth) {
+      return;
+    }
+
+    if ($auth->level !== 'Nasabah') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Endpoint ini hanya dapat digunakan oleh Nasabah.'
+      ], 403);
+      return;
+    }
+
+    /*
+     * id_nasabah dari request sengaja diabaikan.
+     * Target selalu diambil berdasarkan pemilik Bearer token.
+     */
+    $id_nasabah = (int) $auth->id_user;
+
+    $data = $this->db
+      ->where('id_nasabah', $id_nasabah)
+      ->order_by('id', 'DESC')
+      ->get('tb_target')
+      ->result_array();
+
     $formatted_data = [];
+
     foreach ($data as $row) {
-      $persentase = ($row['terkumpul'] / $row['nominal_target']) * 100;
+      $nominal_target = (float) $row['nominal_target'];
+      $terkumpul = (float) $row['terkumpul'];
+
+      $persentase = $nominal_target > 0
+        ? ($terkumpul / $nominal_target) * 100
+        : 0;
+
+      $row['nominal_target'] = (int) $nominal_target;
+      $row['terkumpul'] = (int) $terkumpul;
       $row['persentase'] = round($persentase, 1);
+      $row['tercapai'] = $nominal_target > 0 &&
+        $terkumpul >= $nominal_target;
+
       $formatted_data[] = $row;
     }
 
-    echo json_encode(['status' => true, 'data' => $formatted_data]);
+    $this->api_response([
+      'status'      => true,
+      'id_nasabah' => $id_nasabah,
+      'jumlah'      => count($formatted_data),
+      'data'        => $formatted_data
+    ]);
   }
 
   // B. Membuat target baru
   public function simpan_target()
   {
-    header("Access-Control-Allow-Origin: *");
-    header("Content-Type: application/json; charset=UTF-8");
-    header("Access-Control-Allow-Methods: POST");
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
 
-    $request = json_decode($this->input->raw_input_stream, true);
-
-    $id_nasabah = $request['id_nasabah'] ?? '';
-    $nama_target = $request['nama_target'] ?? '';
-    $nominal_target = str_replace('.', '', $request['nominal_target'] ?? '0');
-
-    if (empty($id_nasabah) || empty($nama_target) || empty($nominal_target)) {
-      echo json_encode(['status' => false, 'message' => 'Data target tidak lengkap.']);
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
       return;
     }
 
-    $data = [
-      'id_nasabah' => $id_nasabah,
-      'nama_target' => $nama_target,
+    $auth = $this->authenticate_api();
+
+    if (!$auth) {
+      return;
+    }
+
+    if ($auth->level !== 'Nasabah') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Target tabungan hanya dapat dibuat oleh Nasabah.'
+      ], 403);
+      return;
+    }
+
+    $content_length = (int) $this->input->server('CONTENT_LENGTH');
+
+    if ($content_length > 32768) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Ukuran data terlalu besar.'
+      ], 413);
+      return;
+    }
+
+    $request = json_decode($this->input->raw_input_stream, true);
+
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format JSON tidak valid.'
+      ], 400);
+      return;
+    }
+
+    $nama_target = isset($request['nama_target'])
+      ? trim((string) $request['nama_target'])
+      : '';
+
+    $nominal_text = isset($request['nominal_target'])
+      ? trim((string) $request['nominal_target'])
+      : '';
+
+    // Mendukung nominal 1000000 dan "1.000.000".
+    $nominal_text = preg_replace('/[.\s]/', '', $nominal_text);
+
+    if (
+      strlen($nama_target) < 3 ||
+      strlen($nama_target) > 100
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Nama target harus terdiri dari 3 sampai 100 karakter.'
+      ], 422);
+      return;
+    }
+
+    if (
+      $nominal_text === '' ||
+      !ctype_digit($nominal_text)
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Nominal target harus berupa angka bulat.'
+      ], 422);
+      return;
+    }
+
+    $nominal_target = (int) $nominal_text;
+
+    if ($nominal_target < 1000) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Nominal target minimal Rp1.000.'
+      ], 422);
+      return;
+    }
+
+    if ($nominal_target > 10000000000) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Nominal target melebihi batas yang diperbolehkan.'
+      ], 422);
+      return;
+    }
+
+    /*
+     * id_nasabah dari request tidak digunakan.
+     * Pemilik target selalu berasal dari Bearer token.
+     */
+    $id_nasabah = (int) $auth->id_user;
+
+    $nasabah = $this->db
+      ->select('id, nama, level, login, cabang_id')
+      ->where('id', $id_nasabah)
+      ->where('level', 'Nasabah')
+      ->where('login', 'Ya')
+      ->limit(1)
+      ->get('tb_user')
+      ->row();
+
+    if (!$nasabah) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Akun Nasabah tidak ditemukan atau tidak aktif.'
+      ], 403);
+      return;
+    }
+
+    // Batasi jumlah target agar endpoint tidak disalahgunakan.
+    $jumlah_target = $this->db
+      ->where('id_nasabah', $id_nasabah)
+      ->count_all_results('tb_target');
+
+    if ($jumlah_target >= 20) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Maksimal 20 target tabungan untuk setiap Nasabah.'
+      ], 422);
+      return;
+    }
+
+    $data_target = [
+      'id_nasabah'    => $id_nasabah,
+      'nama_target'   => $nama_target,
       'nominal_target' => $nominal_target,
-      'terkumpul' => 0, // Awal buat pasti 0
-      'terdaftar' => date('Y-m-d H:i:s')
+      'terkumpul'     => 0,
+      'terdaftar'     => date('Y-m-d H:i:s')
     ];
 
-    $insert = $this->db->insert('tb_target', $data);
+    $insert = $this->db->insert('tb_target', $data_target);
 
-    if ($insert) {
-      echo json_encode(['status' => true, 'message' => 'Tabungan impian berhasil dibuat! Ayo semangat menabung.']);
-    } else {
-      echo json_encode(['status' => false, 'message' => 'Gagal membuat target.']);
+    if (!$insert) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gagal membuat target tabungan.'
+      ], 500);
+      return;
     }
+
+    $id_target = (int) $this->db->insert_id();
+
+    $this->api_response([
+      'status'  => true,
+      'message' => "\u{1F3AF} Target tabungan berhasil dibuat. Ayo semangat menabung!",
+      'data'    => [
+        'id_target'      => $id_target,
+        'id_nasabah'     => $id_nasabah,
+        'nama_nasabah'   => $nasabah->nama,
+        'nama_target'    => $nama_target,
+        'nominal_target' => $nominal_target,
+        'terkumpul'      => 0,
+        'persentase'     => 0,
+        'cabang_id'      => (int) $nasabah->cabang_id
+      ]
+    ], 201);
   }
   // C. Top Up Target (Isi Celengan)
   public function topup_target()
   {
-    header("Access-Control-Allow-Origin: *");
-    header("Content-Type: application/json; charset=UTF-8");
-    header("Access-Control-Allow-Methods: POST");
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
+
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
+      return;
+    }
+
+    $auth = $this->authenticate_api();
+
+    if (!$auth) {
+      return;
+    }
+
+    if ($auth->level !== 'Nasabah') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Target tabungan hanya dapat diisi oleh Nasabah.'
+      ], 403);
+      return;
+    }
 
     $request = json_decode($this->input->raw_input_stream, true);
 
-    $id_target = $request['id_target'] ?? '';
-    $id_nasabah = $request['id_nasabah'] ?? '';
-    $nominal = str_replace('.', '', $request['nominal'] ?? '0');
-
-    if (empty($id_target) || empty($id_nasabah) || empty($nominal)) {
-      echo json_encode(['status' => false, 'message' => 'Data tidak lengkap.']);
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format JSON tidak valid.'
+      ], 400);
       return;
     }
 
-    // Cek apakah target ada
-    $this->db->where('id', $id_target);
-    $target = $this->db->get('tb_target')->row();
+    $id_target = isset($request['id_target'])
+      ? (int) $request['id_target']
+      : 0;
+
+    $nominal_text = isset($request['nominal'])
+      ? trim((string) $request['nominal'])
+      : '';
+
+    $nominal_text = preg_replace('/[.\s]/', '', $nominal_text);
+
+    if ($id_target <= 0) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'ID target tidak valid.'
+      ], 422);
+      return;
+    }
+
+    if (
+      $nominal_text === '' ||
+      !ctype_digit($nominal_text)
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Nominal top-up harus berupa angka bulat.'
+      ], 422);
+      return;
+    }
+
+    $nominal = (int) $nominal_text;
+
+    if ($nominal < 1) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Nominal top-up harus lebih besar dari nol.'
+      ], 422);
+      return;
+    }
+
+    if ($nominal > 1000000000) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Nominal top-up melebihi batas yang diperbolehkan.'
+      ], 422);
+      return;
+    }
+
+    /*
+     * id_nasabah dari request diabaikan.
+     * Pemilik selalu ditentukan dari Bearer token.
+     */
+    $id_nasabah = (int) $auth->id_user;
+
+    $this->db->trans_begin();
+
+    // Kunci akun Nasabah untuk mencegah penggunaan saldo bersamaan.
+    $nasabah = $this->db->query(
+      "SELECT id, nama, level, login, cabang_id
+         FROM tb_user
+         WHERE id = ?
+         LIMIT 1
+         FOR UPDATE",
+      [$id_nasabah]
+    )->row();
+
+    if (
+      !$nasabah ||
+      $nasabah->level !== 'Nasabah' ||
+      $nasabah->login !== 'Ya'
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Akun Nasabah tidak ditemukan atau tidak aktif.'
+      ], 403);
+      return;
+    }
+
+    /*
+     * Target hanya dapat diambil jika memang dimiliki Nasabah token.
+     * Sekaligus dikunci agar tidak dapat di-top-up atau dihapus bersamaan.
+     */
+    $target = $this->db->query(
+      "SELECT id, id_nasabah, nama_target, nominal_target, terkumpul
+         FROM tb_target
+         WHERE id = ?
+           AND id_nasabah = ?
+         LIMIT 1
+         FOR UPDATE",
+      [$id_target, $id_nasabah]
+    )->row();
 
     if (!$target) {
-      echo json_encode(['status' => false, 'message' => 'Target tidak ditemukan.']);
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Target tidak ditemukan atau bukan milik Anda.'
+      ], 404);
       return;
     }
 
-    // 1. Potong saldo utama dengan mencatat di tb_transaksi sebagai Keluar
-    $insert_trx = [
-      'idAdmin'           => 0,
+    $nominal_target = (float) $target->nominal_target;
+    $terkumpul_sebelum = (float) $target->terkumpul;
+    $sisa_target = $nominal_target - $terkumpul_sebelum;
+
+    if ($sisa_target <= 0) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Target tabungan sudah tercapai.'
+      ], 422);
+      return;
+    }
+
+    if ($nominal > $sisa_target) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Nominal top-up melebihi sisa target.',
+        'data'    => [
+          'sisa_target'     => (int) $sisa_target,
+          'nominal_dikirim' => $nominal
+        ]
+      ], 422);
+      return;
+    }
+
+    // Hitung saldo transaksi yang telah sukses.
+    $saldo_transaksi = $this->db->query(
+      "SELECT COALESCE(
+            SUM(
+                CASE
+                    WHEN jenis = 'Masuk' THEN nominal
+                    WHEN jenis = 'Keluar' THEN -nominal
+                    ELSE 0
+                END
+            ),
+            0
+        ) AS total
+        FROM tb_transaksi
+        WHERE idNasabah = ?
+          AND status_konfirmasi = 'Sukses'",
+      [$id_nasabah]
+    )->row();
+
+    // Hitung saldo transfer yang telah sukses.
+    $saldo_transfer = $this->db->query(
+      "SELECT COALESCE(
+            SUM(
+                CASE
+                    WHEN idPenerima = ? THEN
+                        CAST(nominal AS DECIMAL(20,2))
+                    WHEN idPengirim = ? THEN
+                        -CAST(nominal AS DECIMAL(20,2))
+                    ELSE 0
+                END
+            ),
+            0
+        ) AS total
+        FROM tb_transfer
+        WHERE status_transfer = 'Sukses'
+          AND (idPenerima = ? OR idPengirim = ?)",
+      [
+        $id_nasabah,
+        $id_nasabah,
+        $id_nasabah,
+        $id_nasabah
+      ]
+    )->row();
+
+    $total_transaksi = $saldo_transaksi
+      ? (float) $saldo_transaksi->total
+      : 0;
+
+    $total_transfer = $saldo_transfer
+      ? (float) $saldo_transfer->total
+      : 0;
+
+    $saldo_sebelum = $total_transaksi + $total_transfer;
+
+    if ($saldo_sebelum < $nominal) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Saldo tidak mencukupi untuk mengisi target.',
+        'data'    => [
+          'saldo_tersedia' => (int) $saldo_sebelum,
+          'nominal_topup'  => $nominal
+        ]
+      ], 422);
+      return;
+    }
+
+    $waktu_sekarang = date('Y-m-d H:i:s');
+
+    $insert_transaksi = [
+      'idAdmin'           => $id_nasabah,
       'idNasabah'         => $id_nasabah,
       'idPotongan'        => 0,
+      'cabang_id'         => (int) $nasabah->cabang_id,
       'tanggal'           => date('Y-m-d'),
       'nominal'           => $nominal,
       'jenis'             => 'Keluar',
       'keterangan'        => 'Isi Tabungan: ' . $target->nama_target,
-      'status_konfirmasi' => 'Sukses', // Otomatis sukses memotong saldo
-      'terdaftar'         => date('Y-m-d H:i:s')
+      'status_konfirmasi' => 'Sukses',
+      'terdaftar'         => $waktu_sekarang
     ];
-    $this->db->insert('tb_transaksi', $insert_trx);
 
-    // 2. Tambahkan uang ke kolom terkumpul di tb_target
-    $terkumpul_baru = $target->terkumpul + $nominal;
-    $this->db->where('id', $id_target);
-    $update_target = $this->db->update('tb_target', ['terkumpul' => $terkumpul_baru]);
+    $insert = $this->db->insert(
+      'tb_transaksi',
+      $insert_transaksi
+    );
 
-    if ($update_target) {
-      echo json_encode(['status' => true, 'message' => 'Alhamdulillah, tabungan berhasil diisi! Semangat terus nabungnya.']);
-    } else {
-      echo json_encode(['status' => false, 'message' => 'Gagal mengisi tabungan.']);
+    $id_transaksi = (int) $this->db->insert_id();
+    $terkumpul_baru = $terkumpul_sebelum + $nominal;
+
+    $this->db
+      ->where('id', $id_target)
+      ->where('id_nasabah', $id_nasabah)
+      ->update('tb_target', [
+        'terkumpul' => $terkumpul_baru
+      ]);
+
+    if (!$insert || $this->db->trans_status() === false) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gagal mengisi target tabungan.'
+      ], 500);
+      return;
     }
+
+    $this->db->trans_commit();
+
+    $saldo_sesudah = $saldo_sebelum - $nominal;
+    $persentase = $nominal_target > 0
+      ? ($terkumpul_baru / $nominal_target) * 100
+      : 0;
+
+    $this->api_response([
+      'status'  => true,
+      'message' => "\u{1F4B0} Alhamdulillah, target tabungan berhasil diisi!",
+      'data'    => [
+        'id_transaksi'     => $id_transaksi,
+        'id_target'        => (int) $target->id,
+        'id_nasabah'       => $id_nasabah,
+        'nama_target'      => $target->nama_target,
+        'nominal_topup'    => $nominal,
+        'nominal_target'   => (int) $nominal_target,
+        'terkumpul_sebelum' => (int) $terkumpul_sebelum,
+        'terkumpul_sesudah' => (int) $terkumpul_baru,
+        'persentase'       => round($persentase, 1),
+        'target_tercapai'  => $terkumpul_baru >= $nominal_target,
+        'saldo_sebelum'    => (int) $saldo_sebelum,
+        'saldo_sesudah'    => (int) $saldo_sesudah,
+        'cabang_id'        => (int) $nasabah->cabang_id
+      ]
+    ], 201);
   }
 
   // D. Hapus Target (Celengan) & Refund Saldo
   public function hapus_target()
   {
-    header("Access-Control-Allow-Origin: *");
-    header("Content-Type: application/json; charset=UTF-8");
-    header("Access-Control-Allow-Methods: POST");
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
 
-    $request = json_decode($this->input->raw_input_stream, true);
-    $id_target = $request['id_target'] ?? '';
-
-    if (empty($id_target)) {
-      echo json_encode(['status' => false, 'message' => 'ID Target tidak valid.']);
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
       return;
     }
 
-    // 1. Ambil info target sebelum dihapus
-    $this->db->where('id', $id_target);
-    $target = $this->db->get('tb_target')->row();
+    $auth = $this->authenticate_api();
 
-    if ($target) {
-      // 2. Jika ada dana yang sudah terkumpul, kembalikan ke saldo utama (Refund)
-      if ($target->terkumpul > 0) {
-        $insert_trx = [
-          'idAdmin'           => 0,
-          'idNasabah'         => $target->id_nasabah,
-          'idPotongan'        => 0,
-          'tanggal'           => date('Y-m-d'),
-          'nominal'           => $target->terkumpul,
-          'jenis'             => 'Masuk', // Menambah saldo utama
-          'keterangan'        => 'Refund Hapus Target: ' . $target->nama_target,
-          'status_konfirmasi' => 'Sukses',
-          'terdaftar'         => date('Y-m-d H:i:s')
-        ];
-        $this->db->insert('tb_transaksi', $insert_trx);
-      }
-
-      // 3. Hapus target dari database
-      $this->db->where('id', $id_target);
-      $delete = $this->db->delete('tb_target');
-
-      if ($delete) {
-        echo json_encode([
-          'status' => true,
-          'message' => 'Target berhasil dihapus. Dana yang terkumpul otomatis dikembalikan ke Saldo Utama.'
-        ]);
-      } else {
-        echo json_encode(['status' => false, 'message' => 'Gagal menghapus target.']);
-      }
-    } else {
-      echo json_encode(['status' => false, 'message' => 'Target tidak ditemukan.']);
+    if (!$auth) {
+      return;
     }
+
+    if ($auth->level !== 'Nasabah') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Target tabungan hanya dapat dihapus oleh Nasabah.'
+      ], 403);
+      return;
+    }
+
+    $request = json_decode($this->input->raw_input_stream, true);
+
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format JSON tidak valid.'
+      ], 400);
+      return;
+    }
+
+    $id_target = isset($request['id_target'])
+      ? (int) $request['id_target']
+      : 0;
+
+    if ($id_target <= 0) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'ID target tidak valid.'
+      ], 422);
+      return;
+    }
+
+    $id_nasabah = (int) $auth->id_user;
+
+    $this->db->trans_begin();
+
+    /*
+     * Kunci akun Nasabah agar refund tidak berbenturan dengan
+     * proses saldo lainnya.
+     */
+    $nasabah = $this->db->query(
+      "SELECT id, nama, level, login, cabang_id
+         FROM tb_user
+         WHERE id = ?
+         LIMIT 1
+         FOR UPDATE",
+      [$id_nasabah]
+    )->row();
+
+    if (
+      !$nasabah ||
+      $nasabah->level !== 'Nasabah' ||
+      $nasabah->login !== 'Ya'
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Akun Nasabah tidak ditemukan atau tidak aktif.'
+      ], 403);
+      return;
+    }
+
+    /*
+     * Target hanya ditemukan jika dimiliki pengguna token.
+     * FOR UPDATE mencegah target dihapus dan di-top-up bersamaan.
+     */
+    $target = $this->db->query(
+      "SELECT id, id_nasabah, nama_target, nominal_target, terkumpul
+         FROM tb_target
+         WHERE id = ?
+           AND id_nasabah = ?
+         LIMIT 1
+         FOR UPDATE",
+      [$id_target, $id_nasabah]
+    )->row();
+
+    if (!$target) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Target tidak ditemukan atau bukan milik Anda.'
+      ], 404);
+      return;
+    }
+
+    $dana_refund = max(0, (float) $target->terkumpul);
+    $id_transaksi_refund = null;
+    $waktu_sekarang = date('Y-m-d H:i:s');
+
+    /*
+     * Jika target memiliki dana, buat transaksi masuk sebagai refund.
+     * Refund dan penghapusan berada dalam satu transaksi database.
+     */
+    if ($dana_refund > 0) {
+      $insert_refund = $this->db->insert('tb_transaksi', [
+        'idAdmin'           => $id_nasabah,
+        'idNasabah'         => $id_nasabah,
+        'idPotongan'        => 0,
+        'cabang_id'         => (int) $nasabah->cabang_id,
+        'tanggal'           => date('Y-m-d'),
+        'nominal'           => $dana_refund,
+        'jenis'             => 'Masuk',
+        'keterangan'        => 'Refund Hapus Target: ' .
+          $target->nama_target,
+        'status_konfirmasi' => 'Sukses',
+        'terdaftar'         => $waktu_sekarang
+      ]);
+
+      $id_transaksi_refund = (int) $this->db->insert_id();
+
+      if (!$insert_refund) {
+        $this->db->trans_rollback();
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Gagal mengembalikan dana target.'
+        ], 500);
+        return;
+      }
+    }
+
+    $delete = $this->db
+      ->where('id', $id_target)
+      ->where('id_nasabah', $id_nasabah)
+      ->delete('tb_target');
+
+    if (!$delete || $this->db->trans_status() === false) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gagal menghapus target tabungan.'
+      ], 500);
+      return;
+    }
+
+    $this->db->trans_commit();
+
+    $message = $dana_refund > 0
+      ? "\u{267B}\u{FE0F} Target berhasil dihapus dan dana telah dikembalikan ke saldo utama."
+      : "\u{1F5D1}\u{FE0F} Target tabungan berhasil dihapus.";
+
+    $this->api_response([
+      'status'  => true,
+      'message' => $message,
+      'data'    => [
+        'id_target'             => (int) $target->id,
+        'id_nasabah'            => $id_nasabah,
+        'nama_target'           => $target->nama_target,
+        'dana_dikembalikan'     => (int) $dana_refund,
+        'id_transaksi_refund'   => $id_transaksi_refund,
+        'cabang_id'             => (int) $nasabah->cabang_id,
+        'dihapus_oleh'          => $id_nasabah,
+        'waktu_penghapusan'     => $waktu_sekarang
+      ]
+    ]);
   }
   // ==========================================
   // E. Ambil Semua Target Untuk Admin (Pantau Target)
   // ==========================================
   public function get_all_target()
   {
-    header("Access-Control-Allow-Origin: *");
-    header("Content-Type: application/json; charset=UTF-8");
-    header("Access-Control-Allow-Methods: POST");
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
 
-    $request = json_decode($this->input->raw_input_stream, true);
-    $level = $request['level'] ?? '';
-
-    if ($level !== 'Administrator' && $level !== 'Super Admin') {
-      echo json_encode(['status' => false, 'message' => 'Akses ditolak.']);
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
       return;
     }
 
-    // Ambil data target beserta nama nasabahnya dari tb_user
-    $this->db->select('tb_target.*, tb_user.nama as nama_nasabah');
+    $auth = $this->authenticate_api();
+
+    if (!$auth) {
+      return;
+    }
+
+    /*
+     * Level dari request tidak digunakan.
+     * Hak akses selalu berasal dari Bearer token.
+     */
+    if (!in_array($auth->level, ['Administrator', 'Super Admin'], true)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Anda tidak memiliki izin untuk melihat seluruh target.'
+      ], 403);
+      return;
+    }
+
+    $this->db->select(
+      'tb_target.*, ' .
+        'tb_user.nama AS nama_nasabah, ' .
+        'tb_user.username, ' .
+        'tb_user.cabang_id, ' .
+        'tb_cabang.kode AS kode_cabang, ' .
+        'tb_cabang.nama AS nama_cabang'
+    );
+
     $this->db->from('tb_target');
-    $this->db->join('tb_user', 'tb_target.id_nasabah = tb_user.id', 'left');
+    $this->db->join(
+      'tb_user',
+      'tb_target.id_nasabah = tb_user.id',
+      'inner'
+    );
+    $this->db->join(
+      'tb_cabang',
+      'tb_user.cabang_id = tb_cabang.id',
+      'left'
+    );
+
+    $this->db->where('tb_user.level', 'Nasabah');
+
+    // Administrator hanya dapat melihat Nasabah cabangnya sendiri.
+    if ($auth->level === 'Administrator') {
+      $this->db->where(
+        'tb_user.cabang_id',
+        (int) $auth->cabang_id
+      );
+    }
+
     $this->db->order_by('tb_target.id', 'DESC');
+
     $data = $this->db->get()->result_array();
-
     $formatted_data = [];
-    foreach ($data as $row) {
-      // Hindari pembagian dengan nol
-      if ($row['nominal_target'] > 0) {
-        $persentase = ($row['terkumpul'] / $row['nominal_target']) * 100;
-      } else {
-        $persentase = 0;
-      }
 
+    foreach ($data as $row) {
+      $nominal_target = (float) $row['nominal_target'];
+      $terkumpul = (float) $row['terkumpul'];
+
+      $persentase = $nominal_target > 0
+        ? ($terkumpul / $nominal_target) * 100
+        : 0;
+
+      $row['nominal_target'] = (int) $nominal_target;
+      $row['terkumpul'] = (int) $terkumpul;
+      $row['cabang_id'] = (int) $row['cabang_id'];
       $row['persentase'] = round($persentase, 1);
+      $row['tercapai'] = $nominal_target > 0 &&
+        $terkumpul >= $nominal_target;
+
       $formatted_data[] = $row;
     }
 
-    echo json_encode(['status' => true, 'data' => $formatted_data]);
+    $this->api_response([
+      'status' => true,
+      'akses'  => [
+        'level'       => $auth->level,
+        'cabang_id'   => $auth->level === 'Administrator'
+          ? (int) $auth->cabang_id
+          : null,
+        'cakupan'     => $auth->level === 'Super Admin'
+          ? 'Semua cabang'
+          : 'Cabang sendiri'
+      ],
+      'jumlah' => count($formatted_data),
+      'data'   => $formatted_data
+    ]);
   }
 
   // ==========================================
