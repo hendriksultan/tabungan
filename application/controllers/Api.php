@@ -229,6 +229,18 @@ class Api extends CI_Controller
       return;
     }
 
+    /*
+ * Nasabah baru tidak boleh login sebelum diverifikasi.
+ * Super Admin dan Administrator lama tetap harus berstatus Ya.
+ */
+    if ($user->login !== 'Ya') {
+      echo json_encode([
+        'status'  => false,
+        'message' => 'Akun Anda belum diverifikasi oleh Administrator.'
+      ]);
+      return;
+    }
+
     if (empty($user->cabang_id)) {
       echo json_encode([
         'status'  => false,
@@ -3650,101 +3662,339 @@ class Api extends CI_Controller
     ]);
   }
 
+
+  // ==========================================
+  // ENDPOINT PUBLIK DAFTAR CABANG AKTIF
+  // ==========================================
+  public function get_cabang_aktif()
+  {
+    if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gunakan metode GET.'
+      ], 405);
+
+      return;
+    }
+
+    /*
+     * Endpoint ini sengaja tidak memerlukan Bearer token
+     * karena digunakan sebelum pengguna mendaftar/login.
+     *
+     * Hanya informasi umum cabang yang ditampilkan.
+     */
+    $this->db->select(
+      'id,
+         kode,
+         nama,
+         is_pusat'
+    );
+    $this->db->from('tb_cabang');
+    $this->db->where('status', 'Aktif');
+    $this->db->order_by('is_pusat', 'DESC');
+    $this->db->order_by('nama', 'ASC');
+
+    $cabang = $this->db->get()->result_array();
+
+    $this->api_response([
+      'status' => true,
+      'data'   => $cabang
+    ]);
+  }
+
+
+  // ==========================================
+  // ENDPOINT PENDAFTARAN NASABAH
+  // ==========================================
   public function register()
   {
-    header("Access-Control-Allow-Origin: *");
-    header("Content-Type: application/json; charset=UTF-8");
-    header("Access-Control-Allow-Methods: POST");
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gunakan metode POST.'
+      ], 405);
 
-    $json = file_get_contents('php://input');
-    $data = json_decode($json, true);
-
-    if (!empty($data['nama']) && !empty($data['username']) && !empty($data['password'])) {
-
-      $username = $data['username'];
-
-      $cek_user = $this->db->get_where('tb_user', ['username' => $username])->num_rows();
-
-      if ($cek_user > 0) {
-        echo json_encode([
-          'status' => false,
-          'message' => 'Username sudah terdaftar! Silakan pilih username lain.'
-        ]);
-        return;
-      }
-
-      $insert_data = [
-        'nama'         => $data['nama'],
-        'jenisKelamin' => 'Laki-Laki',
-        'telp'         => $data['telp'],
-        'email'        => $data['email'],
-        'alamat'       => $data['alamat'],
-        'username'     => $username,
-        'password'     => password_hash($data['password'], PASSWORD_BCRYPT),
-        'foto'         => 'no-image.png',
-        'skin'         => 'green',
-        'level'        => 'Nasabah',
-        'login'        => 'Tidak',
-        'terdaftar'    => date('Y-m-d H:i:s')
-      ];
-
-      $insert = $this->db->insert('tb_user', $insert_data);
-
-      if ($insert) {
-        // ==========================================
-        // 🔥 FITUR NOTIFIKASI (PUSH EXPO & IN-APP DATABASE)
-        // ==========================================
-
-        // 1. Ambil data ID dan expo_token milik semua Admin
-        $this->db->select('id, expo_token');
-        $this->db->where_in('level', ['Administrator', 'Super Admin']);
-        $admins = $this->db->get('tb_user')->result();
-
-        $notif_database = []; // Array untuk menyimpan ke tb_notifikasi
-
-        foreach ($admins as $admin) {
-
-          // A. Siapkan data untuk In-App Notification (Database)
-          $notif_database[] = [
-            'id_user' => $admin->id,
-            'judul'   => 'Pendaftar Nasabah Baru! 👤',
-            'pesan'   => 'Nasabah baru atas nama ' . $data['nama'] . ' baru saja mendaftar. Segera cek dan verifikasi akunnya.',
-            'is_read' => 0,
-            'tanggal' => date('Y-m-d H:i:s')
-          ];
-
-          // B. Kirim Push Notification Expo menggunakan fungsi bawaan API Bapak
-          if (!empty($admin->expo_token)) {
-            $this->send_expo_push_notification(
-              $admin->expo_token,
-              "Pendaftar Nasabah Baru! 👤",
-              "Nasabah baru atas nama " . $data['nama'] . " baru saja mendaftar. Segera cek dan verifikasi akunnya."
-            );
-          }
-        }
-
-        // 2. Simpan ke Database (tb_notifikasi) secara massal
-        if (count($notif_database) > 0) {
-          $this->db->insert_batch('tb_notifikasi', $notif_database);
-        }
-        // ==========================================
-
-        echo json_encode([
-          'status' => true,
-          'message' => 'Pendaftaran berhasil. Silakan tunggu Admin memverifikasi akun Anda sebelum login.'
-        ]);
-      } else {
-        echo json_encode([
-          'status' => false,
-          'message' => 'Gagal mendaftar, terjadi kesalahan pada database server.'
-        ]);
-      }
-    } else {
-      echo json_encode([
-        'status' => false,
-        'message' => 'Data pendaftaran tidak lengkap.'
-      ]);
+      return;
     }
+
+    $raw_request = $this->input->raw_input_stream;
+
+    // Pendaftaran tidak mengandung foto, jadi 64 KB sudah cukup
+    if (strlen($raw_request) > 65536) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Ukuran permintaan terlalu besar.'
+      ], 413);
+
+      return;
+    }
+
+    $request = json_decode($raw_request, true);
+
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format permintaan tidak valid.'
+      ], 400);
+
+      return;
+    }
+
+    $nama = trim((string) ($request['nama'] ?? ''));
+    $username = trim((string) ($request['username'] ?? ''));
+    $password = (string) ($request['password'] ?? '');
+    $jenis_kelamin = trim(
+      (string) ($request['jenis_kelamin'] ?? 'Laki-Laki')
+    );
+    $telp = trim((string) ($request['telp'] ?? ''));
+    $email = trim((string) ($request['email'] ?? ''));
+    $alamat = trim((string) ($request['alamat'] ?? ''));
+    $cabang_id = (int) ($request['cabang_id'] ?? 0);
+
+    if (
+      $nama === '' ||
+      $username === '' ||
+      $password === '' ||
+      $cabang_id <= 0
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Nama, username, password, dan cabang wajib diisi.'
+      ], 422);
+
+      return;
+    }
+
+    if (mb_strlen($nama) > 256) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Nama terlalu panjang.'
+      ], 422);
+
+      return;
+    }
+
+    if (
+      mb_strlen($username) < 3 ||
+      mb_strlen($username) > 64 ||
+      preg_match('/\s/', $username)
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Username harus 3–64 karakter dan tidak boleh mengandung spasi.'
+      ], 422);
+
+      return;
+    }
+
+    if (
+      mb_strlen($password) < 8 ||
+      mb_strlen($password) > 128
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Password harus berisi 8 sampai 128 karakter.'
+      ], 422);
+
+      return;
+    }
+
+    if (
+      !in_array(
+        $jenis_kelamin,
+        ['Laki-Laki', 'Perempuan'],
+        true
+      )
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Jenis kelamin tidak valid.'
+      ], 422);
+
+      return;
+    }
+
+    if (mb_strlen($telp) > 16) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Nomor telepon maksimal 16 karakter.'
+      ], 422);
+
+      return;
+    }
+
+    if (
+      $email !== '' &&
+      !filter_var($email, FILTER_VALIDATE_EMAIL)
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format email tidak valid.'
+      ], 422);
+
+      return;
+    }
+
+    if (mb_strlen($email) > 256) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Email terlalu panjang.'
+      ], 422);
+
+      return;
+    }
+
+    if (mb_strlen($alamat) > 5000) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Alamat terlalu panjang.'
+      ], 422);
+
+      return;
+    }
+
+    // Pastikan cabang ada dan aktif
+    $cabang = $this->db
+      ->select('id, kode, nama, status')
+      ->where('id', $cabang_id)
+      ->where('status', 'Aktif')
+      ->get('tb_cabang')
+      ->row();
+
+    if (!$cabang) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Cabang tidak ditemukan atau sedang tidak aktif.'
+      ], 422);
+
+      return;
+    }
+
+    // Pemeriksaan awal agar pesan lebih ramah
+    $username_exists = $this->db
+      ->where('username', $username)
+      ->count_all_results('tb_user');
+
+    if ($username_exists > 0) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Username sudah terdaftar.'
+      ], 409);
+
+      return;
+    }
+
+    $data_user = [
+      'nama'         => $nama,
+      'jenisKelamin' => $jenis_kelamin,
+      'telp'         => $telp,
+      'email'        => $email,
+      'alamat'       => $alamat,
+      'id_kota'      => 0,
+      'username'     => $username,
+      'password'     => password_hash(
+        $password,
+        PASSWORD_DEFAULT
+      ),
+      'foto'         => 'no-image.png',
+      'skin'         => 'green',
+      'expo_token'   => null,
+      'level'        => 'Nasabah',
+      'login'        => 'Tidak',
+      'cabang_id'    => (int) $cabang->id,
+      'terdaftar'    => date('Y-m-d H:i:s')
+    ];
+
+    $this->db->trans_begin();
+
+    $insert = $this->db->insert(
+      'tb_user',
+      $data_user
+    );
+
+    $id_user = (int) $this->db->insert_id();
+
+    if (!$insert || $this->db->trans_status() === false) {
+      $database_error = $this->db->error();
+      $this->db->trans_rollback();
+
+      log_message(
+        'error',
+        'Gagal mendaftarkan nasabah: ' .
+          json_encode($database_error)
+      );
+
+      $message = (
+        isset($database_error['code']) &&
+        (int) $database_error['code'] === 1062
+      )
+        ? 'Username sudah terdaftar.'
+        : 'Pendaftaran gagal diproses.';
+
+      $this->api_response([
+        'status'  => false,
+        'message' => $message
+      ], 500);
+
+      return;
+    }
+
+    $this->db->trans_commit();
+
+    /*
+     * Beri tahu Administrator pada cabang pilihan
+     * dan seluruh Super Admin.
+     */
+    $this->db->select('id, expo_token');
+    $this->db->from('tb_user');
+    $this->db->group_start();
+
+    $this->db->group_start();
+    $this->db->where('level', 'Administrator');
+    $this->db->where('cabang_id', $cabang_id);
+    $this->db->group_end();
+
+    $this->db->or_where('level', 'Super Admin');
+    $this->db->group_end();
+
+    $admins = $this->db->get()->result();
+
+    $judul_notifikasi = 'Pendaftar Nasabah Baru 👤';
+    $isi_notifikasi =
+      "Nasabah baru {$nama} mendaftar pada " .
+      "cabang {$cabang->nama}. Silakan lakukan verifikasi.";
+
+    foreach ($admins as $admin) {
+      $this->db->insert('tb_notifikasi', [
+        'id_user' => $admin->id,
+        'judul'   => $judul_notifikasi,
+        'pesan'   => $isi_notifikasi,
+        'is_read' => 0,
+        'tanggal' => date('Y-m-d H:i:s')
+      ]);
+
+      if (!empty($admin->expo_token)) {
+        $this->send_expo_push_notification(
+          $admin->expo_token,
+          $judul_notifikasi,
+          $isi_notifikasi
+        );
+      }
+    }
+
+    $this->api_response([
+      'status'  => true,
+      'message' => 'Pendaftaran berhasil. Silakan menunggu verifikasi Administrator.',
+      'data'    => [
+        'id_user'          => $id_user,
+        'nama'             => $nama,
+        'username'         => $username,
+        'status_verifikasi' => 'Pending',
+        'cabang_id'        => (int) $cabang->id,
+        'kode_cabang'      => $cabang->kode,
+        'nama_cabang'      => $cabang->nama
+      ]
+    ], 201);
   }
 
   public function get_nasabah_baru()
