@@ -942,23 +942,100 @@ class Api extends CI_Controller
   }
 
   // ==========================================
-  // 4. ENDPOINT AMBIL DATA NASABAH
+  // ENDPOINT DAFTAR NASABAH TERPROTEKSI
   // ==========================================
   public function get_nasabah()
   {
     if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
-      echo json_encode(['status' => false, 'message' => 'Gunakan metode GET.']);
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gunakan metode GET.'
+      ], 405);
+
       return;
     }
 
-    $this->db->select('id, nama');
-    $this->db->where('level', 'Nasabah');
-    $this->db->order_by('nama', 'ASC');
-    $nasabah = $this->db->get('tb_user')->result_array();
+    $auth = $this->authenticate_api();
 
-    echo json_encode(['status' => true, 'data' => $nasabah]);
+    if (!$auth) {
+      return;
+    }
+
+    $id_user   = (int) $auth->id_user;
+    $level     = $auth->level;
+    $cabang_id = (int) $auth->cabang_id;
+
+    if (
+      !in_array(
+        $level,
+        ['Super Admin', 'Administrator', 'Nasabah'],
+        true
+      )
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Level pengguna tidak memiliki akses.'
+      ], 403);
+
+      return;
+    }
+
+    $this->db->select(
+      'u.id,
+         u.nama,
+         u.cabang_id,
+         c.kode AS kode_cabang,
+         c.nama AS nama_cabang'
+    );
+    $this->db->from('tb_user AS u');
+    $this->db->join(
+      'tb_cabang AS c',
+      'c.id = u.cabang_id',
+      'inner'
+    );
+    $this->db->where('u.level', 'Nasabah');
+    $this->db->where('c.status', 'Aktif');
+
+    /*
+     * Administrator hanya melihat nasabah
+     * yang terdaftar pada cabangnya.
+     */
+    if ($level === 'Administrator') {
+      $this->db->where('u.cabang_id', $cabang_id);
+    }
+
+    /*
+     * Nasabah dapat mencari penerima transfer
+     * dari seluruh cabang aktif, kecuali dirinya sendiri.
+     */
+    if ($level === 'Nasabah') {
+      $this->db->where('u.id !=', $id_user);
+    }
+
+    $this->db->order_by('c.nama', 'ASC');
+    $this->db->order_by('u.nama', 'ASC');
+
+    $nasabah = $this->db->get()->result_array();
+
+    if ($level === 'Super Admin') {
+      $scope = 'semua_cabang';
+    } elseif ($level === 'Administrator') {
+      $scope = 'cabang_sendiri';
+    } else {
+      $scope = 'penerima_transfer';
+    }
+
+    $this->api_response([
+      'status' => true,
+      'scope'  => $scope,
+      'cabang' => [
+        'id'   => $cabang_id,
+        'kode' => $auth->kode_cabang,
+        'nama' => $auth->nama_cabang
+      ],
+      'data' => $nasabah
+    ]);
   }
-
   // ==========================================
   // 5. ENDPOINT SIMPAN TRANSAKSI (SETOR & TARIK)
   // ==========================================
