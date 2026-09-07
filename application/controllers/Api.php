@@ -6104,28 +6104,276 @@ class Api extends CI_Controller
   // ==========================================
   public function cek_pin()
   {
-    header("Access-Control-Allow-Origin: *");
-    header("Content-Type: application/json; charset=UTF-8");
-    header("Access-Control-Allow-Methods: POST");
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
 
-    $request = json_decode($this->input->raw_input_stream, true);
-    $id_user = $request['id_user'] ?? '';
-    $pin = $request['pin'] ?? '';
-
-    if (empty($id_user) || empty($pin)) {
-      echo json_encode(['status' => false, 'message' => 'PIN tidak boleh kosong.']);
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
       return;
     }
 
-    $this->db->where('id', $id_user);
-    $user = $this->db->get('tb_user')->row();
+    $auth = $this->authenticate_api();
 
-    // Cek apakah user ada dan PIN-nya cocok
-    if ($user && $user->pin === $pin) {
-      echo json_encode(['status' => true, 'message' => 'PIN Valid.']);
-    } else {
-      echo json_encode(['status' => false, 'message' => 'PIN yang Anda masukkan salah!']);
+    if (!$auth) {
+      return;
     }
+
+    if ($auth->level !== 'Nasabah') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Validasi PIN hanya dapat dilakukan oleh Nasabah.'
+      ], 403);
+      return;
+    }
+
+    $request = json_decode($this->input->raw_input_stream, true);
+
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format JSON tidak valid.'
+      ], 400);
+      return;
+    }
+
+    $pin = isset($request['pin'])
+      ? trim((string) $request['pin'])
+      : '';
+
+    if (!preg_match('/^[0-9]{6}$/', $pin)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'PIN harus terdiri dari tepat 6 digit angka.'
+      ], 422);
+      return;
+    }
+
+    /*
+     * id_user dari request diabaikan.
+     * Pengguna selalu ditentukan dari Bearer token.
+     */
+    $id_user = (int) $auth->id_user;
+
+    $this->db->trans_begin();
+
+    $user = $this->db->query(
+      "SELECT
+            id,
+            level,
+            login,
+            pin,
+            pin_gagal,
+            pin_terkunci_sampai
+         FROM tb_user
+         WHERE id = ?
+         LIMIT 1
+         FOR UPDATE",
+      [$id_user]
+    )->row();
+
+    if (
+      !$user ||
+      $user->level !== 'Nasabah' ||
+      $user->login !== 'Ya'
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Akun Nasabah tidak ditemukan atau tidak aktif.'
+      ], 403);
+      return;
+    }
+
+    $waktu_sekarang = time();
+
+    /*
+     * Jika masa penguncian belum berakhir, PIN tidak diperiksa.
+     */
+    if (
+      !empty($user->pin_terkunci_sampai) &&
+      strtotime($user->pin_terkunci_sampai) > $waktu_sekarang
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Terlalu banyak percobaan PIN. Silakan coba kembali setelah waktu penguncian berakhir.',
+        'data'    => [
+          'terkunci_sampai' => $user->pin_terkunci_sampai
+        ]
+      ], 429);
+      return;
+    }
+
+    /*
+     * Apabila masa penguncian sudah lewat, penghitung kesalahan
+     * dimulai kembali dari nol.
+     */
+    $pin_gagal = (int) $user->pin_gagal;
+
+    if (
+      !empty($user->pin_terkunci_sampai) &&
+      strtotime($user->pin_terkunci_sampai) <= $waktu_sekarang
+    ) {
+      $pin_gagal = 0;
+
+      $this->db
+        ->where('id', $id_user)
+        ->update('tb_user', [
+          'pin_gagal'           => 0,
+          'pin_terkunci_sampai' => null
+        ]);
+    }
+
+    $pin_tersimpan = (string) $user->pin;
+
+    if ($pin_tersimpan === '') {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'PIN transaksi belum diatur.'
+      ], 422);
+      return;
+    }
+
+    /*
+     * PIN bcrypt dikenali dari informasi algoritmanya.
+     * PIN teks biasa lama tetap dapat diverifikasi satu kali.
+     */
+    $info_hash = password_get_info($pin_tersimpan);
+    $sudah_hash = isset($info_hash['algo']) &&
+      $info_hash['algo'] !== 0;
+
+    if ($sudah_hash) {
+      $pin_valid = password_verify($pin, $pin_tersimpan);
+    } else {
+      $pin_valid = hash_equals($pin_tersimpan, $pin);
+    }
+
+    if ($pin_valid) {
+      $data_update = [
+        'pin_gagal'           => 0,
+        'pin_terkunci_sampai' => null
+      ];
+
+      /*
+         * Migrasikan PIN lama ke bcrypt setelah berhasil,
+         * atau rehash apabila pengaturan bcrypt berubah.
+         */
+      if (
+        !$sudah_hash ||
+        password_needs_rehash(
+          $pin_tersimpan,
+          PASSWORD_BCRYPT
+        )
+      ) {
+        $data_update['pin'] = password_hash(
+          $pin,
+          PASSWORD_BCRYPT
+        );
+      }
+
+      $this->db
+        ->where('id', $id_user)
+        ->update('tb_user', $data_update);
+
+      if ($this->db->trans_status() === false) {
+        $this->db->trans_rollback();
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Gagal memproses validasi PIN.'
+        ], 500);
+        return;
+      }
+
+      $this->db->trans_commit();
+
+      $this->api_response([
+        'status'  => true,
+        'message' => "\u{2705} PIN valid.",
+        'data'    => [
+          'id_user'       => $id_user,
+          'pin_terlindungi' => true
+        ]
+      ]);
+      return;
+    }
+
+    /*
+     * PIN salah: tambahkan penghitung.
+     * Pada kesalahan kelima, akun dikunci selama 15 menit.
+     */
+    $pin_gagal++;
+    $batas_percobaan = 5;
+
+    if ($pin_gagal >= $batas_percobaan) {
+      $terkunci_sampai = date(
+        'Y-m-d H:i:s',
+        strtotime('+15 minutes')
+      );
+
+      $this->db
+        ->where('id', $id_user)
+        ->update('tb_user', [
+          'pin_gagal'           => 0,
+          'pin_terkunci_sampai' => $terkunci_sampai
+        ]);
+
+      if ($this->db->trans_status() === false) {
+        $this->db->trans_rollback();
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Gagal memproses validasi PIN.'
+        ], 500);
+        return;
+      }
+
+      $this->db->trans_commit();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'PIN salah lima kali. Validasi PIN dikunci selama 15 menit.',
+        'data'    => [
+          'terkunci_sampai' => $terkunci_sampai
+        ]
+      ], 429);
+      return;
+    }
+
+    $this->db
+      ->where('id', $id_user)
+      ->update('tb_user', [
+        'pin_gagal'           => $pin_gagal,
+        'pin_terkunci_sampai' => null
+      ]);
+
+    if ($this->db->trans_status() === false) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gagal memproses validasi PIN.'
+      ], 500);
+      return;
+    }
+
+    $this->db->trans_commit();
+
+    $this->api_response([
+      'status'  => false,
+      'message' => 'PIN yang Anda masukkan salah.',
+      'data'    => [
+        'sisa_percobaan' => $batas_percobaan - $pin_gagal
+      ]
+    ], 401);
   }
 
   // ==========================================
