@@ -9934,31 +9934,325 @@ class Api extends CI_Controller
   // ==========================================
   public function cek_stok_keranjang()
   {
-    $request = json_decode($this->input->raw_input_stream, true);
-    $items = $request['items'] ?? [];
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
 
-    if (empty($items)) {
-      echo json_encode(['status' => false, 'message' => 'Keranjang kosong.']);
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
       return;
     }
 
-    foreach ($items as $item) {
-      $this->db->where('id_produk', $item['id_produk']);
-      $this->db->where('status_produk', 'Tersedia'); // Pastikan produk tidak dihapus/diarsipkan
-      $produk = $this->db->get('tb_produk')->row();
+    $auth = $this->authenticate_api();
 
-      if (!$produk) {
-        echo json_encode(['status' => false, 'message' => 'Produk "' . $item['nama_produk'] . '" sudah ditarik atau dihapus oleh penjual. Silakan belanja ulang.']);
+    if (!$auth) {
+      return;
+    }
+
+    if ($auth->level !== 'Nasabah') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Keranjang hanya dapat digunakan oleh Nasabah.'
+      ], 403);
+      return;
+    }
+
+    $content_length = (int) $this->input->server(
+      'CONTENT_LENGTH'
+    );
+
+    if ($content_length > 1048576) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Ukuran request terlalu besar.'
+      ], 413);
+      return;
+    }
+
+    $request = json_decode(
+      $this->input->raw_input_stream,
+      true
+    );
+
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format JSON tidak valid.'
+      ], 400);
+      return;
+    }
+
+    $items = $request['items'] ?? [];
+
+    if (!is_array($items) || empty($items)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Keranjang kosong.'
+      ], 422);
+      return;
+    }
+
+    if (count($items) > 100) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Maksimal 100 baris produk dalam keranjang.'
+      ], 422);
+      return;
+    }
+
+    /*
+   * Gabungkan produk yang sama agar stok tidak dapat
+   * dilewati dengan mengirim beberapa baris duplikat.
+   */
+    $jumlah_per_produk = [];
+
+    foreach ($items as $item) {
+      if (!is_array($item)) {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Format item keranjang tidak valid.'
+        ], 422);
         return;
       }
 
-      if ($produk->stok < $item['jumlah']) {
-        echo json_encode(['status' => false, 'message' => 'Stok "' . $item['nama_produk'] . '" tidak mencukupi (Sisa: ' . $produk->stok . ').']);
+      $id_produk_raw = $item['id_produk'] ?? null;
+      $jumlah_raw = $item['jumlah'] ?? null;
+
+      if (
+        (!is_int($id_produk_raw) &&
+          !is_string($id_produk_raw)) ||
+        (!is_int($jumlah_raw) &&
+          !is_string($jumlah_raw))
+      ) {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'ID produk dan jumlah harus berupa angka bulat.'
+        ], 422);
+        return;
+      }
+
+      $id_produk_text = trim(
+        (string) $id_produk_raw
+      );
+
+      $jumlah_text = trim(
+        (string) $jumlah_raw
+      );
+
+      if (
+        $id_produk_text === '' ||
+        !ctype_digit($id_produk_text) ||
+        (int) $id_produk_text < 1
+      ) {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'ID produk pada keranjang tidak valid.'
+        ], 422);
+        return;
+      }
+
+      if (
+        $jumlah_text === '' ||
+        !ctype_digit($jumlah_text) ||
+        (int) $jumlah_text < 1
+      ) {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Jumlah produk minimal 1.'
+        ], 422);
+        return;
+      }
+
+      $id_produk = (int) $id_produk_text;
+      $jumlah = (int) $jumlah_text;
+
+      if ($jumlah > 1000000) {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Jumlah produk melebihi batas yang diizinkan.'
+        ], 422);
+        return;
+      }
+
+      if (!isset($jumlah_per_produk[$id_produk])) {
+        $jumlah_per_produk[$id_produk] = 0;
+      }
+
+      $jumlah_per_produk[$id_produk] += $jumlah;
+
+      if ($jumlah_per_produk[$id_produk] > 1000000) {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Total jumlah produk melebihi batas yang diizinkan.'
+        ], 422);
         return;
       }
     }
 
-    echo json_encode(['status' => true, 'message' => 'Aman']);
+    $id_produk_list = array_keys(
+      $jumlah_per_produk
+    );
+
+    /*
+   * Ambil seluruh produk dalam satu query.
+   * Produk, toko, dan cabang harus dalam kondisi aktif.
+   */
+    $this->db->select(
+      'p.id_produk,
+     p.id_toko,
+     p.nama_produk,
+     p.harga,
+     p.harga_coret,
+     p.stok,
+     p.berat,
+     p.foto_produk,
+     p.status_produk,
+     t.id_user AS id_penjual,
+     t.nama_toko,
+     t.status_toko,
+     u.cabang_id,
+     c.kode AS kode_cabang,
+     c.nama AS nama_cabang'
+    );
+
+    $this->db->from('tb_produk AS p');
+
+    $this->db->join(
+      'tb_toko AS t',
+      't.id_toko = p.id_toko',
+      'inner'
+    );
+
+    $this->db->join(
+      'tb_user AS u',
+      'u.id = t.id_user',
+      'inner'
+    );
+
+    $this->db->join(
+      'tb_cabang AS c',
+      'c.id = u.cabang_id',
+      'inner'
+    );
+
+    $this->db->where_in(
+      'p.id_produk',
+      $id_produk_list
+    );
+
+    $this->db->where(
+      'p.status_produk',
+      'Tersedia'
+    );
+
+    $this->db->where(
+      't.status_toko',
+      'Aktif'
+    );
+
+    $this->db->where(
+      'c.status',
+      'Aktif'
+    );
+
+    $produk_database = $this->db
+      ->get()
+      ->result_array();
+
+    $produk_map = [];
+
+    foreach ($produk_database as $produk) {
+      $produk_map[(int) $produk['id_produk']] =
+        $produk;
+    }
+
+    $data_valid = [];
+    $total_belanja = 0;
+    $total_item = 0;
+    $id_pembeli = (int) $auth->id_user;
+
+    foreach (
+      $jumlah_per_produk as
+      $id_produk => $jumlah
+    ) {
+      if (!isset($produk_map[$id_produk])) {
+        $this->api_response([
+          'status'  => false,
+          'message' => "Produk ID {$id_produk} sudah tidak tersedia."
+        ], 409);
+        return;
+      }
+
+      $produk = $produk_map[$id_produk];
+
+      if (
+        (int) $produk['id_penjual'] ===
+        $id_pembeli
+      ) {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Anda tidak dapat membeli produk dari toko sendiri.'
+        ], 403);
+        return;
+      }
+
+      $stok_tersedia = (int) $produk['stok'];
+
+      if ($stok_tersedia < $jumlah) {
+        $this->api_response([
+          'status'  => false,
+          'message' =>
+          'Stok "' .
+            $produk['nama_produk'] .
+            '" tidak mencukupi. Sisa stok: ' .
+            $stok_tersedia . '.',
+          'data' => [
+            'id_produk' => $id_produk,
+            'stok'      => $stok_tersedia,
+            'diminta'   => $jumlah
+          ]
+        ], 409);
+        return;
+      }
+
+      $harga = (int) $produk['harga'];
+      $subtotal = $harga * $jumlah;
+
+      $total_belanja += $subtotal;
+      $total_item += $jumlah;
+
+      $data_valid[] = [
+        'id_produk'   => $id_produk,
+        'id_toko'     => (int) $produk['id_toko'],
+        'id_penjual'  => (int) $produk['id_penjual'],
+        'nama_produk' => $produk['nama_produk'],
+        'nama_toko'   => $produk['nama_toko'],
+        'harga'       => $harga,
+        'harga_coret' => (int) $produk['harga_coret'],
+        'jumlah'      => $jumlah,
+        'stok'        => $stok_tersedia,
+        'berat'       => (int) $produk['berat'],
+        'subtotal'    => $subtotal,
+        'foto_produk' => $produk['foto_produk'],
+        'cabang_id'   => (int) $produk['cabang_id'],
+        'kode_cabang' => $produk['kode_cabang'],
+        'nama_cabang' => $produk['nama_cabang']
+      ];
+    }
+
+    $this->api_response([
+      'status'  => true,
+      'message' => 'Stok keranjang tersedia.',
+      'data'    => [
+        'jumlah_produk' => count($data_valid),
+        'jumlah_item'   => $total_item,
+        'total_belanja' => $total_belanja,
+        'items'         => $data_valid
+      ]
+    ]);
   }
 
 
