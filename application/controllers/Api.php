@@ -2727,19 +2727,148 @@ class Api extends CI_Controller
   // ==========================================
   // FUNGSI HELPER
   // ==========================================
+  // ==========================================
+  // ENDPOINT UPDATE EXPO TOKEN TERPROTEKSI
+  // ==========================================
   public function update_token()
   {
-    $request = json_decode($this->input->raw_input_stream, true);
-    $id_user = $request['id_user'] ?? '';
-    $token = $request['token'] ?? '';
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gunakan metode POST.'
+      ], 405);
 
-    if (!empty($id_user) && !empty($token)) {
-      $this->db->where('id', $id_user);
-      $this->db->update('tb_user', ['expo_token' => $token]);
-      echo json_encode(['status' => true, 'message' => 'Token berhasil disimpan.']);
-    } else {
-      echo json_encode(['status' => false, 'message' => 'Data tidak lengkap.']);
+      return;
     }
+
+    $auth = $this->authenticate_api();
+
+    if (!$auth) {
+      return;
+    }
+
+    $request = json_decode($this->input->raw_input_stream, true);
+
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format permintaan tidak valid.'
+      ], 400);
+
+      return;
+    }
+
+    /*
+     * ID pengguna selalu berasal dari Bearer token.
+     * id_user dari request diabaikan.
+     */
+    $id_user = (int) $auth->id_user;
+    $expo_token = trim((string) ($request['token'] ?? ''));
+
+    /*
+     * Token kosong berarti pengguna ingin
+     * melepaskan token notifikasi dari akunnya.
+     */
+    if ($expo_token === '') {
+      $this->db->where('id', $id_user);
+      $updated = $this->db->update('tb_user', [
+        'expo_token' => null
+      ]);
+
+      if (!$updated) {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Token notifikasi gagal dihapus.'
+        ], 500);
+
+        return;
+      }
+
+      $this->api_response([
+        'status'  => true,
+        'message' => 'Token notifikasi berhasil dihapus.',
+        'data'    => [
+          'id_user'       => $id_user,
+          'expo_terpasang' => false
+        ]
+      ]);
+
+      return;
+    }
+
+    if (strlen($expo_token) > 255) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Token notifikasi terlalu panjang.'
+      ], 422);
+
+      return;
+    }
+
+    /*
+     * Mendukung format Expo lama dan baru:
+     * ExponentPushToken[...] atau ExpoPushToken[...]
+     */
+    if (
+      !preg_match(
+        '/^(ExponentPushToken|ExpoPushToken)\[[^\]\s]{10,220}\]$/',
+        $expo_token
+      )
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format Expo push token tidak valid.'
+      ], 422);
+
+      return;
+    }
+
+    $this->db->trans_begin();
+
+    /*
+     * Satu Expo token hanya boleh dimiliki satu akun.
+     * Ini mencegah notifikasi akun lama masuk ke akun baru
+     * pada perangkat yang sama.
+     */
+    $this->db->where('expo_token', $expo_token);
+    $this->db->where('id !=', $id_user);
+    $this->db->update('tb_user', [
+      'expo_token' => null
+    ]);
+
+    $this->db->where('id', $id_user);
+    $updated = $this->db->update('tb_user', [
+      'expo_token' => $expo_token
+    ]);
+
+    if (!$updated || $this->db->trans_status() === false) {
+      $database_error = $this->db->error();
+      $this->db->trans_rollback();
+
+      log_message(
+        'error',
+        'Gagal memperbarui Expo token: ' .
+          json_encode($database_error)
+      );
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Token notifikasi gagal disimpan.'
+      ], 500);
+
+      return;
+    }
+
+    $this->db->trans_commit();
+
+    $this->api_response([
+      'status'  => true,
+      'message' => 'Token notifikasi berhasil disimpan.',
+      'data'    => [
+        'id_user'        => $id_user,
+        'expo_terpasang' => true
+      ]
+    ]);
   }
 
   private function send_expo_push_notification($token, $title, $body)
