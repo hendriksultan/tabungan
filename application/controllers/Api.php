@@ -1555,37 +1555,382 @@ class Api extends CI_Controller
   }
 
   // ==========================================
-  // 6. ENDPOINT SIMPAN TRANSFER
+  // ENDPOINT SIMPAN TRANSFER TERPROTEKSI
   // ==========================================
   public function simpan_transfer()
   {
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gunakan metode POST.'
+      ], 405);
+
+      return;
+    }
+
+    $auth = $this->authenticate_api();
+
+    if (!$auth) {
+      return;
+    }
+
     $request = json_decode($this->input->raw_input_stream, true);
 
-    if ($_SERVER['REQUEST_METHOD'] !== 'POST' || empty($request)) {
-      echo json_encode(['status' => false, 'message' => 'Permintaan tidak valid.']);
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format permintaan tidak valid.'
+      ], 400);
+
       return;
     }
 
-    $data = [
-      'idPengirim' => $request['id_pengirim'] ?? 0,
-      'idPenerima' => $request['id_penerima'] ?? 0,
-      'nominal'    => str_replace('.', '', $request['nominal'] ?? '0'),
-      'keterangan' => $request['keterangan'] ?? '',
-      'terdaftar'  => date('Y-m-d H:i:s')
+    $level = $auth->level;
+
+    if (
+      !in_array(
+        $level,
+        ['Super Admin', 'Administrator', 'Nasabah'],
+        true
+      )
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Level pengguna tidak memiliki akses.'
+      ], 403);
+
+      return;
+    }
+
+    /*
+     * Nasabah hanya boleh mengirim dari rekeningnya sendiri.
+     * Administrator dan Super Admin dapat memilih pengirim.
+     */
+    if ($level === 'Nasabah') {
+      $id_pengirim = (int) $auth->id_user;
+    } else {
+      $id_pengirim = (int) ($request['id_pengirim'] ?? 0);
+    }
+
+    $id_penerima = (int) ($request['id_penerima'] ?? 0);
+
+    if ($id_pengirim <= 0 || $id_penerima <= 0) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Pengirim dan penerima harus dipilih.'
+      ], 422);
+
+      return;
+    }
+
+    if ($id_pengirim === $id_penerima) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Pengirim dan penerima tidak boleh sama.'
+      ], 422);
+
+      return;
+    }
+
+    $nominal_input = trim((string) ($request['nominal'] ?? ''));
+
+    if (
+      $nominal_input === '' ||
+      strpos($nominal_input, '-') !== false
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Nominal transfer tidak valid.'
+      ], 422);
+
+      return;
+    }
+
+    $nominal = (int) preg_replace(
+      '/[^0-9]/',
+      '',
+      $nominal_input
+    );
+
+    if ($nominal <= 0 || $nominal > 2147483647) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Nominal transfer berada di luar batas.'
+      ], 422);
+
+      return;
+    }
+
+    $keterangan = trim(
+      (string) ($request['keterangan'] ?? '')
+    );
+
+    if (mb_strlen($keterangan) > 1000) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Keterangan maksimal 1.000 karakter.'
+      ], 422);
+
+      return;
+    }
+
+    $this->db->trans_begin();
+
+    /*
+     * Kunci kedua akun dengan urutan ID yang konsisten.
+     * Ini mengurangi risiko saldo ganda dan deadlock.
+     */
+    $lock_ids = [$id_pengirim, $id_penerima];
+    sort($lock_ids, SORT_NUMERIC);
+
+    $users = $this->db->query(
+      'SELECT
+            u.id,
+            u.nama,
+            u.level,
+            u.cabang_id,
+            c.kode AS kode_cabang,
+            c.nama AS nama_cabang,
+            c.status AS status_cabang
+         FROM tb_user AS u
+         INNER JOIN tb_cabang AS c
+            ON c.id = u.cabang_id
+         WHERE u.id IN (?, ?)
+         ORDER BY u.id ASC
+         FOR UPDATE',
+      [$lock_ids[0], $lock_ids[1]]
+    )->result();
+
+    $pengirim = null;
+    $penerima = null;
+
+    foreach ($users as $user) {
+      if ((int) $user->id === $id_pengirim) {
+        $pengirim = $user;
+      }
+
+      if ((int) $user->id === $id_penerima) {
+        $penerima = $user;
+      }
+    }
+
+    if (!$pengirim || $pengirim->level !== 'Nasabah') {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Data pengirim tidak ditemukan.'
+      ], 404);
+
+      return;
+    }
+
+    if (!$penerima || $penerima->level !== 'Nasabah') {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Data penerima tidak ditemukan.'
+      ], 404);
+
+      return;
+    }
+
+    if (
+      $pengirim->status_cabang !== 'Aktif' ||
+      $penerima->status_cabang !== 'Aktif'
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Cabang pengirim atau penerima sedang tidak aktif.'
+      ], 403);
+
+      return;
+    }
+
+    /*
+     * Administrator hanya boleh menggunakan rekening pengirim
+     * dari cabangnya sendiri. Penerima boleh berbeda cabang.
+     */
+    if (
+      $level === 'Administrator' &&
+      (int) $pengirim->cabang_id !== (int) $auth->cabang_id
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Pengirim tidak terdaftar pada cabang Anda.'
+      ], 403);
+
+      return;
+    }
+
+    // ==========================================
+    // HITUNG SALDO PENGIRIM
+    // ==========================================
+    $this->db->select_sum('nominal', 'total');
+    $this->db->where('idNasabah', $id_pengirim);
+    $this->db->where('jenis', 'Masuk');
+    $this->db->where('status_konfirmasi', 'Sukses');
+    $transaksi_masuk = (int) (
+      $this->db->get('tb_transaksi')->row()->total ?? 0
+    );
+
+    $this->db->select_sum('nominal', 'total');
+    $this->db->where('idNasabah', $id_pengirim);
+    $this->db->where('jenis', 'Keluar');
+    $this->db->where('status_konfirmasi', 'Sukses');
+    $transaksi_keluar = (int) (
+      $this->db->get('tb_transaksi')->row()->total ?? 0
+    );
+
+    $this->db->select_sum('nominal', 'total');
+    $this->db->where('idPenerima', $id_pengirim);
+    $this->db->where('status_transfer', 'Sukses');
+    $transfer_masuk = (int) (
+      $this->db->get('tb_transfer')->row()->total ?? 0
+    );
+
+    $this->db->select_sum('nominal', 'total');
+    $this->db->where('idPengirim', $id_pengirim);
+    $this->db->where('status_transfer', 'Sukses');
+    $transfer_keluar = (int) (
+      $this->db->get('tb_transfer')->row()->total ?? 0
+    );
+
+    $saldo_pengirim = (
+      $transaksi_masuk +
+      $transfer_masuk -
+      $transaksi_keluar -
+      $transfer_keluar
+    );
+
+    if ($nominal > $saldo_pengirim) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'       => false,
+        'message'      => 'Transfer gagal. Saldo pengirim tidak mencukupi.',
+        'saldo_raw'    => $saldo_pengirim,
+        'saldo_format' => 'Rp ' . number_format(
+          $saldo_pengirim,
+          0,
+          ',',
+          '.'
+        )
+      ], 422);
+
+      return;
+    }
+
+    // ==========================================
+    // BUAT KODE TRANSFER UNIK
+    // ==========================================
+    $kode_transfer = null;
+
+    for ($attempt = 1; $attempt <= 5; $attempt++) {
+      try {
+        $random_code = strtoupper(
+          bin2hex(random_bytes(3))
+        );
+      } catch (Exception $e) {
+        $random_code = strtoupper(
+          substr(md5(uniqid('', true)), 0, 6)
+        );
+      }
+
+      $candidate = 'TRF-' .
+        date('YmdHis') . '-' .
+        $random_code;
+
+      $exists = $this->db
+        ->where('kode_transfer', $candidate)
+        ->count_all_results('tb_transfer');
+
+      if ($exists === 0) {
+        $kode_transfer = $candidate;
+        break;
+      }
+    }
+
+    if ($kode_transfer === null) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Kode transfer gagal dibuat.'
+      ], 500);
+
+      return;
+    }
+
+    $data_transfer = [
+      'idPengirim'       => $id_pengirim,
+      'idPenerima'       => $id_penerima,
+      'dibuat_oleh'      => (int) $auth->id_user,
+      'cabang_asal_id'   => (int) $pengirim->cabang_id,
+      'cabang_tujuan_id' => (int) $penerima->cabang_id,
+      'kode_transfer'    => $kode_transfer,
+      'status_transfer'  => 'Sukses',
+      'nominal'          => $nominal,
+      'keterangan'       => $keterangan,
+      'terdaftar'        => date('Y-m-d H:i:s')
     ];
 
-    if (empty($data['idPengirim']) || empty($data['idPenerima']) || empty($data['nominal'])) {
-      echo json_encode(['status' => false, 'message' => 'Data transfer tidak lengkap!']);
+    $insert = $this->db->insert(
+      'tb_transfer',
+      $data_transfer
+    );
+
+    $id_transfer = (int) $this->db->insert_id();
+
+    if (!$insert || $this->db->trans_status() === false) {
+      $database_error = $this->db->error();
+      $this->db->trans_rollback();
+
+      log_message(
+        'error',
+        'Gagal menyimpan transfer API: ' .
+          json_encode($database_error)
+      );
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Transfer gagal disimpan.'
+      ], 500);
+
       return;
     }
 
-    $insert = $this->db->insert('tb_transfer', $data);
+    $this->db->trans_commit();
 
-    if ($insert) {
-      echo json_encode(['status' => true, 'message' => 'Transfer berhasil dikirim!']);
-    } else {
-      echo json_encode(['status' => false, 'message' => 'Gagal memproses transfer.']);
-    }
+    $this->api_response([
+      'status'  => true,
+      'message' => 'Transfer berhasil dikirim.',
+      'data'    => [
+        'id_transfer'        => $id_transfer,
+        'kode_transfer'      => $kode_transfer,
+        'nominal'            => $nominal,
+        'status_transfer'    => 'Sukses',
+        'dibuat_oleh'        => (int) $auth->id_user,
+        'nama_operator'      => $auth->nama,
+        'id_pengirim'        => $id_pengirim,
+        'nama_pengirim'      => $pengirim->nama,
+        'cabang_asal_id'     => (int) $pengirim->cabang_id,
+        'kode_cabang_asal'   => $pengirim->kode_cabang,
+        'nama_cabang_asal'   => $pengirim->nama_cabang,
+        'id_penerima'        => $id_penerima,
+        'nama_penerima'      => $penerima->nama,
+        'cabang_tujuan_id'   => (int) $penerima->cabang_id,
+        'kode_cabang_tujuan' => $penerima->kode_cabang,
+        'nama_cabang_tujuan' => $penerima->nama_cabang,
+        'saldo_sebelum'      => $saldo_pengirim,
+        'saldo_sesudah'      => $saldo_pengirim - $nominal
+      ]
+    ]);
   }
 
   // ==========================================
