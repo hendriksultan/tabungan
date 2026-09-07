@@ -1934,67 +1934,353 @@ class Api extends CI_Controller
   }
 
   // ==========================================
-  // 7. ENDPOINT KONFIRMASI TRANSAKSI
+  // ENDPOINT KONFIRMASI TRANSAKSI TERPROTEKSI
   // ==========================================
   public function konfirmasi_transaksi()
   {
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gunakan metode POST.'
+      ], 405);
+
+      return;
+    }
+
+    $auth = $this->authenticate_api();
+
+    if (!$auth) {
+      return;
+    }
+
+    if (
+      !in_array(
+        $auth->level,
+        ['Super Admin', 'Administrator'],
+        true
+      )
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Hanya pengelola yang dapat mengonfirmasi transaksi.'
+      ], 403);
+
+      return;
+    }
+
     $request = json_decode($this->input->raw_input_stream, true);
 
-    if ($_SERVER['REQUEST_METHOD'] !== 'POST' || empty($request)) {
-      echo json_encode(['status' => false, 'message' => 'Permintaan tidak valid.']);
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format permintaan tidak valid.'
+      ], 400);
+
       return;
     }
 
-    $raw_id_transaksi = $request['id_transaksi'] ?? '';
-    $status_baru      = $request['status'] ?? '';
-    $id_admin         = $request['id_admin'] ?? '';
+    $raw_id_transaksi = trim(
+      (string) ($request['id_transaksi'] ?? '')
+    );
 
-    if (empty($raw_id_transaksi) || empty($status_baru) || empty($id_admin)) {
-      echo json_encode(['status' => false, 'message' => 'Data tidak lengkap.']);
+    $status_baru = trim(
+      (string) ($request['status'] ?? '')
+    );
+
+    // Menerima format 123 maupun trx_123
+    $id_string = preg_replace(
+      '/^trx_/i',
+      '',
+      $raw_id_transaksi
+    );
+
+    if ($id_string === '' || !ctype_digit($id_string)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'ID transaksi tidak valid.'
+      ], 422);
+
       return;
     }
 
-    $id_transaksi = str_replace('trx_', '', $raw_id_transaksi);
+    $id_transaksi = (int) $id_string;
 
+    if (!in_array($status_baru, ['Sukses', 'Ditolak'], true)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Status hanya boleh Sukses atau Ditolak.'
+      ], 422);
+
+      return;
+    }
+
+    /*
+     * Ambil ID nasabah untuk menentukan urutan penguncian.
+     */
+    $transaksi_awal = $this->db
+      ->select('idNasabah')
+      ->where('id', $id_transaksi)
+      ->get('tb_transaksi')
+      ->row();
+
+    if (!$transaksi_awal) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Transaksi tidak ditemukan.'
+      ], 404);
+
+      return;
+    }
+
+    $id_nasabah = (int) $transaksi_awal->idNasabah;
+
+    $this->db->trans_begin();
+
+    /*
+     * Semua proses finansial mengunci pengguna terlebih dahulu.
+     */
+    $this->db->query(
+      'SELECT id
+         FROM tb_user
+         WHERE id = ?
+         FOR UPDATE',
+      [$id_nasabah]
+    );
+
+    /*
+     * Ambil ulang transaksi di dalam transaction lock.
+     */
+    $transaksi = $this->db->query(
+      'SELECT
+            t.id,
+            t.idAdmin,
+            t.idNasabah,
+            t.cabang_id,
+            t.nominal,
+            t.jenis,
+            t.keterangan,
+            t.status_konfirmasi,
+            t.bukti_transfer,
+            u.nama AS nama_nasabah,
+            u.expo_token,
+            c.kode AS kode_cabang,
+            c.nama AS nama_cabang
+         FROM tb_transaksi AS t
+         INNER JOIN tb_user AS u
+            ON u.id = t.idNasabah
+         INNER JOIN tb_cabang AS c
+            ON c.id = t.cabang_id
+         WHERE t.id = ?
+         FOR UPDATE',
+      [$id_transaksi]
+    )->row();
+
+    if (!$transaksi) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Transaksi tidak ditemukan.'
+      ], 404);
+
+      return;
+    }
+
+    /*
+     * Administrator hanya boleh memproses transaksi cabangnya.
+     */
+    if (
+      $auth->level === 'Administrator' &&
+      (int) $transaksi->cabang_id !== (int) $auth->cabang_id
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Transaksi berasal dari cabang lain.'
+      ], 403);
+
+      return;
+    }
+
+    /*
+     * Transaksi yang sudah final tidak boleh diproses ulang.
+     */
+    if ($transaksi->status_konfirmasi !== 'Pending') {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Transaksi sudah pernah diproses.',
+        'status_sekarang' => $transaksi->status_konfirmasi
+      ], 409);
+
+      return;
+    }
+
+    /*
+     * Periksa kembali saldo ketika penarikan disetujui.
+     * Ini penting karena saldo bisa berubah sejak pengajuan dibuat.
+     */
+    $saldo_aktif = null;
+
+    if (
+      $status_baru === 'Sukses' &&
+      $transaksi->jenis === 'Keluar'
+    ) {
+      $this->db->select_sum('nominal', 'total');
+      $this->db->where('idNasabah', $id_nasabah);
+      $this->db->where('jenis', 'Masuk');
+      $this->db->where('status_konfirmasi', 'Sukses');
+      $transaksi_masuk = (int) (
+        $this->db->get('tb_transaksi')->row()->total ?? 0
+      );
+
+      $this->db->select_sum('nominal', 'total');
+      $this->db->where('idNasabah', $id_nasabah);
+      $this->db->where('jenis', 'Keluar');
+      $this->db->where('status_konfirmasi', 'Sukses');
+      $transaksi_keluar = (int) (
+        $this->db->get('tb_transaksi')->row()->total ?? 0
+      );
+
+      $this->db->select_sum('nominal', 'total');
+      $this->db->where('idPenerima', $id_nasabah);
+      $this->db->where('status_transfer', 'Sukses');
+      $transfer_masuk = (int) (
+        $this->db->get('tb_transfer')->row()->total ?? 0
+      );
+
+      $this->db->select_sum('nominal', 'total');
+      $this->db->where('idPengirim', $id_nasabah);
+      $this->db->where('status_transfer', 'Sukses');
+      $transfer_keluar = (int) (
+        $this->db->get('tb_transfer')->row()->total ?? 0
+      );
+
+      $saldo_aktif = (
+        $transaksi_masuk +
+        $transfer_masuk -
+        $transaksi_keluar -
+        $transfer_keluar
+      );
+
+      if ((int) $transaksi->nominal > $saldo_aktif) {
+        $this->db->trans_rollback();
+
+        $this->api_response([
+          'status'       => false,
+          'message'      => 'Transaksi tidak dapat disetujui karena saldo nasabah tidak mencukupi.',
+          'saldo_raw'    => $saldo_aktif,
+          'saldo_format' => 'Rp ' . number_format(
+            $saldo_aktif,
+            0,
+            ',',
+            '.'
+          )
+        ], 422);
+
+        return;
+      }
+    }
+
+    /*
+     * id_admin dari request diabaikan.
+     * Pengelola selalu ditentukan dari Bearer token.
+     */
     $this->db->where('id', $id_transaksi);
-    $update = $this->db->update('tb_transaksi', [
+    $updated = $this->db->update('tb_transaksi', [
       'status_konfirmasi' => $status_baru,
-      'idAdmin'           => $id_admin
+      'idAdmin'           => (int) $auth->id_user
     ]);
 
-    if ($update) {
-      // 🔥 TAMBAHKAN tb_transaksi.idNasabah pada select
-      $this->db->select('tb_transaksi.nominal, tb_transaksi.jenis, tb_transaksi.idNasabah, tb_user.expo_token');
-      $this->db->from('tb_transaksi');
-      $this->db->join('tb_user', 'tb_transaksi.idNasabah = tb_user.id');
-      $this->db->where('tb_transaksi.id', $id_transaksi);
-      $trx_data = $this->db->get()->row();
+    if (!$updated || $this->db->trans_status() === false) {
+      $database_error = $this->db->error();
+      $this->db->trans_rollback();
 
-      // 🔥 UBAH PENGECEKAN: Pengecekan expo_token dipindah ke dalam
-      if ($trx_data) {
-        $jenis_teks = ($trx_data->jenis === 'Masuk') ? 'menabung' : 'penarikan';
-        $nominal_format = 'Rp ' . number_format($trx_data->nominal, 0, ',', '.');
-        $judul_notif = ($status_baru === 'Sukses') ? "✅ Transaksi Disetujui!" : "❌ Transaksi Ditolak";
-        $body_notif = "Pengajuan {$jenis_teks} sebesar {$nominal_format} telah berstatus: {$status_baru}.";
+      log_message(
+        'error',
+        'Gagal mengonfirmasi transaksi API: ' .
+          json_encode($database_error)
+      );
 
-        // 1. SIMPAN KE DB NOTIFIKASI (Akan selalu masuk lonceng)
-        $this->db->insert('tb_notifikasi', [
-          'id_user' => $trx_data->idNasabah,
-          'judul'   => $judul_notif,
-          'pesan'   => $body_notif,
-          'tanggal' => date('Y-m-d H:i:s')
-        ]);
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Status transaksi gagal diperbarui.'
+      ], 500);
 
-        // 2. KIRIM PUSH NOTIFICATION (Hanya jika token tersedia)
-        if (!empty($trx_data->expo_token)) {
-          $this->send_expo_push_notification($trx_data->expo_token, $judul_notif, $body_notif);
-        }
-      }
-
-      echo json_encode(['status' => true, 'message' => 'Transaksi berhasil di-' . $status_baru]);
-    } else {
-      echo json_encode(['status' => false, 'message' => 'Gagal mengubah status.']);
+      return;
     }
+
+    $this->db->trans_commit();
+
+    // Notifikasi dikirim setelah transaksi database selesai
+    $jenis_teks = $transaksi->jenis === 'Masuk'
+      ? 'menabung'
+      : 'penarikan';
+
+    $nominal_format = 'Rp ' . number_format(
+      (int) $transaksi->nominal,
+      0,
+      ',',
+      '.'
+    );
+
+    if ($status_baru === 'Sukses') {
+      $judul_notifikasi = '✅ Transaksi Disetujui';
+      $isi_notifikasi =
+        "Pengajuan {$jenis_teks} sebesar {$nominal_format} " .
+        "telah disetujui.";
+      $pesan_status = 'disetujui';
+    } else {
+      $judul_notifikasi = '❌ Transaksi Ditolak';
+      $isi_notifikasi =
+        "Pengajuan {$jenis_teks} sebesar {$nominal_format} " .
+        "telah ditolak.";
+      $pesan_status = 'ditolak';
+    }
+
+    $this->db->insert('tb_notifikasi', [
+      'id_user' => $id_nasabah,
+      'judul'   => $judul_notifikasi,
+      'pesan'   => $isi_notifikasi,
+      'tanggal' => date('Y-m-d H:i:s')
+    ]);
+
+    if (!empty($transaksi->expo_token)) {
+      $this->send_expo_push_notification(
+        $transaksi->expo_token,
+        $judul_notifikasi,
+        $isi_notifikasi
+      );
+    }
+
+    $this->api_response([
+      'status'  => true,
+      'message' => 'Transaksi berhasil ' . $pesan_status . '.',
+      'data'    => [
+        'id_transaksi'      => $id_transaksi,
+        'id_nasabahah'        => $id_nasabah,
+        'nama_nasabah'      => $transaksi->nama_nasabah,
+        'jenis'             => $transaksi->jenis,
+        'nominal'           => (int) $transaksi->nominal,
+        'status_sebelumnya' => 'Pending',
+        'status_sekarang'   => $status_baru,
+        'diproses_oleh'     => (int) $auth->id_user,
+        'nama_operator'     => $auth->nama,
+        'cabang_id'         => (int) $transaksi->cabang_id,
+        'kode_cabang'       => $transaksi->kode_cabang,
+        'nama_cabang'       => $transaksi->nama_cabang,
+        'saldo_sebelum'     => $saldo_aktif,
+        'saldo_sesudah'     => (
+          $saldo_aktif !== null &&
+          $status_baru === 'Sukses' &&
+          $transaksi->jenis === 'Keluar'
+        )
+          ? $saldo_aktif - (int) $transaksi->nominal
+          : null
+      ]
+    ]);
   }
 
   // ==========================================
