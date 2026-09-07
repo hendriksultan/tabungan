@@ -3997,46 +3997,292 @@ class Api extends CI_Controller
     ], 201);
   }
 
+  // ==========================================
+  // ENDPOINT DAFTAR PENDAFTAR NASABAH
+  // ==========================================
   public function get_nasabah_baru()
   {
-    header("Access-Control-Allow-Origin: *");
-    header("Content-Type: application/json; charset=UTF-8");
+    if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gunakan metode GET.'
+      ], 405);
 
-    $this->db->select('id, nama, username, telp, alamat, terdaftar');
-    $this->db->from('tb_user');
-    $this->db->where('level', 'Nasabah');
-    $this->db->where('login', 'Tidak');
-    $this->db->order_by('id', 'DESC');
-    $query = $this->db->get();
-
-    if ($query->num_rows() > 0) {
-      echo json_encode(['status' => true, 'data' => $query->result()]);
-    } else {
-      echo json_encode(['status' => false, 'message' => 'Tidak ada pendaftar baru.']);
+      return;
     }
+
+    $auth = $this->authenticate_api();
+
+    if (!$auth) {
+      return;
+    }
+
+    if (
+      !in_array(
+        $auth->level,
+        ['Super Admin', 'Administrator'],
+        true
+      )
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Akses ditolak. Khusus pengelola.'
+      ], 403);
+
+      return;
+    }
+
+    $this->db->select(
+      'u.id,
+         u.nama,
+         u.username,
+         u.jenisKelamin AS jenis_kelamin,
+         u.telp,
+         u.email,
+         u.alamat,
+         u.cabang_id,
+         u.terdaftar,
+         c.kode AS kode_cabang,
+         c.nama AS nama_cabang'
+    );
+    $this->db->from('tb_user AS u');
+    $this->db->join(
+      'tb_cabang AS c',
+      'c.id = u.cabang_id',
+      'inner'
+    );
+    $this->db->where('u.level', 'Nasabah');
+    $this->db->where('u.login', 'Tidak');
+
+    /*
+     * Administrator hanya melihat pendaftar
+     * dari cabangnya sendiri.
+     */
+    if ($auth->level === 'Administrator') {
+      $this->db->where(
+        'u.cabang_id',
+        (int) $auth->cabang_id
+      );
+    }
+
+    $this->db->order_by('u.id', 'DESC');
+    $pendaftar = $this->db->get()->result_array();
+
+    $this->api_response([
+      'status' => true,
+      'scope'  => $auth->level === 'Super Admin'
+        ? 'semua_cabang'
+        : 'cabang_sendiri',
+      'cabang_pengelola' => [
+        'id'   => (int) $auth->cabang_id,
+        'kode' => $auth->kode_cabang,
+        'nama' => $auth->nama_cabang
+      ],
+      'jumlah' => count($pendaftar),
+      'data'   => $pendaftar
+    ]);
   }
 
+  // ==========================================
+  // ENDPOINT VERIFIKASI NASABAH TERPROTEKSI
+  // ==========================================
   public function verifikasi_nasabah()
   {
-    header("Access-Control-Allow-Origin: *");
-    header("Content-Type: application/json; charset=UTF-8");
-    header("Access-Control-Allow-Methods: POST");
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gunakan metode POST.'
+      ], 405);
 
-    $json = file_get_contents('php://input');
-    $data = json_decode($json, true);
-
-    if (!empty($data['id_user'])) {
-      $this->db->where('id', $data['id_user']);
-      $update = $this->db->update('tb_user', ['login' => 'Ya']);
-
-      if ($update) {
-        echo json_encode(['status' => true, 'message' => 'Akun nasabah berhasil diaktifkan!']);
-      } else {
-        echo json_encode(['status' => false, 'message' => 'Gagal memverifikasi akun.']);
-      }
-    } else {
-      echo json_encode(['status' => false, 'message' => 'ID User tidak valid.']);
+      return;
     }
+
+    $auth = $this->authenticate_api();
+
+    if (!$auth) {
+      return;
+    }
+
+    if (
+      !in_array(
+        $auth->level,
+        ['Super Admin', 'Administrator'],
+        true
+      )
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Akses ditolak. Khusus pengelola.'
+      ], 403);
+
+      return;
+    }
+
+    $request = json_decode($this->input->raw_input_stream, true);
+
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format permintaan tidak valid.'
+      ], 400);
+
+      return;
+    }
+
+    /*
+     * id_admin dari request diabaikan.
+     * Verifikator berasal dari Bearer token.
+     */
+    $id_nasabah = (int) ($request['id_user'] ?? 0);
+
+    if ($id_nasabah <= 0) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'ID nasabah tidak valid.'
+      ], 422);
+
+      return;
+    }
+
+    $this->db->trans_begin();
+
+    $nasabah = $this->db->query(
+      'SELECT
+            u.id,
+            u.nama,
+            u.username,
+            u.level,
+            u.login,
+            u.expo_token,
+            u.cabang_id,
+            c.kode AS kode_cabang,
+            c.nama AS nama_cabang,
+            c.status AS status_cabang
+         FROM tb_user AS u
+         INNER JOIN tb_cabang AS c
+            ON c.id = u.cabang_id
+         WHERE u.id = ?
+         FOR UPDATE',
+      [$id_nasabah]
+    )->row();
+
+    if (!$nasabah || $nasabah->level !== 'Nasabah') {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Data pendaftar tidak ditemukan.'
+      ], 404);
+
+      return;
+    }
+
+    /*
+     * Administrator hanya boleh memverifikasi
+     * nasabah pada cabangnya sendiri.
+     */
+    if (
+      $auth->level === 'Administrator' &&
+      (int) $nasabah->cabang_id !== (int) $auth->cabang_id
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Pendaftar berasal dari cabang lain.'
+      ], 403);
+
+      return;
+    }
+
+    if ($nasabah->status_cabang !== 'Aktif') {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Cabang pendaftar sedang tidak aktif.'
+      ], 403);
+
+      return;
+    }
+
+    if ($nasabah->login === 'Ya') {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Akun nasabah sudah pernah diverifikasi.'
+      ], 409);
+
+      return;
+    }
+
+    $waktu_verifikasi = date('Y-m-d H:i:s');
+
+    $this->db->where('id', $id_nasabah);
+    $updated = $this->db->update('tb_user', [
+      'login'              => 'Ya',
+      'diverifikasi_oleh'  => (int) $auth->id_user,
+      'diverifikasi_pada'  => $waktu_verifikasi
+    ]);
+
+    if (!$updated || $this->db->trans_status() === false) {
+      $database_error = $this->db->error();
+      $this->db->trans_rollback();
+
+      log_message(
+        'error',
+        'Gagal memverifikasi nasabah: ' .
+          json_encode($database_error)
+      );
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Akun nasabah gagal diverifikasi.'
+      ], 500);
+
+      return;
+    }
+
+    $this->db->trans_commit();
+
+    $judul_notifikasi = '✅ Akun Berhasil Diverifikasi';
+    $isi_notifikasi =
+      "Akun Anda pada cabang {$nasabah->nama_cabang} " .
+      "telah aktif dan sudah dapat digunakan untuk login.";
+
+    $this->db->insert('tb_notifikasi', [
+      'id_user' => $id_nasabah,
+      'judul'   => $judul_notifikasi,
+      'pesan'   => $isi_notifikasi,
+      'is_read' => 0,
+      'tanggal' => date('Y-m-d H:i:s')
+    ]);
+
+    if (!empty($nasabah->expo_token)) {
+      $this->send_expo_push_notification(
+        $nasabah->expo_token,
+        $judul_notifikasi,
+        $isi_notifikasi
+      );
+    }
+
+    $this->api_response([
+      'status'  => true,
+      'message' => 'Akun nasabah berhasil diverifikasi.',
+      'data'    => [
+        'id_nasabah'          => $id_nasabah,
+        'nama_nasabah'        => $nasabah->nama,
+        'username'             => $nasabah->username,
+        'status_login'         => 'Ya',
+        'cabang_id'            => (int) $nasabah->cabang_id,
+        'kode_cabang'          => $nasabah->kode_cabang,
+        'nama_cabang'          => $nasabah->nama_cabang,
+        'diverifikasi_oleh'    => (int) $auth->id_user,
+        'nama_verifikator'     => $auth->nama,
+        'diverifikasi_pada'    => $waktu_verifikasi
+      ]
+    ]);
   }
 
   public function tolak_nasabah()
