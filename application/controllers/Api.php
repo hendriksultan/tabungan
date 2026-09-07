@@ -2314,39 +2314,271 @@ class Api extends CI_Controller
   }
 
   // ==========================================
-  // 9. ENDPOINT EDIT PROFIL (SUDAH DIPERBARUI DENGAN DATA LENGKAP)
+  // ENDPOINT UPDATE PROFIL TERPROTEKSI
   // ==========================================
   public function update_profil()
   {
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gunakan metode POST.'
+      ], 405);
+
+      return;
+    }
+
+    $auth = $this->authenticate_api();
+
+    if (!$auth) {
+      return;
+    }
+
     $request = json_decode($this->input->raw_input_stream, true);
 
-    if ($_SERVER['REQUEST_METHOD'] !== 'POST' || empty($request)) {
-      echo json_encode(['status' => false, 'message' => 'Permintaan tidak valid.']);
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format permintaan tidak valid.'
+      ], 400);
+
       return;
     }
 
-    $id_user = $request['id_user'] ?? '';
-    $nama = $request['nama'] ?? '';
-    $username = $request['username'] ?? '';
-    $password = $request['password'] ?? '';
-    $foto_base64 = $request['foto_base64'] ?? '';
+    /*
+     * ID pengguna selalu berasal dari Bearer token.
+     * id_user dari request tidak digunakan.
+     */
+    $id_user = (int) $auth->id_user;
 
-    // MENANGKAP DATA DARI REACT NATIVE
-    $jenis_kelamin = $request['jenis_kelamin'] ?? '';
-    $telp = $request['telp'] ?? '';
-    $email = $request['email'] ?? '';
-    $alamat = $request['alamat'] ?? '';
+    $this->db->select(
+      'u.*,
+         c.kode AS kode_cabang,
+         c.nama AS nama_cabang'
+    );
+    $this->db->from('tb_user AS u');
+    $this->db->join(
+      'tb_cabang AS c',
+      'c.id = u.cabang_id',
+      'inner'
+    );
+    $this->db->where('u.id', $id_user);
+    $current_user = $this->db->get()->row();
 
-    if (empty($id_user) || empty($nama) || empty($username)) {
-      echo json_encode(['status' => false, 'message' => 'Nama dan Username wajib diisi!']);
+    if (!$current_user) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Data pengguna tidak ditemukan.'
+      ], 404);
+
       return;
     }
 
-    $this->db->where('username', $username);
-    $this->db->where('id !=', $id_user);
-    if ($this->db->get('tb_user')->num_rows() > 0) {
-      echo json_encode(['status' => false, 'message' => 'Username sudah digunakan orang lain.']);
+    /*
+     * Jika field tidak dikirim, pertahankan nilai lama.
+     */
+    $nama = array_key_exists('nama', $request)
+      ? trim((string) $request['nama'])
+      : $current_user->nama;
+
+    $username = array_key_exists('username', $request)
+      ? trim((string) $request['username'])
+      : $current_user->username;
+
+    $jenis_kelamin = array_key_exists(
+      'jenis_kelamin',
+      $request
+    )
+      ? trim((string) $request['jenis_kelamin'])
+      : $current_user->jenisKelamin;
+
+    $telp = array_key_exists('telp', $request)
+      ? trim((string) $request['telp'])
+      : $current_user->telp;
+
+    $email = array_key_exists('email', $request)
+      ? trim((string) $request['email'])
+      : $current_user->email;
+
+    $alamat = array_key_exists('alamat', $request)
+      ? trim((string) $request['alamat'])
+      : $current_user->alamat;
+
+    $password = (string) ($request['password'] ?? '');
+    $foto_base64 = (string) ($request['foto_base64'] ?? '');
+
+    if ($nama === '' || $username === '') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Nama dan username wajib diisi.'
+      ], 422);
+
       return;
+    }
+
+    if (
+      mb_strlen($nama) > 256 ||
+      mb_strlen($username) > 256
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Nama atau username terlalu panjang.'
+      ], 422);
+
+      return;
+    }
+
+    if (
+      !in_array(
+        $jenis_kelamin,
+        ['Laki-Laki', 'Perempuan'],
+        true
+      )
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Jenis kelamin tidak valid.'
+      ], 422);
+
+      return;
+    }
+
+    if (mb_strlen($telp) > 16) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Nomor telepon maksimal 16 karakter.'
+      ], 422);
+
+      return;
+    }
+
+    if (
+      $email !== '' &&
+      !filter_var($email, FILTER_VALIDATE_EMAIL)
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format email tidak valid.'
+      ], 422);
+
+      return;
+    }
+
+    if (mb_strlen($email) > 256) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Email terlalu panjang.'
+      ], 422);
+
+      return;
+    }
+
+    if (mb_strlen($alamat) > 5000) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Alamat terlalu panjang.'
+      ], 422);
+
+      return;
+    }
+
+    /*
+     * Password tidak wajib diisi.
+     * Jika diisi, gunakan minimal 8 karakter.
+     */
+    if (
+      $password !== '' &&
+      (
+        mb_strlen($password) < 8 ||
+        mb_strlen($password) > 128
+      )
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Password harus berisi 8 sampai 128 karakter.'
+      ], 422);
+
+      return;
+    }
+
+    // Pastikan username belum digunakan akun lain
+    $username_exists = $this->db
+      ->where('username', $username)
+      ->where('id !=', $id_user)
+      ->count_all_results('tb_user');
+
+    if ($username_exists > 0) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Username sudah digunakan pengguna lain.'
+      ], 409);
+
+      return;
+    }
+
+    // ==========================================
+    // VALIDASI FOTO PROFIL
+    // ==========================================
+    $image_binary = null;
+    $image_extension = null;
+
+    if ($foto_base64 !== '') {
+      if (
+        !preg_match(
+          '/^data:image\/(jpeg|jpg|png|webp);base64,(.+)$/is',
+          $foto_base64,
+          $image_matches
+        )
+      ) {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Format foto profil tidak didukung.'
+        ], 422);
+
+        return;
+      }
+
+      $image_binary = base64_decode(
+        $image_matches[2],
+        true
+      );
+
+      if ($image_binary === false) {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Foto profil tidak dapat dibaca.'
+        ], 422);
+
+        return;
+      }
+
+      if (strlen($image_binary) > 5 * 1024 * 1024) {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Ukuran foto maksimal 5 MB.'
+        ], 422);
+
+        return;
+      }
+
+      $image_info = @getimagesizefromstring($image_binary);
+      $mime = $image_info['mime'] ?? '';
+
+      $allowed_mimes = [
+        'image/jpeg' => 'jpg',
+        'image/png'  => 'png',
+        'image/webp' => 'webp'
+      ];
+
+      if (!isset($allowed_mimes[$mime])) {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Isi file bukan gambar yang valid.'
+        ], 422);
+
+        return;
+      }
+
+      $image_extension = $allowed_mimes[$mime];
     }
 
     $data_update = [
@@ -2358,33 +2590,138 @@ class Api extends CI_Controller
       'alamat'       => $alamat
     ];
 
-    if (!empty($password)) {
-      $data_update['password'] = password_hash($password, PASSWORD_DEFAULT);
+    $password_changed = false;
+
+    if ($password !== '') {
+      $data_update['password'] = password_hash(
+        $password,
+        PASSWORD_DEFAULT
+      );
+
+      $password_changed = true;
     }
 
-    if (!empty($foto_base64)) {
-      $image_parts = explode(";base64,", $foto_base64);
-      if (count($image_parts) == 2) {
-        $image_base64 = base64_decode($image_parts[1]);
-        $file_name = 'profil_' . time() . '_' . uniqid() . '.jpg';
-        $upload_dir = FCPATH . 'assets/profil/';
-        if (!is_dir($upload_dir)) {
-          mkdir($upload_dir, 0777, true);
-        }
-        file_put_contents($upload_dir . $file_name, $image_base64);
+    $file_name = null;
+    $saved_file_path = null;
 
-        $data_update['foto'] = $file_name;
+    if ($image_binary !== null) {
+      $upload_dir = FCPATH . 'assets/profil/';
+
+      if (
+        !is_dir($upload_dir) &&
+        !mkdir($upload_dir, 0755, true)
+      ) {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Folder foto profil tidak dapat dibuat.'
+        ], 500);
+
+        return;
       }
+
+      try {
+        $random_name = bin2hex(random_bytes(8));
+      } catch (Exception $e) {
+        $random_name = uniqid('', true);
+      }
+
+      $file_name = 'profil_' .
+        date('YmdHis') . '_' .
+        $random_name . '.' .
+        $image_extension;
+
+      $saved_file_path = $upload_dir . $file_name;
+
+      if (
+        file_put_contents(
+          $saved_file_path,
+          $image_binary,
+          LOCK_EX
+        ) === false
+      ) {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Foto profil gagal disimpan.'
+        ], 500);
+
+        return;
+      }
+
+      $data_update['foto'] = $file_name;
     }
+
+    $this->db->trans_begin();
 
     $this->db->where('id', $id_user);
-    $update = $this->db->update('tb_user', $data_update);
+    $updated = $this->db->update(
+      'tb_user',
+      $data_update
+    );
 
-    if ($update) {
-      echo json_encode(['status' => true, 'message' => 'Profil berhasil diperbarui!', 'foto_baru' => $data_update['foto'] ?? null]);
-    } else {
-      echo json_encode(['status' => false, 'message' => 'Gagal memperbarui profil.']);
+    /*
+     * Jika password berubah, cabut semua sesi lain.
+     * Token yang sedang digunakan tetap aktif.
+     */
+    if ($updated && $password_changed) {
+      $this->db->where('id_user', $id_user);
+      $this->db->where('id !=', (int) $auth->token_id);
+      $this->db->where(
+        'revoked_at IS NULL',
+        null,
+        false
+      );
+      $this->db->update('tb_api_token', [
+        'revoked_at' => date('Y-m-d H:i:s')
+      ]);
     }
+
+    if (!$updated || $this->db->trans_status() === false) {
+      $database_error = $this->db->error();
+      $this->db->trans_rollback();
+
+      if (
+        $saved_file_path !== null &&
+        is_file($saved_file_path)
+      ) {
+        unlink($saved_file_path);
+      }
+
+      log_message(
+        'error',
+        'Gagal memperbarui profil API: ' .
+          json_encode($database_error)
+      );
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Profil gagal diperbarui.'
+      ], 500);
+
+      return;
+    }
+
+    $this->db->trans_commit();
+
+    $this->api_response([
+      'status'     => true,
+      'message'    => 'Profil berhasil diperbarui.',
+      'foto_baru'  => $file_name,
+      'data'       => [
+        'id'              => $id_user,
+        'nama'            => $nama,
+        'username'        => $username,
+        'jenis_kelamin'   => $jenis_kelamin,
+        'telp'            => $telp,
+        'email'           => $email,
+        'alamat'          => $alamat,
+        'foto'            => $file_name
+          ?? $current_user->foto,
+        'level'           => $current_user->level,
+        'cabang_id'       => (int) $current_user->cabang_id,
+        'kode_cabang'     => $current_user->kode_cabang,
+        'nama_cabang'     => $current_user->nama_cabang
+      ]
+    ]);
   }
 
   // ==========================================
