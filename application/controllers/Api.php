@@ -4724,96 +4724,330 @@ class Api extends CI_Controller
   // 🔥 FUNGSI INFAQ YANG SUDAH DILENGKAPI NOTIFIKASI WA & PUSH 🔥
   public function simpan_infaq()
   {
-    header("Access-Control-Allow-Origin: *");
-    header("Content-Type: application/json; charset=UTF-8");
-    header("Access-Control-Allow-Methods: POST");
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
+
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
+      return;
+    }
+
+    $auth = $this->authenticate_api();
+
+    if (!$auth) {
+      return;
+    }
+
+    // Infaq hanya dilakukan oleh Nasabah dari saldo miliknya sendiri.
+    if ($auth->level !== 'Nasabah') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Infaq hanya dapat dilakukan oleh akun Nasabah.'
+      ], 403);
+      return;
+    }
+
+    $content_length = (int) $this->input->server('CONTENT_LENGTH');
+
+    if ($content_length > 32768) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Ukuran data terlalu besar.'
+      ], 413);
+      return;
+    }
 
     $json = file_get_contents('php://input');
     $data = json_decode($json, true);
 
-    if (!empty($data['id_nasabah']) && !empty($data['nominal'])) {
-
-      // Bersihkan format nominal dari titik
-      $nominal = str_replace('.', '', $data['nominal']);
-      $keterangan_infaq = !empty($data['keterangan']) ? $data['keterangan'] : 'Infaq Umum';
-
-      $insert_data = [
-        'idAdmin'           => 0,
-        'idNasabah'         => $data['id_nasabah'],
-        'idPotongan'        => 0,
-        'tanggal'           => date('Y-m-d'),
-        'nominal'           => $nominal,
-        'jenis'             => 'Keluar',
-        'keterangan'        => 'INFAQ: ' . $keterangan_infaq,
-        'status_konfirmasi' => 'Sukses',
-        'terdaftar'         => date('Y-m-d H:i:s')
-      ];
-
-      $insert = $this->db->insert('tb_transaksi', $insert_data);
-
-      if ($insert) {
-        // =======================================================
-        // 🔥 BAGIAN BARU: KIRIM NOTIFIKASI SETELAH INFAQ SUKSES
-        // =======================================================
-
-        // 1. Ambil data Nasabah yang berinfaq
-        $this->db->where('id', $data['id_nasabah']);
-        $nasabah = $this->db->get('tb_user')->row();
-        $nama_nasabah = $nasabah ? $nasabah->nama : 'Hamba Allah';
-        $token_nasabah = $nasabah ? $nasabah->expo_token : '';
-        $nominal_format = 'Rp ' . number_format($nominal, 0, ',', '.');
-
-        // 2. Notifikasi WhatsApp ke Admin
-        $pesan_wa = "💖 *INFO INFAQ / SEDEKAH BARU*\n\n";
-        $pesan_wa .= "Alhamdulillah, telah masuk infaq:\n";
-        $pesan_wa .= "👤 *Dari:* " . $nama_nasabah . "\n";
-        $pesan_wa .= "💰 *Nominal:* " . $nominal_format . "\n";
-        $pesan_wa .= "📌 *Doa/Niat:* " . ($keterangan_infaq ? $keterangan_infaq : '-') . "\n\n";
-        $pesan_wa .= "Semoga Allah memberikan keberkahan pada harta yang tersisa.";
-
-        $nomor_admin = '081234567890'; // 🔥 GANTI DENGAN NOMOR WA ADMIN
-        $this->send_whatsapp($nomor_admin, $pesan_wa);
-
-        // 3. Push Notification Expo ke Semua Admin
-        $this->db->where_in('level', ['Administrator', 'Super Admin']);
-        $this->db->where('expo_token !=', NULL);
-        $admins = $this->db->get('tb_user')->result();
-
-        foreach ($admins as $admin) {
-          $this->send_expo_push_notification(
-            $admin->expo_token,
-            "💖 Alhamdulillah, Infaq Baru Masuk",
-            "Infaq dari {$nama_nasabah} sebesar {$nominal_format} telah diterima sistem."
-          );
-        }
-
-        // 4. Push Notification Expo ke Nasabah (Apresiasi)
-        if (!empty($token_nasabah)) {
-          $this->send_expo_push_notification(
-            $token_nasabah,
-            "✅ Alhamdulillah, Infaq Berhasil",
-            "Terima kasih atas infaq sebesar {$nominal_format}. Semoga menjadi pembersih harta dan jiwa serta dicatat sebagai amal soleh."
-          );
-        }
-
-        // =======================================================
-
-        echo json_encode([
-          'status' => true,
-          'message' => 'Alhamdulillah, Infaq berhasil disalurkan. Semoga menjadi amal jariyah!'
-        ]);
-      } else {
-        echo json_encode([
-          'status' => false,
-          'message' => 'Gagal memproses Infaq. Silakan coba lagi.'
-        ]);
-      }
-    } else {
-      echo json_encode([
-        'status' => false,
-        'message' => 'Data nominal infaq tidak lengkap.'
-      ]);
+    if (!is_array($data)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format JSON tidak valid.'
+      ], 400);
+      return;
     }
+
+    if (!isset($data['nominal'])) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Nominal infaq wajib diisi.'
+      ], 422);
+      return;
+    }
+
+    /*
+     * Mendukung nominal seperti:
+     * 10000
+     * "10000"
+     * "10.000"
+     */
+    $nominal_text = trim((string) $data['nominal']);
+    $nominal_text = preg_replace('/[.\s]/', '', $nominal_text);
+
+    if (
+      $nominal_text === '' ||
+      !ctype_digit($nominal_text)
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Nominal infaq harus berupa angka bulat.'
+      ], 422);
+      return;
+    }
+
+    $nominal = (int) $nominal_text;
+
+    if ($nominal < 1) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Nominal infaq harus lebih besar dari nol.'
+      ], 422);
+      return;
+    }
+
+    if ($nominal > 1000000000) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Nominal infaq melebihi batas yang diperbolehkan.'
+      ], 422);
+      return;
+    }
+
+    $keterangan = isset($data['keterangan'])
+      ? trim((string) $data['keterangan'])
+      : 'Infaq Umum';
+
+    if ($keterangan === '') {
+      $keterangan = 'Infaq Umum';
+    }
+
+    if (strlen($keterangan) > 200) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Keterangan maksimal 200 karakter.'
+      ], 422);
+      return;
+    }
+
+    /*
+     * id_nasabah dan id_admin dari request sengaja tidak digunakan.
+     * Identitas nasabah selalu berasal dari Bearer token.
+     */
+    $id_nasabah = (int) $auth->id_user;
+
+    $this->db->trans_begin();
+
+    /*
+     * Kunci baris pengguna agar proses saldo bersamaan untuk nasabah
+     * yang sama tidak menyebabkan saldo terpakai dua kali.
+     */
+    $nasabah = $this->db->query(
+      "SELECT id, nama, level, login, cabang_id, expo_token
+         FROM tb_user
+         WHERE id = ?
+         LIMIT 1
+         FOR UPDATE",
+      [$id_nasabah]
+    )->row();
+
+    if (
+      !$nasabah ||
+      $nasabah->level !== 'Nasabah' ||
+      $nasabah->login !== 'Ya'
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Akun Nasabah tidak ditemukan atau tidak aktif.'
+      ], 403);
+      return;
+    }
+
+    $cabang = $this->db
+      ->select('id, kode, nama, status')
+      ->where('id', (int) $nasabah->cabang_id)
+      ->where('status', 'Aktif')
+      ->get('tb_cabang')
+      ->row();
+
+    if (!$cabang) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Cabang Nasabah tidak ditemukan atau tidak aktif.'
+      ], 422);
+      return;
+    }
+
+    // Hitung saldo dari transaksi yang sudah sukses.
+    $saldo_transaksi = $this->db->query(
+      "SELECT COALESCE(
+            SUM(
+                CASE
+                    WHEN jenis = 'Masuk' THEN nominal
+                    WHEN jenis = 'Keluar' THEN -nominal
+                    ELSE 0
+                END
+            ),
+            0
+        ) AS total
+        FROM tb_transaksi
+        WHERE idNasabah = ?
+          AND status_konfirmasi = 'Sukses'",
+      [$id_nasabah]
+    )->row();
+
+    /*
+     * Kolom nominal pada tb_transfer masih bertipe varchar,
+     * sehingga dikonversi saat perhitungan.
+     */
+    $saldo_transfer = $this->db->query(
+      "SELECT COALESCE(
+            SUM(
+                CASE
+                    WHEN idPenerima = ? THEN
+                        CAST(nominal AS DECIMAL(20,2))
+                    WHEN idPengirim = ? THEN
+                        -CAST(nominal AS DECIMAL(20,2))
+                    ELSE 0
+                END
+            ),
+            0
+        ) AS total
+        FROM tb_transfer
+        WHERE status_transfer = 'Sukses'
+          AND (idPenerima = ? OR idPengirim = ?)",
+      [
+        $id_nasabah,
+        $id_nasabah,
+        $id_nasabah,
+        $id_nasabah
+      ]
+    )->row();
+
+    $total_transaksi = $saldo_transaksi
+      ? (float) $saldo_transaksi->total
+      : 0;
+
+    $total_transfer = $saldo_transfer
+      ? (float) $saldo_transfer->total
+      : 0;
+
+    $saldo_sebelum = $total_transaksi + $total_transfer;
+
+    if ($saldo_sebelum < $nominal) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Saldo tidak mencukupi untuk melakukan infaq.',
+        'data'    => [
+          'saldo_tersedia' => (int) $saldo_sebelum,
+          'nominal_infaq'  => $nominal
+        ]
+      ], 422);
+      return;
+    }
+
+    $waktu_sekarang = date('Y-m-d H:i:s');
+
+    $insert_data = [
+      // Aktor berasal dari token, bukan request.
+      'idAdmin'           => $id_nasabah,
+      'idNasabah'         => $id_nasabah,
+      'idPotongan'        => 0,
+      'cabang_id'         => (int) $cabang->id,
+      'tanggal'           => date('Y-m-d'),
+      'nominal'           => $nominal,
+      'jenis'             => 'Keluar',
+      'keterangan'        => 'INFAQ: ' . $keterangan,
+      'status_konfirmasi' => 'Sukses',
+      'terdaftar'         => $waktu_sekarang
+    ];
+
+    $insert = $this->db->insert('tb_transaksi', $insert_data);
+    $id_transaksi = (int) $this->db->insert_id();
+
+    if (!$insert || $this->db->trans_status() === false) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gagal memproses infaq.'
+      ], 500);
+      return;
+    }
+
+    $this->db->trans_commit();
+
+    $saldo_sesudah = $saldo_sebelum - $nominal;
+    $nominal_format = 'Rp ' . number_format($nominal, 0, ',', '.');
+
+    /*
+     * Notifikasi hanya dikirim kepada Administrator cabang terkait
+     * dan semua Super Admin yang memiliki Expo token.
+     */
+    $this->db->group_start();
+    $this->db->where('level', 'Super Admin');
+
+    $this->db->or_group_start();
+    $this->db->where('level', 'Administrator');
+    $this->db->where('cabang_id', (int) $cabang->id);
+    $this->db->group_end();
+    $this->db->group_end();
+
+    $this->db->where('login', 'Ya');
+    $this->db->where('expo_token IS NOT NULL', null, false);
+    $this->db->where('expo_token !=', '');
+
+    $admins = $this->db->get('tb_user')->result();
+
+    foreach ($admins as $admin) {
+      $this->send_expo_push_notification(
+        $admin->expo_token,
+        "\u{1F4B0} Infaq Baru Masuk",
+        "\u{1F64F} Infaq dari " . $nasabah->nama .
+          ' sebesar ' . $nominal_format .
+          ' telah diterima.'
+      );
+    }
+
+    // Notifikasi apresiasi kepada Nasabah.
+    if (!empty($nasabah->expo_token)) {
+      $this->send_expo_push_notification(
+        $nasabah->expo_token,
+        "\u{2705} Alhamdulillah, Infaq Berhasil",
+        "\u{1F49A} Terima kasih atas infaq sebesar " .
+          $nominal_format .
+          '. Semoga menjadi amal jariyah.'
+      );
+    }
+
+    $this->api_response([
+      'status'  => true,
+      'message' => "\u{1F64F} Alhamdulillah, infaq berhasil disalurkan.",
+      'data'    => [
+        'id_transaksi'  => $id_transaksi,
+        'id_nasabah'    => $id_nasabah,
+        'nama_nasabah'  => $nasabah->nama,
+        'jenis'         => 'Keluar',
+        'nominal'       => $nominal,
+        'keterangan'    => 'INFAQ: ' . $keterangan,
+        'status'        => 'Sukses',
+        'cabang_id'     => (int) $cabang->id,
+        'kode_cabang'   => $cabang->kode,
+        'nama_cabang'   => $cabang->nama,
+        'saldo_sebelum' => (int) $saldo_sebelum,
+        'saldo_sesudah' => (int) $saldo_sesudah
+      ]
+    ], 201);
   }
 
   // ==========================================
