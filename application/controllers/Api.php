@@ -7009,62 +7009,259 @@ class Api extends CI_Controller
   // 1. Endpoint Cek Status Toko Nasabah
   public function cek_toko()
   {
-    $request = json_decode($this->input->raw_input_stream, true);
-    $id_user = $request['id_user'] ?? '';
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
 
-    if (empty($id_user)) {
-      echo json_encode(['status' => false, 'message' => 'ID User tidak valid.']);
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
       return;
     }
 
-    // Cari toko berdasarkan ID Nasabah
-    $this->db->where('id_user', $id_user);
-    $toko = $this->db->get('tb_toko')->row();
+    $auth = $this->authenticate_api();
 
-    if ($toko) {
-      echo json_encode(['status' => true, 'data' => $toko]);
-    } else {
-      echo json_encode(['status' => false, 'message' => 'Nasabah belum memiliki toko.']);
+    if (!$auth) {
+      return;
     }
+
+    if ($auth->level !== 'Nasabah') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Informasi toko pribadi hanya dapat diakses oleh Nasabah.'
+      ], 403);
+      return;
+    }
+
+    /*
+     * id_user dari request sengaja tidak digunakan.
+     * Pemilik toko selalu berasal dari Bearer token.
+     */
+    $id_user = (int) $auth->id_user;
+
+    $toko = $this->db
+      ->select(
+        'id_toko, id_user, nama_toko, deskripsi_toko, ' .
+          'foto_toko, alamat_toko, logo_toko, status_toko, terdaftar'
+      )
+      ->where('id_user', $id_user)
+      ->limit(1)
+      ->get('tb_toko')
+      ->row_array();
+
+    if (!$toko) {
+      /*
+         * Tetap menggunakan HTTP 200 dengan status false agar
+         * kompatibel dengan alur aplikasi lama untuk membuka toko.
+         */
+      $this->api_response([
+        'status'          => false,
+        'memiliki_toko'   => false,
+        'message'         => 'Nasabah belum memiliki toko.',
+        'data'            => null
+      ]);
+      return;
+    }
+
+    $toko['id_toko'] = (int) $toko['id_toko'];
+    $toko['id_user'] = (int) $toko['id_user'];
+    $toko['toko_aktif'] = $toko['status_toko'] === 'Aktif';
+
+    $this->api_response([
+      'status'        => true,
+      'memiliki_toko' => true,
+      'data'          => $toko
+    ]);
   }
 
   // 2. Endpoint Buka Toko Baru
   public function buka_toko()
   {
-    $request = json_decode($this->input->raw_input_stream, true);
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
 
-    $id_user = $request['id_user'] ?? '';
-    $nama_toko = $request['nama_toko'] ?? '';
-    $deskripsi = $request['deskripsi'] ?? '';
-
-    if (empty($id_user) || empty($nama_toko)) {
-      echo json_encode(['status' => false, 'message' => 'Data tidak lengkap. Nama toko wajib diisi!']);
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
       return;
     }
 
-    // Cek keamanan: Pastikan 1 nasabah hanya bisa punya 1 toko
-    $this->db->where('id_user', $id_user);
-    $cek_toko = $this->db->get('tb_toko')->num_rows();
+    $auth = $this->authenticate_api();
 
-    if ($cek_toko > 0) {
-      echo json_encode(['status' => false, 'message' => 'Anda sudah memiliki toko yang terdaftar.']);
+    if (!$auth) {
       return;
     }
 
-    $data = [
-      'id_user' => $id_user,
-      'nama_toko' => $nama_toko,
-      'deskripsi_toko' => $deskripsi,
-      'terdaftar' => date('Y-m-d H:i:s')
-    ];
+    if ($auth->level !== 'Nasabah') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Toko hanya dapat dibuka oleh Nasabah.'
+      ], 403);
+      return;
+    }
 
-    $insert = $this->db->insert('tb_toko', $data);
+    $content_length = (int) $this->input->server(
+      'CONTENT_LENGTH'
+    );
 
-    if ($insert) {
-      echo json_encode(['status' => true, 'message' => 'Alhamdulillah! Toko Anda berhasil dibuka.']);
+    if ($content_length > 32768) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Ukuran data terlalu besar.'
+      ], 413);
+      return;
+    }
+
+    $request = json_decode(
+      $this->input->raw_input_stream,
+      true
+    );
+
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format JSON tidak valid.'
+      ], 400);
+      return;
+    }
+
+    $nama_toko = isset($request['nama_toko'])
+      ? trim((string) $request['nama_toko'])
+      : '';
+
+    /*
+     * Mendukung nama field lama "deskripsi"
+     * dan nama field database "deskripsi_toko".
+     */
+    if (isset($request['deskripsi_toko'])) {
+      $deskripsi_toko = trim(
+        (string) $request['deskripsi_toko']
+      );
     } else {
-      echo json_encode(['status' => false, 'message' => 'Gagal membuka toko. Terjadi kesalahan server.']);
+      $deskripsi_toko = isset($request['deskripsi'])
+        ? trim((string) $request['deskripsi'])
+        : '';
     }
+
+    if (
+      strlen($nama_toko) < 3 ||
+      strlen($nama_toko) > 100
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Nama toko harus terdiri dari 3 sampai 100 karakter.'
+      ], 422);
+      return;
+    }
+
+    if (strlen($deskripsi_toko) > 2000) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Deskripsi toko maksimal 2.000 karakter.'
+      ], 422);
+      return;
+    }
+
+    /*
+     * id_user dari request sengaja diabaikan.
+     * Pemilik toko berasal dari Bearer token.
+     */
+    $id_user = (int) $auth->id_user;
+
+    $this->db->trans_begin();
+
+    /*
+     * Kunci akun agar dua request buka toko yang dikirim
+     * bersamaan diproses secara berurutan.
+     */
+    $nasabah = $this->db->query(
+      "SELECT id, nama, level, login, cabang_id
+         FROM tb_user
+         WHERE id = ?
+         LIMIT 1
+         FOR UPDATE",
+      [$id_user]
+    )->row();
+
+    if (
+      !$nasabah ||
+      $nasabah->level !== 'Nasabah' ||
+      $nasabah->login !== 'Ya'
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Akun Nasabah tidak ditemukan atau tidak aktif.'
+      ], 403);
+      return;
+    }
+
+    $cek_toko = $this->db
+      ->select('id_toko')
+      ->where('id_user', $id_user)
+      ->limit(1)
+      ->get('tb_toko')
+      ->row();
+
+    if ($cek_toko) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'        => false,
+        'memiliki_toko' => true,
+        'message'       => 'Anda sudah memiliki toko yang terdaftar.',
+        'data'          => [
+          'id_toko' => (int) $cek_toko->id_toko
+        ]
+      ], 409);
+      return;
+    }
+
+    $waktu_sekarang = date('Y-m-d H:i:s');
+
+    $insert = $this->db->insert('tb_toko', [
+      'id_user'        => $id_user,
+      'nama_toko'      => $nama_toko,
+      'deskripsi_toko' => $deskripsi_toko,
+      'status_toko'    => 'Aktif',
+      'terdaftar'      => $waktu_sekarang
+    ]);
+
+    $id_toko = (int) $this->db->insert_id();
+
+    if (!$insert || $this->db->trans_status() === false) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gagal membuka toko.'
+      ], 500);
+      return;
+    }
+
+    $this->db->trans_commit();
+
+    $this->api_response([
+      'status'        => true,
+      'memiliki_toko' => true,
+      'message'       => "\u{1F3EA} Alhamdulillah, toko Anda berhasil dibuka.",
+      'data'          => [
+        'id_toko'        => $id_toko,
+        'id_user'        => $id_user,
+        'nama_pemilik'   => $nasabah->nama,
+        'nama_toko'      => $nama_toko,
+        'deskripsi_toko' => $deskripsi_toko,
+        'status_toko'    => 'Aktif',
+        'cabang_id'      => (int) $nasabah->cabang_id,
+        'terdaftar'      => $waktu_sekarang
+      ]
+    ], 201);
   }
   // ==========================================
   // FITUR MARKETPLACE: MANAJEMEN TOKO
@@ -7073,124 +7270,971 @@ class Api extends CI_Controller
   // Endpoint Edit Toko (Sisi Penjual)
   public function edit_toko()
   {
-    // 🔥 1. Bersihkan output sebelumnya agar JSON tidak rusak oleh Warning PHP
-    if (ob_get_length()) ob_clean();
-    header('Content-Type: application/json');
     header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
 
-    $request = json_decode($this->input->raw_input_stream, true);
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
+      return;
+    }
 
-    $id_toko = $request['id_toko'] ?? '';
-    $id_user = $request['id_user'] ?? '';
-    $nama_toko = $request['nama_toko'] ?? '';
-    $deskripsi = $request['deskripsi'] ?? '';
-    $foto_base64 = $request['foto_toko_base64'] ?? ''; // Tangkap foto base64
+    $auth = $this->authenticate_api();
 
-    if (empty($id_toko) || empty($id_user) || empty($nama_toko)) {
-      echo json_encode(['status' => false, 'message' => 'Data tidak lengkap.']);
+    if (!$auth) {
+      return;
+    }
+
+    if ($auth->level !== 'Nasabah') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Informasi toko hanya dapat diubah oleh Nasabah.'
+      ], 403);
+      return;
+    }
+
+    /*
+     * Batas JSON sekitar 4 MB, termasuk gambar base64.
+     * Ukuran gambar asli dibatasi lagi menjadi maksimal 2 MB.
+     */
+    $content_length = (int) $this->input->server(
+      'CONTENT_LENGTH'
+    );
+
+    if ($content_length > 4194304) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Ukuran request terlalu besar.'
+      ], 413);
+      return;
+    }
+
+    $request = json_decode(
+      $this->input->raw_input_stream,
+      true
+    );
+
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format JSON tidak valid.'
+      ], 400);
+      return;
+    }
+
+    $nama_toko = isset($request['nama_toko'])
+      ? trim((string) $request['nama_toko'])
+      : '';
+
+    if (isset($request['deskripsi_toko'])) {
+      $deskripsi_toko = trim(
+        (string) $request['deskripsi_toko']
+      );
+    } else {
+      $deskripsi_toko = isset($request['deskripsi'])
+        ? trim((string) $request['deskripsi'])
+        : '';
+    }
+
+    $foto_base64 = isset($request['foto_toko_base64'])
+      ? trim((string) $request['foto_toko_base64'])
+      : '';
+
+    if (
+      strlen($nama_toko) < 3 ||
+      strlen($nama_toko) > 100
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Nama toko harus terdiri dari 3 sampai 100 karakter.'
+      ], 422);
+      return;
+    }
+
+    if (strlen($deskripsi_toko) > 2000) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Deskripsi toko maksimal 2.000 karakter.'
+      ], 422);
+      return;
+    }
+
+    /*
+     * id_user dan id_toko dari request tidak dipercaya.
+     * Toko ditentukan dari pemilik Bearer token.
+     */
+    $id_user = (int) $auth->id_user;
+
+    $this->db->trans_begin();
+
+    $toko = $this->db->query(
+      "SELECT
+            id_toko,
+            id_user,
+            nama_toko,
+            deskripsi_toko,
+            foto_toko,
+            status_toko
+         FROM tb_toko
+         WHERE id_user = ?
+         LIMIT 1
+         FOR UPDATE",
+      [$id_user]
+    )->row();
+
+    if (!$toko) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'        => false,
+        'memiliki_toko' => false,
+        'message'       => 'Anda belum memiliki toko.'
+      ], 404);
       return;
     }
 
     $update_data = [
-      'nama_toko' => $nama_toko,
-      'deskripsi_toko' => $deskripsi
+      'nama_toko'      => $nama_toko,
+      'deskripsi_toko' => $deskripsi_toko
     ];
 
-    // 🔥 LOGIKA UPLOAD FOTO TOKO DIPERBARUI
-    if (!empty($foto_base64)) {
-      // 🔥 2. Cek apakah folder toko sudah ada, jika belum otomatis buat foldernya
-      $folder_path = FCPATH . 'assets/toko/';
-      if (!is_dir($folder_path)) {
-        mkdir($folder_path, 0755, true);
+    $folder_path = FCPATH . 'assets/toko/';
+    $file_name_baru = null;
+    $file_path_baru = null;
+
+    if ($foto_base64 !== '') {
+      /*
+         * Hanya menerima data URI gambar:
+         * PNG, JPG/JPEG, dan WEBP.
+         */
+      $cocok = preg_match(
+        '#^data:image/(png|jpe?g|webp);base64,(.+)$#is',
+        $foto_base64,
+        $bagian_gambar
+      );
+
+      if (!$cocok) {
+        $this->db->trans_rollback();
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Format foto toko tidak valid.'
+        ], 422);
+        return;
       }
 
-      $image_parts = explode(";base64,", $foto_base64);
-      if (count($image_parts) == 2) {
-        $image_type_aux = explode("image/", $image_parts[0]);
-        $image_type = $image_type_aux[1];
-        $image_base64 = base64_decode($image_parts[1]);
+      $gambar_binary = base64_decode(
+        $bagian_gambar[2],
+        true
+      );
 
-        $file_name = 'toko_' . time() . '_' . rand(100, 999) . '.' . $image_type;
-        $file_path = $folder_path . $file_name;
+      if ($gambar_binary === false) {
+        $this->db->trans_rollback();
 
-        // 🔥 3. Tambahkan @ agar kalaupun gagal simpan, tidak merusak output JSON
-        if (@file_put_contents($file_path, $image_base64)) {
-          $update_data['foto_toko'] = $file_name;
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Data base64 foto toko tidak valid.'
+        ], 422);
+        return;
+      }
+
+      $ukuran_gambar = strlen($gambar_binary);
+
+      if (
+        $ukuran_gambar < 1 ||
+        $ukuran_gambar > 2097152
+      ) {
+        $this->db->trans_rollback();
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Ukuran foto toko maksimal 2 MB.'
+        ], 422);
+        return;
+      }
+
+      $informasi_gambar = @getimagesizefromstring(
+        $gambar_binary
+      );
+
+      if ($informasi_gambar === false) {
+        $this->db->trans_rollback();
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'File yang dikirim bukan gambar yang valid.'
+        ], 422);
+        return;
+      }
+
+      $lebar = (int) $informasi_gambar[0];
+      $tinggi = (int) $informasi_gambar[1];
+
+      if (
+        $lebar < 1 ||
+        $tinggi < 1 ||
+        $lebar > 4000 ||
+        $tinggi > 4000
+      ) {
+        $this->db->trans_rollback();
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Dimensi foto toko maksimal 4000 × 4000 piksel.'
+        ], 422);
+        return;
+      }
+
+      $finfo = finfo_open(FILEINFO_MIME_TYPE);
+
+      if ($finfo === false) {
+        $this->db->trans_rollback();
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Server gagal memeriksa jenis gambar.'
+        ], 500);
+        return;
+      }
+
+      $mime_asli = finfo_buffer(
+        $finfo,
+        $gambar_binary
+      );
+
+      finfo_close($finfo);
+
+      $mime_diizinkan = [
+        'image/jpeg' => 'jpg',
+        'image/png'  => 'png',
+        'image/webp' => 'webp'
+      ];
+
+      if (!isset($mime_diizinkan[$mime_asli])) {
+        $this->db->trans_rollback();
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Jenis foto toko tidak diizinkan.'
+        ], 422);
+        return;
+      }
+
+      if (
+        !is_dir($folder_path) &&
+        !mkdir($folder_path, 0755, true)
+      ) {
+        $this->db->trans_rollback();
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Folder foto toko tidak dapat dibuat.'
+        ], 500);
+        return;
+      }
+
+      if (!is_writable($folder_path)) {
+        $this->db->trans_rollback();
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Folder foto toko tidak dapat ditulis.'
+        ], 500);
+        return;
+      }
+
+      $file_name_baru = 'toko_' .
+        bin2hex(random_bytes(16)) .
+        '.' . $mime_diizinkan[$mime_asli];
+
+      $file_path_baru = $folder_path .
+        $file_name_baru;
+
+      $hasil_simpan = file_put_contents(
+        $file_path_baru,
+        $gambar_binary,
+        LOCK_EX
+      );
+
+      if (
+        $hasil_simpan === false ||
+        $hasil_simpan !== $ukuran_gambar
+      ) {
+        if (is_file($file_path_baru)) {
+          unlink($file_path_baru);
+        }
+
+        $this->db->trans_rollback();
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Foto toko gagal disimpan.'
+        ], 500);
+        return;
+      }
+
+      $update_data['foto_toko'] = $file_name_baru;
+    }
+
+    $update = $this->db
+      ->where('id_toko', (int) $toko->id_toko)
+      ->where('id_user', $id_user)
+      ->update('tb_toko', $update_data);
+
+    if (!$update || $this->db->trans_status() === false) {
+      if (
+        $file_path_baru !== null &&
+        is_file($file_path_baru)
+      ) {
+        unlink($file_path_baru);
+      }
+
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gagal memperbarui informasi toko.'
+      ], 500);
+      return;
+    }
+
+    $this->db->trans_commit();
+
+    /*
+     * Hapus foto lama hanya setelah database berhasil diperbarui.
+     * Hanya file dengan awalan toko_ yang boleh dihapus.
+     */
+    if (
+      $file_name_baru !== null &&
+      !empty($toko->foto_toko)
+    ) {
+      $foto_lama = basename($toko->foto_toko);
+
+      if (
+        $foto_lama === $toko->foto_toko &&
+        strpos($foto_lama, 'toko_') === 0
+      ) {
+        $path_foto_lama = $folder_path . $foto_lama;
+
+        if (
+          is_file($path_foto_lama) &&
+          realpath(dirname($path_foto_lama)) ===
+          realpath($folder_path)
+        ) {
+          unlink($path_foto_lama);
         }
       }
     }
 
-    $this->db->where('id_toko', $id_toko);
-    $this->db->where('id_user', $id_user);
-    $update = $this->db->update('tb_toko', $update_data);
-
-    // Walaupun data sama (tidak ada yang diubah), kita anggap sukses agar user tidak bingung
-    if ($update || $this->db->affected_rows() >= 0) {
-      echo json_encode(['status' => true, 'message' => 'Informasi toko berhasil disimpan.']);
-    } else {
-      echo json_encode(['status' => false, 'message' => 'Gagal memperbarui toko.']);
-    }
-    exit;
+    $this->api_response([
+      'status'  => true,
+      'message' => "\u{2705} Informasi toko berhasil disimpan.",
+      'data'    => [
+        'id_toko'        => (int) $toko->id_toko,
+        'id_user'        => $id_user,
+        'nama_toko'      => $nama_toko,
+        'deskripsi_toko' => $deskripsi_toko,
+        'foto_toko'      => $file_name_baru !== null
+          ? $file_name_baru
+          : $toko->foto_toko,
+        'status_toko'    => $toko->status_toko
+      ]
+    ]);
   }
 
   // Endpoint Ubah Status Toko (Nonaktif/Aktif - Sisi Admin)
   public function ubah_status_toko()
   {
-    $request = json_decode($this->input->raw_input_stream, true);
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
 
-    $id_toko = $request['id_toko'] ?? '';
-    $status_baru = $request['status'] ?? ''; // 'Aktif' atau 'Nonaktif'
-
-    if (empty($id_toko) || empty($status_baru)) {
-      echo json_encode(['status' => false, 'message' => 'Data tidak valid.']);
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
       return;
     }
 
-    $this->db->where('id_toko', $id_toko);
-    $update = $this->db->update('tb_toko', ['status_toko' => $status_baru]);
+    $auth = $this->authenticate_api();
 
-    if ($update) {
-      // 🔥 PERBAIKAN: Tangani status produk untuk kedua kondisi (Nonaktif dan Aktif)
-      if ($status_baru === 'Nonaktif') {
-        // Jika toko dinonaktifkan, arsipkan semua produk
-        $this->db->where('id_toko', $id_toko);
-        $this->db->update('tb_produk', ['status_produk' => 'Arsip']);
-      } else if ($status_baru === 'Aktif') {
-        // Jika toko diaktifkan kembali, kembalikan produk menjadi tersedia
-        $this->db->where('id_toko', $id_toko);
-        $this->db->update('tb_produk', ['status_produk' => 'Tersedia']);
-      }
-
-      echo json_encode(['status' => true, 'message' => "Toko berhasil di-{$status_baru}kan."]);
-    } else {
-      echo json_encode(['status' => false, 'message' => 'Gagal mengubah status toko.']);
+    if (!$auth) {
+      return;
     }
+
+    if (!in_array($auth->level, ['Administrator', 'Super Admin'], true)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Anda tidak memiliki izin untuk mengubah status toko.'
+      ], 403);
+      return;
+    }
+
+    $request = json_decode(
+      $this->input->raw_input_stream,
+      true
+    );
+
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format JSON tidak valid.'
+      ], 400);
+      return;
+    }
+
+    $id_toko = isset($request['id_toko'])
+      ? (int) $request['id_toko']
+      : 0;
+
+    if (isset($request['status_toko'])) {
+      $status_baru = trim(
+        (string) $request['status_toko']
+      );
+    } else {
+      $status_baru = isset($request['status'])
+        ? trim((string) $request['status'])
+        : '';
+    }
+
+    if ($id_toko <= 0) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'ID toko tidak valid.'
+      ], 422);
+      return;
+    }
+
+    if (!in_array($status_baru, ['Aktif', 'Nonaktif'], true)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Status toko harus Aktif atau Nonaktif.'
+      ], 422);
+      return;
+    }
+
+    /*
+     * level, id_admin, dan cabang_id dari request diabaikan.
+     * Hak akses berasal dari Bearer token.
+     */
+    $this->db->trans_begin();
+
+    $toko = $this->db->query(
+      "SELECT
+            t.id_toko,
+            t.id_user,
+            t.nama_toko,
+            t.status_toko,
+            u.nama AS nama_pemilik,
+            u.cabang_id,
+            u.expo_token
+         FROM tb_toko AS t
+         INNER JOIN tb_user AS u
+            ON u.id = t.id_user
+         WHERE t.id_toko = ?
+         LIMIT 1
+         FOR UPDATE",
+      [$id_toko]
+    )->row();
+
+    if (!$toko) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Toko tidak ditemukan.'
+      ], 404);
+      return;
+    }
+
+    /*
+     * Administrator hanya dapat mengelola toko milik Nasabah
+     * yang berada pada cabangnya sendiri.
+     */
+    if (
+      $auth->level === 'Administrator' &&
+      (int) $toko->cabang_id !== (int) $auth->cabang_id
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Anda hanya dapat mengelola toko pada cabang sendiri.'
+      ], 403);
+      return;
+    }
+
+    /*
+     * Request idempotent: apabila status sudah sama,
+     * tidak ada produk atau audit yang diubah.
+     */
+    if ($toko->status_toko === $status_baru) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => true,
+        'message' => 'Status toko sudah ' . $status_baru . '.',
+        'data'    => [
+          'id_toko'         => (int) $toko->id_toko,
+          'nama_toko'       => $toko->nama_toko,
+          'status_sebelumnya' => $toko->status_toko,
+          'status_sekarang' => $status_baru,
+          'produk_diubah'   => 0,
+          'tidak_ada_perubahan' => true
+        ]
+      ]);
+      return;
+    }
+
+    $produk_diubah = 0;
+
+    if ($status_baru === 'Nonaktif') {
+      /*
+         * Simpan status asli setiap produk sebelum diarsipkan.
+         * Nilai tidak akan ditimpa jika request dijalankan ulang.
+         */
+      $this->db
+        ->set(
+          'status_sebelum_toko_nonaktif',
+          'status_produk',
+          false
+        )
+        ->set('status_produk', 'Arsip')
+        ->where('id_toko', (int) $toko->id_toko)
+        ->where(
+          'status_sebelum_toko_nonaktif IS NULL',
+          null,
+          false
+        )
+        ->update('tb_produk');
+
+      $produk_diubah = $this->db->affected_rows();
+    } else {
+      /*
+         * Kembalikan setiap produk ke status persis sebelum
+         * toko dinonaktifkan: Tersedia, Habis, atau Arsip.
+         */
+      $this->db
+        ->set(
+          'status_produk',
+          'status_sebelum_toko_nonaktif',
+          false
+        )
+        ->set('status_sebelum_toko_nonaktif', null)
+        ->where('id_toko', (int) $toko->id_toko)
+        ->where(
+          'status_sebelum_toko_nonaktif IS NOT NULL',
+          null,
+          false
+        )
+        ->update('tb_produk');
+
+      $produk_diubah = $this->db->affected_rows();
+    }
+
+    $waktu_sekarang = date('Y-m-d H:i:s');
+
+    $update_toko = $this->db
+      ->where('id_toko', (int) $toko->id_toko)
+      ->update('tb_toko', [
+        'status_toko'        => $status_baru,
+        'status_diubah_oleh' => (int) $auth->id_user,
+        'status_diubah_pada' => $waktu_sekarang
+      ]);
+
+    if (
+      !$update_toko ||
+      $this->db->trans_status() === false
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gagal mengubah status toko.'
+      ], 500);
+      return;
+    }
+
+    $status_sebelumnya = $toko->status_toko;
+
+    $this->db->trans_commit();
+
+    // Beri tahu pemilik toko apabila memiliki Expo token.
+    if (!empty($toko->expo_token)) {
+      $judul_notifikasi = $status_baru === 'Aktif'
+        ? "\u{2705} Toko Diaktifkan"
+        : "\u{26D4} Toko Dinonaktifkan";
+
+      $pesan_notifikasi = 'Status toko ' .
+        $toko->nama_toko . ' sekarang ' .
+        $status_baru . '.';
+
+      $this->send_expo_push_notification(
+        $toko->expo_token,
+        $judul_notifikasi,
+        $pesan_notifikasi
+      );
+    }
+
+    $this->api_response([
+      'status'  => true,
+      'message' => $status_baru === 'Aktif'
+        ? "\u{2705} Toko berhasil diaktifkan."
+        : "\u{26D4} Toko berhasil dinonaktifkan.",
+      'data'    => [
+        'id_toko'          => (int) $toko->id_toko,
+        'nama_toko'        => $toko->nama_toko,
+        'id_pemilik'       => (int) $toko->id_user,
+        'nama_pemilik'     => $toko->nama_pemilik,
+        'cabang_id'        => (int) $toko->cabang_id,
+        'status_sebelumnya' => $status_sebelumnya,
+        'status_sekarang'  => $status_baru,
+        'produk_diubah'    => (int) $produk_diubah,
+        'diubah_oleh'      => (int) $auth->id_user,
+        'nama_operator'    => $auth->nama,
+        'diubah_pada'      => $waktu_sekarang,
+        'tidak_ada_perubahan' => false
+      ]
+    ]);
   }
   // Endpoint Hapus Toko Secara Permanen (Sisi Admin)
   public function hapus_toko()
   {
-    $request = json_decode($this->input->raw_input_stream, true);
-    $id_toko = $request['id_toko'] ?? '';
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
 
-    if (empty($id_toko)) {
-      echo json_encode(['status' => false, 'message' => 'ID Toko tidak valid.']);
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
       return;
     }
 
-    // 1. Ambil data produk terkait untuk dihapus fotonya (Opsional jika ingin membersihkan server)
-    // 2. Hapus semua produk dari toko ini
-    $this->db->where('id_toko', $id_toko);
-    $this->db->delete('tb_produk');
+    $auth = $this->authenticate_api();
 
-    // 3. Hapus Toko
-    $this->db->where('id_toko', $id_toko);
-    $delete = $this->db->delete('tb_toko');
-
-    if ($delete) {
-      echo json_encode(['status' => true, 'message' => 'Toko beserta seluruh produknya berhasil dihapus permanen.']);
-    } else {
-      echo json_encode(['status' => false, 'message' => 'Gagal menghapus toko.']);
+    if (!$auth) {
+      return;
     }
+
+    if (!in_array($auth->level, ['Administrator', 'Super Admin'], true)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Anda tidak memiliki izin untuk menghapus toko.'
+      ], 403);
+      return;
+    }
+
+    $request = json_decode(
+      $this->input->raw_input_stream,
+      true
+    );
+
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format JSON tidak valid.'
+      ], 400);
+      return;
+    }
+
+    $id_toko = isset($request['id_toko'])
+      ? (int) $request['id_toko']
+      : 0;
+
+    if ($id_toko <= 0) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'ID toko tidak valid.'
+      ], 422);
+      return;
+    }
+
+    /*
+     * id_admin, level, dan cabang_id dari request diabaikan.
+     */
+    $this->db->trans_begin();
+
+    $toko = $this->db->query(
+      "SELECT
+            t.id_toko,
+            t.id_user,
+            t.nama_toko,
+            t.foto_toko,
+            t.logo_toko,
+            t.status_toko,
+            u.nama AS nama_pemilik,
+            u.cabang_id,
+            u.expo_token
+         FROM tb_toko AS t
+         INNER JOIN tb_user AS u
+            ON u.id = t.id_user
+         WHERE t.id_toko = ?
+         LIMIT 1
+         FOR UPDATE",
+      [$id_toko]
+    )->row();
+
+    if (!$toko) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Toko tidak ditemukan.'
+      ], 404);
+      return;
+    }
+
+    // Administrator hanya boleh menghapus toko pada cabangnya.
+    if (
+      $auth->level === 'Administrator' &&
+      (int) $toko->cabang_id !== (int) $auth->cabang_id
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Anda hanya dapat menghapus toko pada cabang sendiri.'
+      ], 403);
+      return;
+    }
+
+    /*
+     * Kunci dan ambil produk beserta nama file gambarnya.
+     */
+    $produk = $this->db->query(
+      "SELECT
+            id_produk,
+            foto_produk,
+            foto_2,
+            foto_3
+         FROM tb_produk
+         WHERE id_toko = ?
+         FOR UPDATE",
+      [$id_toko]
+    )->result();
+
+    /*
+     * Periksa seluruh riwayat yang harus tetap dipertahankan.
+     */
+    $jumlah_pesanan = (int) $this->db->query(
+      "SELECT COUNT(*) AS jumlah
+         FROM tb_pesanan
+         WHERE id_toko = ?",
+      [$id_toko]
+    )->row()->jumlah;
+
+    $jumlah_detail_pesanan = (int) $this->db->query(
+      "SELECT COUNT(*) AS jumlah
+         FROM tb_pesanan_detail AS d
+         INNER JOIN tb_produk AS p
+            ON p.id_produk = d.id_produk
+         WHERE p.id_toko = ?",
+      [$id_toko]
+    )->row()->jumlah;
+
+    $jumlah_ulasan = (int) $this->db->query(
+      "SELECT COUNT(*) AS jumlah
+         FROM tb_ulasan AS u
+         INNER JOIN tb_produk AS p
+            ON p.id_produk = u.id_produk
+         WHERE p.id_toko = ?",
+      [$id_toko]
+    )->row()->jumlah;
+
+    $jumlah_wishlist = (int) $this->db->query(
+      "SELECT COUNT(*) AS jumlah
+         FROM tb_wishlist AS w
+         INNER JOIN tb_produk AS p
+            ON p.id_produk = w.id_produk
+         WHERE p.id_toko = ?",
+      [$id_toko]
+    )->row()->jumlah;
+
+    /*
+     * Toko dengan riwayat transaksi tidak boleh dihapus permanen.
+     * Nonaktifkan toko agar riwayat tetap utuh.
+     */
+    if (
+      $jumlah_pesanan > 0 ||
+      $jumlah_detail_pesanan > 0 ||
+      $jumlah_ulasan > 0 ||
+      $jumlah_wishlist > 0
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Toko memiliki riwayat marketplace dan tidak boleh dihapus permanen. Nonaktifkan toko sebagai gantinya.',
+        'data'    => [
+          'id_toko'               => (int) $toko->id_toko,
+          'jumlah_produk'         => count($produk),
+          'jumlah_pesanan'        => $jumlah_pesanan,
+          'jumlah_detail_pesanan' => $jumlah_detail_pesanan,
+          'jumlah_ulasan'         => $jumlah_ulasan,
+          'jumlah_wishlist'       => $jumlah_wishlist
+        ]
+      ], 409);
+      return;
+    }
+
+    $jumlah_produk = count($produk);
+
+    $hapus_produk = $this->db
+      ->where('id_toko', (int) $toko->id_toko)
+      ->delete('tb_produk');
+
+    if (!$hapus_produk) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gagal menghapus produk toko.'
+      ], 500);
+      return;
+    }
+
+    $hapus_toko = $this->db
+      ->where('id_toko', (int) $toko->id_toko)
+      ->delete('tb_toko');
+
+    if (
+      !$hapus_toko ||
+      $this->db->trans_status() === false
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gagal menghapus toko.'
+      ], 500);
+      return;
+    }
+
+    $this->db->trans_commit();
+
+    /*
+     * File hanya dihapus setelah transaksi database berhasil.
+     */
+    $file_dihapus = 0;
+    $file_gagal = 0;
+
+    $hapus_file_aman = static function (
+      $folder,
+      $nama_file,
+      $awalan_diizinkan
+    ) use (&$file_dihapus, &$file_gagal) {
+      if (empty($nama_file)) {
+        return;
+      }
+
+      $nama_bersih = basename($nama_file);
+
+      if ($nama_bersih !== $nama_file) {
+        return;
+      }
+
+      $awalan_valid = false;
+
+      foreach ($awalan_diizinkan as $awalan) {
+        if (strpos($nama_bersih, $awalan) === 0) {
+          $awalan_valid = true;
+          break;
+        }
+      }
+
+      if (!$awalan_valid) {
+        return;
+      }
+
+      $path_file = $folder . $nama_bersih;
+
+      if (!is_file($path_file)) {
+        return;
+      }
+
+      $folder_asli = realpath($folder);
+      $folder_file = realpath(dirname($path_file));
+
+      if (
+        $folder_asli === false ||
+        $folder_file !== $folder_asli
+      ) {
+        return;
+      }
+
+      if (unlink($path_file)) {
+        $file_dihapus++;
+      } else {
+        $file_gagal++;
+      }
+    };
+
+    $folder_toko = FCPATH . 'assets/toko/';
+    $folder_produk = FCPATH . 'assets/produk/';
+
+    $hapus_file_aman(
+      $folder_toko,
+      $toko->foto_toko,
+      ['toko_']
+    );
+
+    $hapus_file_aman(
+      $folder_toko,
+      $toko->logo_toko,
+      ['toko_', 'logo_toko_']
+    );
+
+    foreach ($produk as $row_produk) {
+      $hapus_file_aman(
+        $folder_produk,
+        $row_produk->foto_produk,
+        ['produk_']
+      );
+
+      $hapus_file_aman(
+        $folder_produk,
+        $row_produk->foto_2,
+        ['produk_']
+      );
+
+      $hapus_file_aman(
+        $folder_produk,
+        $row_produk->foto_3,
+        ['produk_']
+      );
+    }
+
+    if (!empty($toko->expo_token)) {
+      $this->send_expo_push_notification(
+        $toko->expo_token,
+        "\u{1F5D1}\u{FE0F} Toko Dihapus",
+        'Toko ' . $toko->nama_toko .
+          ' telah dihapus oleh Administrator.'
+      );
+    }
+
+    $this->api_response([
+      'status'  => true,
+      'message' => "\u{1F5D1}\u{FE0F} Toko kosong berhasil dihapus permanen.",
+      'data'    => [
+        'id_toko'          => (int) $toko->id_toko,
+        'nama_toko'        => $toko->nama_toko,
+        'id_pemilik'       => (int) $toko->id_user,
+        'nama_pemilik'     => $toko->nama_pemilik,
+        'cabang_id'        => (int) $toko->cabang_id,
+        'jumlah_produk'    => $jumlah_produk,
+        'file_dihapus'     => $file_dihapus,
+        'file_gagal'       => $file_gagal,
+        'dihapus_oleh'     => (int) $auth->id_user,
+        'nama_operator'    => $auth->nama
+      ]
+    ]);
   }
 
   // Endpoint Admin: Ambil Semua Daftar Toko
