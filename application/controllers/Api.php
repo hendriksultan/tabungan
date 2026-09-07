@@ -5886,48 +5886,217 @@ class Api extends CI_Controller
   // ==========================================
   public function get_all_nasabah_saldo()
   {
-    header("Access-Control-Allow-Origin: *");
-    header("Content-Type: application/json; charset=UTF-8");
-    header("Access-Control-Allow-Methods: POST");
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
 
-    $request = json_decode($this->input->raw_input_stream, true);
-    $level = $request['level'] ?? '';
-
-    if ($level !== 'Administrator' && $level !== 'Super Admin') {
-      echo json_encode(['status' => false, 'message' => 'Akses ditolak.']);
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
       return;
     }
 
-    // Ambil seluruh user dengan level Nasabah
-    $this->db->where('level', 'Nasabah');
-    $this->db->order_by('nama', 'ASC');
-    $nasabah = $this->db->get('tb_user')->result_array();
+    $auth = $this->authenticate_api();
 
-    $data_saldo = [];
-    foreach ($nasabah as $row) {
-      $id_user = $row['id'];
-
-      // Hitung rumus saldo masing-masing nasabah secara akurat
-      $tbMsk = $this->db->query('SELECT SUM(nominal) AS total FROM tb_transaksi WHERE idNasabah="' . $id_user . '" AND jenis="Masuk" AND status_konfirmasi="Sukses"')->row()->total ?? 0;
-      $tfMsk = $this->db->query('SELECT SUM(nominal) AS total FROM tb_transfer WHERE idPenerima="' . $id_user . '"')->row()->total ?? 0;
-      $totalMasuk = $tbMsk + $tfMsk;
-
-      $tbKlr = $this->db->query('SELECT SUM(nominal) AS total FROM tb_transaksi WHERE idNasabah="' . $id_user . '" AND jenis="Keluar" AND status_konfirmasi="Sukses"')->row()->total ?? 0;
-      $tfKlr = $this->db->query('SELECT SUM(nominal) AS total FROM tb_transfer WHERE idPengirim="' . $id_user . '"')->row()->total ?? 0;
-      $totalKeluar = $tbKlr + $tfKlr;
-
-      $saldo = $totalMasuk - $totalKeluar;
-
-      $data_saldo[] = [
-        'id' => $id_user,
-        'nama' => $row['nama'],
-        'username' => $row['username'],
-        'foto' => $row['foto'],
-        'saldo' => $saldo
-      ];
+    if (!$auth) {
+      return;
     }
 
-    echo json_encode(['status' => true, 'data' => $data_saldo]);
+    /*
+     * Level, id_admin, dan cabang_id dari request tidak digunakan.
+     * Hak akses sepenuhnya berasal dari Bearer token.
+     */
+    if (!in_array($auth->level, ['Administrator', 'Super Admin'], true)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Anda tidak memiliki izin untuk melihat saldo seluruh Nasabah.'
+      ], 403);
+      return;
+    }
+
+    if (
+      $auth->level === 'Administrator' &&
+      (int) $auth->cabang_id <= 0
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Administrator belum terhubung dengan cabang yang valid.'
+      ], 403);
+      return;
+    }
+
+    /*
+     * Saldo dihitung dalam satu query:
+     *
+     * transaksi Masuk
+     * - transaksi Keluar
+     * + transfer Masuk
+     * - transfer Keluar
+     *
+     * Hanya transaksi dan transfer berstatus Sukses.
+     */
+    $sql = "
+        SELECT
+            u.id,
+            u.nama,
+            u.username,
+            u.foto,
+            u.cabang_id,
+            c.kode AS kode_cabang,
+            c.nama AS nama_cabang,
+
+                       COALESCE(trx.total_transaksi, 0)
+            + COALESCE(tf_masuk.total_transfer_masuk, 0)
+            - COALESCE(tf_keluar.total_transfer_keluar, 0)
+            AS saldo,
+
+            COALESCE(target_data.total_target, 0)
+            AS saldo_target
+
+        FROM tb_user AS u
+
+        LEFT JOIN tb_cabang AS c
+            ON c.id = u.cabang_id
+
+        LEFT JOIN (
+            SELECT
+                idNasabah,
+                SUM(
+                    CASE
+                        WHEN jenis = 'Masuk' THEN nominal
+                        WHEN jenis = 'Keluar' THEN -nominal
+                        ELSE 0
+                    END
+                ) AS total_transaksi
+            FROM tb_transaksi
+            WHERE status_konfirmasi = 'Sukses'
+            GROUP BY idNasabah
+        ) AS trx
+            ON trx.idNasabah = u.id
+
+        LEFT JOIN (
+            SELECT
+                idPenerima,
+                SUM(
+                    CAST(nominal AS DECIMAL(20,2))
+                ) AS total_transfer_masuk
+            FROM tb_transfer
+            WHERE status_transfer = 'Sukses'
+            GROUP BY idPenerima
+        ) AS tf_masuk
+            ON tf_masuk.idPenerima = u.id
+
+        LEFT JOIN (
+            SELECT
+                idPengirim,
+                SUM(
+                    CAST(nominal AS DECIMAL(20,2))
+                ) AS total_transfer_keluar
+            FROM tb_transfer
+            WHERE status_transfer = 'Sukses'
+            GROUP BY idPengirim
+        ) AS tf_keluar
+            ON tf_keluar.idPengirim = u.id
+                    LEFT JOIN (
+            SELECT
+                id_nasabah,
+                SUM(terkumpul) AS total_target
+            FROM tb_target
+            GROUP BY id_nasabah
+        ) AS target_data
+            ON target_data.id_nasabah = u.id
+
+        WHERE u.level = 'Nasabah'
+          AND u.login = 'Ya'
+    ";
+
+    $params = [];
+
+    // Administrator hanya boleh melihat Nasabah cabangnya sendiri.
+    if ($auth->level === 'Administrator') {
+      $sql .= " AND u.cabang_id = ? ";
+      $params[] = (int) $auth->cabang_id;
+    }
+
+    $sql .= " ORDER BY u.nama ASC ";
+
+    $nasabah = $this->db
+      ->query($sql, $params)
+      ->result_array();
+
+    $data_saldo = [];
+    $total_saldo_utama = 0;
+    $total_target = 0;
+    $total_kelolaan = 0;
+
+    foreach ($nasabah as $row) {
+      $saldo_utama = (float) $row['saldo'];
+      $saldo_target = (float) $row['saldo_target'];
+      $saldo_kelolaan = $saldo_utama + $saldo_target;
+
+      $data_saldo[] = [
+        'id'                    => (int) $row['id'],
+        'nama'                  => $row['nama'],
+        'username'              => $row['username'],
+        'foto'                  => $row['foto'],
+
+        // Dipertahankan untuk kompatibilitas aplikasi lama.
+        'saldo'                 => (int) $saldo_utama,
+        'saldo_format'          => 'Rp ' .
+          number_format($saldo_utama, 0, ',', '.'),
+
+        'saldo_utama'           => (int) $saldo_utama,
+        'saldo_utama_format'    => 'Rp ' .
+          number_format($saldo_utama, 0, ',', '.'),
+
+        'saldo_target'          => (int) $saldo_target,
+        'saldo_target_format'   => 'Rp ' .
+          number_format($saldo_target, 0, ',', '.'),
+
+        'saldo_kelolaan'        => (int) $saldo_kelolaan,
+        'saldo_kelolaan_format' => 'Rp ' .
+          number_format($saldo_kelolaan, 0, ',', '.'),
+
+        'cabang_id'             => (int) $row['cabang_id'],
+        'kode_cabang'           => $row['kode_cabang'],
+        'nama_cabang'           => $row['nama_cabang']
+      ];
+
+      $total_saldo_utama += $saldo_utama;
+      $total_target += $saldo_target;
+      $total_kelolaan += $saldo_kelolaan;
+    }
+
+    $this->api_response([
+      'status' => true,
+      'akses'  => [
+        'level'     => $auth->level,
+        'cabang_id' => $auth->level === 'Administrator'
+          ? (int) $auth->cabang_id
+          : null,
+        'cakupan'   => $auth->level === 'Super Admin'
+          ? 'Semua cabang'
+          : 'Cabang sendiri'
+      ],
+      'ringkasan' => [
+        'jumlah_nasabah'            => count($data_saldo),
+
+        'total_saldo_utama'         => (int) $total_saldo_utama,
+        'total_saldo_utama_format'  => 'Rp ' .
+          number_format($total_saldo_utama, 0, ',', '.'),
+
+        'total_target'              => (int) $total_target,
+        'total_target_format'       => 'Rp ' .
+          number_format($total_target, 0, ',', '.'),
+
+        'total_kelolaan'            => (int) $total_kelolaan,
+        'total_kelolaan_format'     => 'Rp ' .
+          number_format($total_kelolaan, 0, ',', '.')
+      ],
+      'data' => $data_saldo
+    ]);
   }
 
   // ==========================================
