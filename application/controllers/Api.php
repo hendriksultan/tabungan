@@ -10264,86 +10264,671 @@ class Api extends CI_Controller
   // FASE 1: Pembeli Checkout (Status: Menunggu Ongkir) - Tanpa potong saldo & tanpa PIN
   public function checkout_belanja()
   {
-    $request = json_decode($this->input->raw_input_stream, true);
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
 
-    $id_pembeli = $request['id_pembeli'] ?? '';
-    $id_toko = $request['id_toko'] ?? '';
-    $total_harga_barang = $request['total_harga'] ?? 0;
-    $items = $request['items'] ?? [];
-    $catatan = $request['catatan'] ?? '';
-
-    if (empty($id_pembeli) || empty($id_toko) || empty($items)) {
-      echo json_encode(['status' => false, 'message' => 'Data pesanan tidak lengkap.']);
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
       return;
     }
 
-    $this->db->trans_start();
-    $invoice = 'INV-' . date('Ymd') . '-' . rand(1000, 9999);
+    $auth = $this->authenticate_api();
 
-    // Buat pesanan awal
-    $this->db->insert('tb_pesanan', [
-      'invoice_pesanan' => $invoice,
-      'id_pembeli' => $id_pembeli,
-      'id_toko' => $id_toko,
-      'total_harga' => $total_harga_barang,
-      'ongkir' => 0,
-      'kurir' => 'Menunggu Penjual',
-      'status_pesanan' => 'Menunggu Ongkir', // Status awal
-      'catatan_pembeli' => $catatan,
-      'terdaftar' => date('Y-m-d H:i:s')
+    if (!$auth) {
+      return;
+    }
+
+    if ($auth->level !== 'Nasabah') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Checkout hanya dapat dilakukan oleh Nasabah.'
+      ], 403);
+      return;
+    }
+
+    $content_length = (int) $this->input->server(
+      'CONTENT_LENGTH'
+    );
+
+    if ($content_length > 1048576) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Ukuran request terlalu besar.'
+      ], 413);
+      return;
+    }
+
+    $request = json_decode(
+      $this->input->raw_input_stream,
+      true
+    );
+
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format JSON tidak valid.'
+      ], 400);
+      return;
+    }
+
+    /*
+   * checkout_key harus dibuat aplikasi satu kali
+   * untuk setiap proses checkout dan digunakan kembali
+   * jika request yang sama diulang.
+   */
+    $checkout_key = isset($request['checkout_key'])
+      ? trim((string) $request['checkout_key'])
+      : '';
+
+    if (
+      strlen($checkout_key) < 16 ||
+      strlen($checkout_key) > 64 ||
+      !preg_match(
+        '/^[A-Za-z0-9_-]+$/D',
+        $checkout_key
+      )
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'checkout_key tidak valid.'
+      ], 422);
+      return;
+    }
+
+    $catatan = isset($request['catatan'])
+      ? trim((string) $request['catatan'])
+      : '';
+
+    if (strlen($catatan) > 1000) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Catatan pembeli maksimal 1.000 karakter.'
+      ], 422);
+      return;
+    }
+
+    $items = $request['items'] ?? [];
+
+    if (!is_array($items) || empty($items)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Keranjang kosong.'
+      ], 422);
+      return;
+    }
+
+    if (count($items) > 100) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Maksimal 100 baris produk dalam satu checkout.'
+      ], 422);
+      return;
+    }
+
+    /*
+   * Gabungkan produk duplikat.
+   */
+    $jumlah_per_produk = [];
+
+    foreach ($items as $item) {
+      if (!is_array($item)) {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Format item checkout tidak valid.'
+        ], 422);
+        return;
+      }
+
+      $id_produk_raw = $item['id_produk'] ?? null;
+      $jumlah_raw = $item['jumlah'] ?? null;
+
+      if (
+        (!is_int($id_produk_raw) &&
+          !is_string($id_produk_raw)) ||
+        (!is_int($jumlah_raw) &&
+          !is_string($jumlah_raw))
+      ) {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'ID produk dan jumlah harus berupa angka bulat.'
+        ], 422);
+        return;
+      }
+
+      $id_produk_text = trim(
+        (string) $id_produk_raw
+      );
+
+      $jumlah_text = trim(
+        (string) $jumlah_raw
+      );
+
+      if (
+        $id_produk_text === '' ||
+        !ctype_digit($id_produk_text) ||
+        (int) $id_produk_text < 1
+      ) {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'ID produk tidak valid.'
+        ], 422);
+        return;
+      }
+
+      if (
+        $jumlah_text === '' ||
+        !ctype_digit($jumlah_text) ||
+        (int) $jumlah_text < 1
+      ) {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Jumlah produk minimal 1.'
+        ], 422);
+        return;
+      }
+
+      $id_produk = (int) $id_produk_text;
+      $jumlah = (int) $jumlah_text;
+
+      if ($jumlah > 1000000) {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Jumlah produk melebihi batas yang diizinkan.'
+        ], 422);
+        return;
+      }
+
+      if (!isset($jumlah_per_produk[$id_produk])) {
+        $jumlah_per_produk[$id_produk] = 0;
+      }
+
+      $jumlah_per_produk[$id_produk] += $jumlah;
+
+      if ($jumlah_per_produk[$id_produk] > 1000000) {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Total jumlah produk melebihi batas yang diizinkan.'
+        ], 422);
+        return;
+      }
+    }
+
+    /*
+   * Urutan produk dibuat konsisten untuk hash
+   * dan membantu mencegah deadlock.
+   */
+    ksort($jumlah_per_produk, SORT_NUMERIC);
+
+    $hash_items = [];
+
+    foreach (
+      $jumlah_per_produk as
+      $id_produk => $jumlah
+    ) {
+      $hash_items[] = [
+        'id_produk' => (int) $id_produk,
+        'jumlah'    => (int) $jumlah
+      ];
+    }
+
+    $checkout_hash = hash(
+      'sha256',
+      json_encode(
+        [
+          'items'   => $hash_items,
+          'catatan' => $catatan
+        ],
+        JSON_UNESCAPED_UNICODE |
+          JSON_UNESCAPED_SLASHES
+      )
+    );
+
+    $id_pembeli = (int) $auth->id_user;
+    $cabang_pembeli_id = (int) $auth->cabang_id;
+
+    $this->db->trans_begin();
+
+    /*
+   * Cegah pemotongan stok dua kali saat request
+   * yang sama dikirim ulang.
+   */
+    $pesanan_lama = $this->db->query(
+      "SELECT
+        id_pesanan,
+        invoice_pesanan,
+        checkout_hash,
+        id_toko,
+        cabang_toko_id,
+        total_harga,
+        ongkir,
+        kurir,
+        status_pesanan,
+        terdaftar
+     FROM tb_pesanan
+     WHERE id_pembeli = ?
+       AND checkout_key = ?
+     LIMIT 1
+     FOR UPDATE",
+      [
+        $id_pembeli,
+        $checkout_key
+      ]
+    )->row();
+
+    if ($pesanan_lama) {
+      if (
+        !hash_equals(
+          (string) $pesanan_lama->checkout_hash,
+          $checkout_hash
+        )
+      ) {
+        $this->db->trans_rollback();
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'checkout_key sudah digunakan untuk isi checkout yang berbeda.'
+        ], 409);
+        return;
+      }
+
+      $this->db->trans_commit();
+
+      $this->api_response([
+        'status'  => true,
+        'message' => 'Pesanan yang sama sudah tercatat.',
+        'data'    => [
+          'id_pesanan'      => (int) $pesanan_lama->id_pesanan,
+          'invoice_pesanan' => $pesanan_lama->invoice_pesanan,
+          'checkout_key'    => $checkout_key,
+          'id_pembeli'      => $id_pembeli,
+          'id_toko'         => (int) $pesanan_lama->id_toko,
+          'cabang_toko_id'  => (int) $pesanan_lama->cabang_toko_id,
+          'total_harga'     => (int) $pesanan_lama->total_harga,
+          'ongkir'          => (int) $pesanan_lama->ongkir,
+          'kurir'           => $pesanan_lama->kurir,
+          'status_pesanan'  => $pesanan_lama->status_pesanan,
+          'terdaftar'       => $pesanan_lama->terdaftar,
+          'idempotent'      => true
+        ]
+      ]);
+      return;
+    }
+
+    $id_produk_list = array_keys(
+      $jumlah_per_produk
+    );
+
+    $placeholders = implode(
+      ',',
+      array_fill(
+        0,
+        count($id_produk_list),
+        '?'
+      )
+    );
+
+    /*
+   * Kunci seluruh produk sampai transaksi selesai.
+   */
+    $sql_produk = "
+    SELECT
+      p.id_produk,
+      p.id_toko,
+      p.nama_produk,
+      p.harga,
+      p.stok,
+      p.berat,
+      p.status_produk,
+
+      t.id_user AS id_penjual,
+      t.nama_toko,
+      t.status_toko,
+
+      penjual.expo_token,
+      penjual.cabang_id AS cabang_toko_id,
+
+      c.status AS status_cabang
+
+    FROM tb_produk AS p
+
+    INNER JOIN tb_toko AS t
+      ON t.id_toko = p.id_toko
+
+    INNER JOIN tb_user AS penjual
+      ON penjual.id = t.id_user
+
+    INNER JOIN tb_cabang AS c
+      ON c.id = penjual.cabang_id
+
+    WHERE p.id_produk IN ({$placeholders})
+
+    ORDER BY p.id_produk ASC
+
+    FOR UPDATE
+  ";
+
+    $produk_database = $this->db->query(
+      $sql_produk,
+      $id_produk_list
+    )->result_array();
+
+    $produk_map = [];
+
+    foreach ($produk_database as $produk) {
+      $produk_map[(int) $produk['id_produk']] =
+        $produk;
+    }
+
+    $id_toko = null;
+    $id_penjual = null;
+    $cabang_toko_id = null;
+    $nama_toko = '';
+    $expo_token_penjual = null;
+    $total_harga = 0;
+    $detail_pesanan = [];
+
+    foreach (
+      $jumlah_per_produk as
+      $id_produk => $jumlah
+    ) {
+      if (!isset($produk_map[$id_produk])) {
+        $this->db->trans_rollback();
+
+        $this->api_response([
+          'status'  => false,
+          'message' => "Produk ID {$id_produk} tidak ditemukan."
+        ], 404);
+        return;
+      }
+
+      $produk = $produk_map[$id_produk];
+
+      if (
+        $produk['status_produk'] !== 'Tersedia' ||
+        $produk['status_toko'] !== 'Aktif' ||
+        $produk['status_cabang'] !== 'Aktif'
+      ) {
+        $this->db->trans_rollback();
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Produk "' .
+            $produk['nama_produk'] .
+            '" sudah tidak tersedia.'
+        ], 409);
+        return;
+      }
+
+      if ($id_toko === null) {
+        $id_toko = (int) $produk['id_toko'];
+        $id_penjual = (int) $produk['id_penjual'];
+        $cabang_toko_id =
+          (int) $produk['cabang_toko_id'];
+        $nama_toko = $produk['nama_toko'];
+        $expo_token_penjual =
+          $produk['expo_token'];
+      }
+
+      if (
+        (int) $produk['id_toko'] !==
+        $id_toko
+      ) {
+        $this->db->trans_rollback();
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Satu checkout hanya boleh berisi produk dari satu toko.'
+        ], 422);
+        return;
+      }
+
+      if (
+        (int) $produk['id_penjual'] ===
+        $id_pembeli
+      ) {
+        $this->db->trans_rollback();
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Anda tidak dapat membeli produk dari toko sendiri.'
+        ], 403);
+        return;
+      }
+
+      $stok = (int) $produk['stok'];
+
+      if ($stok < $jumlah) {
+        $this->db->trans_rollback();
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Stok "' .
+            $produk['nama_produk'] .
+            '" tidak mencukupi. Sisa stok: ' .
+            $stok . '.',
+          'data' => [
+            'id_produk' => (int) $id_produk,
+            'stok'      => $stok,
+            'diminta'   => (int) $jumlah
+          ]
+        ], 409);
+        return;
+      }
+
+      $harga = (int) $produk['harga'];
+      $subtotal = $harga * $jumlah;
+
+      $total_harga += $subtotal;
+
+      if ($total_harga > 2000000000) {
+        $this->db->trans_rollback();
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Total harga pesanan melebihi batas yang diizinkan.'
+        ], 422);
+        return;
+      }
+
+      $detail_pesanan[] = [
+        'id_produk'   => (int) $id_produk,
+        'nama_produk' => $produk['nama_produk'],
+        'jumlah'      => (int) $jumlah,
+        'harga_satuan' => $harga,
+        'subtotal'    => $subtotal,
+        'stok_awal'   => $stok,
+        'stok_baru'   => $stok - $jumlah,
+        'berat'       => (int) $produk['berat']
+      ];
+    }
+
+    try {
+      $invoice = 'INV-' .
+        date('YmdHis') .
+        '-' .
+        strtoupper(
+          bin2hex(random_bytes(8))
+        );
+    } catch (Throwable $e) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gagal membuat nomor invoice.'
+      ], 500);
+      return;
+    }
+
+    $waktu_sekarang = date('Y-m-d H:i:s');
+
+    /*
+   * id_pembeli, id_toko, total_harga, dan cabang
+   * seluruhnya berasal dari token/database.
+   */
+    $insert_pesanan = $this->db->insert(
+      'tb_pesanan',
+      [
+        'invoice_pesanan'  => $invoice,
+        'checkout_key'     => $checkout_key,
+        'checkout_hash'    => $checkout_hash,
+        'id_pembeli'       => $id_pembeli,
+        'cabang_pembeli_id' => $cabang_pembeli_id,
+        'id_toko'          => $id_toko,
+        'cabang_toko_id'   => $cabang_toko_id,
+        'total_harga'      => $total_harga,
+        'ongkir'           => 0,
+        'kurir'            => 'Menunggu Penjual',
+        'status_pesanan'   => 'Menunggu Ongkir',
+        'stok_dikembalikan' => 0,
+        'catatan_pembeli'  => (
+          $catatan !== ''
+          ? $catatan
+          : null
+        ),
+        'terdaftar'        => $waktu_sekarang
+      ]
+    );
+
+    if (!$insert_pesanan) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gagal membuat pesanan.'
+      ], 500);
+      return;
+    }
+
+    $id_pesanan = (int) $this->db->insert_id();
+
+    foreach ($detail_pesanan as $detail) {
+      $insert_detail = $this->db->insert(
+        'tb_pesanan_detail',
+        [
+          'id_pesanan'  => $id_pesanan,
+          'id_produk'   => $detail['id_produk'],
+          'jumlah'      => $detail['jumlah'],
+          'harga_satuan' => $detail['harga_satuan'],
+          'subtotal'    => $detail['subtotal']
+        ]
+      );
+
+      if (!$insert_detail) {
+        $this->db->trans_rollback();
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Gagal menyimpan detail pesanan.'
+        ], 500);
+        return;
+      }
+
+      $status_produk_baru =
+        $detail['stok_baru'] > 0
+        ? 'Tersedia'
+        : 'Habis';
+
+      $this->db->where(
+        'id_produk',
+        $detail['id_produk']
+      );
+
+      $update_stok = $this->db->update(
+        'tb_produk',
+        [
+          'stok' => $detail['stok_baru'],
+          'status_produk' =>
+          $status_produk_baru
+        ]
+      );
+
+      if (!$update_stok) {
+        $this->db->trans_rollback();
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Gagal memperbarui stok produk.'
+        ], 500);
+        return;
+      }
+    }
+
+    if ($this->db->trans_status() === false) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gagal menyelesaikan checkout.'
+      ], 500);
+      return;
+    }
+
+    $this->db->trans_commit();
+
+    /*
+   * Notifikasi dilakukan setelah transaksi utama berhasil.
+   * Kegagalan push tidak membatalkan pesanan.
+   */
+    $judul_notif =
+      "\u{1F6D2} Pesanan Baru Masuk";
+
+    $pesan_notif =
+      "Pesanan ({$invoice}) telah masuk. " .
+      'Silakan tentukan ongkos kirimnya.';
+
+    $this->db->insert('tb_notifikasi', [
+      'id_user' => $id_penjual,
+      'judul'   => $judul_notif,
+      'pesan'   => $pesan_notif,
+      'tanggal' => $waktu_sekarang
     ]);
 
-    $id_pesanan = $this->db->insert_id();
-
-    // Masukkan detail dan potong stok
-    foreach ($items as $item) {
-      $this->db->insert('tb_pesanan_detail', [
-        'id_pesanan' => $id_pesanan,
-        'id_produk' => $item['id_produk'],
-        'jumlah' => $item['jumlah'],
-        'harga_satuan' => $item['harga'],
-        'subtotal' => $item['jumlah'] * $item['harga']
-      ]);
-
-      $this->db->set('stok', 'stok - ' . (int)$item['jumlah'], FALSE);
-      $this->db->where('id_produk', $item['id_produk']);
-      $this->db->update('tb_produk');
-    }
-
-    $this->db->trans_complete();
-
-    if ($this->db->trans_status() === FALSE) {
-      echo json_encode(['status' => false, 'message' => 'Gagal membuat pesanan.']);
-    } else {
-      // Notifikasi ke Penjual
-      // 🔥 PERBAIKAN: Tambahkan tb_toko.id_user pada SELECT
-      $this->db->select('tb_user.expo_token, tb_toko.id_user');
-      $this->db->from('tb_toko');
-      $this->db->join('tb_user', 'tb_toko.id_user = tb_user.id');
-      $this->db->where('tb_toko.id_toko', $id_toko);
-      $penjual = $this->db->get()->row();
-
-      // 🔥 PERBAIKAN: Pisahkan simpan ke DB dan kirim push
-      if ($penjual) {
-        $judul_notif = "🛒 Pesanan Baru Masuk";
-        $pesan_notif = "Pesanan ($invoice). Segera cek alamat pembeli dan tentukan tarif Ongkos Kirimnya.";
-
-        // 1. SIMPAN KE DB NOTIFIKASI
-        $this->db->insert('tb_notifikasi', [
-          'id_user' => $penjual->id_user,
-          'judul'   => $judul_notif,
-          'pesan'   => $pesan_notif,
-          'tanggal' => date('Y-m-d H:i:s')
-        ]);
-
-        // 2. KIRIM PUSH NOTIFICATION
-        if (!empty($penjual->expo_token)) {
-          $this->send_expo_push_notification($penjual->expo_token, $judul_notif, $pesan_notif);
-        }
+    if (!empty($expo_token_penjual)) {
+      try {
+        $this->send_expo_push_notification(
+          $expo_token_penjual,
+          $judul_notif,
+          $pesan_notif
+        );
+      } catch (Throwable $e) {
+        log_message(
+          'error',
+          'Push checkout gagal: ' .
+            $e->getMessage()
+        );
       }
-      echo json_encode(['status' => true, 'message' => 'Pesanan terkirim! Menunggu penjual menentukan ongkos kirim.']);
     }
+
+    $this->api_response([
+      'status'  => true,
+      'message' => 'Pesanan terkirim. Menunggu penjual menentukan ongkos kirim.',
+      'data'    => [
+        'id_pesanan'       => $id_pesanan,
+        'invoice_pesanan'  => $invoice,
+        'checkout_key'     => $checkout_key,
+        'id_pembeli'       => $id_pembeli,
+        'cabang_pembeli_id' => $cabang_pembeli_id,
+        'id_toko'          => $id_toko,
+        'nama_toko'        => $nama_toko,
+        'id_penjual'       => $id_penjual,
+        'cabang_toko_id'   => $cabang_toko_id,
+        'total_harga'      => $total_harga,
+        'ongkir'           => 0,
+        'kurir'            => 'Menunggu Penjual',
+        'status_pesanan'   => 'Menunggu Ongkir',
+        'stok_dikembalikan' => false,
+        'terdaftar'        => $waktu_sekarang,
+        'idempotent'       => false,
+        'items'            => $detail_pesanan
+      ]
+    ], 201);
   }
+
+
   // FASE 2: Penjual Input Ongkir (Status: Menunggu Pembayaran)
   public function input_ongkir_penjual()
   {
