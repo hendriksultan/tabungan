@@ -2284,33 +2284,52 @@ class Api extends CI_Controller
   }
 
   // ==========================================
-  // 8. ENDPOINT AMBIL DAFTAR REKENING ADMIN
+  // ENDPOINT REKENING PEMBAYARAN TERPROTEKSI
   // ==========================================
   public function get_rekening()
   {
     if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
-      echo json_encode(['status' => false, 'message' => 'Gunakan metode GET.']);
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gunakan metode GET.'
+      ], 405);
+
+      return;
+    }
+
+    $auth = $this->authenticate_api();
+
+    if (!$auth) {
       return;
     }
 
     $rekening = [
       [
-        'id' => 1,
-        'bank' => 'BCA (Bank Central Asia)',
-        'nomor' => '0380463563',
+        'id'        => 1,
+        'bank'      => 'BCA (Bank Central Asia)',
+        'nomor'     => '0380463563',
         'atas_nama' => 'a.n. Mohammad Lukman Nurdin',
-        'icon' => 'card'
+        'icon'      => 'card'
       ],
       [
-        'id' => 2,
-        'bank' => 'DANA',
-        'nomor' => '085793771111',
+        'id'        => 2,
+        'bank'      => 'DANA',
+        'nomor'     => '085793771111',
         'atas_nama' => 'a.n. Mohammad Lukman Nurdin',
-        'icon' => 'wallet'
+        'icon'      => 'wallet'
       ]
     ];
 
-    echo json_encode(['status' => true, 'data' => $rekening]);
+    $this->api_response([
+      'status' => true,
+      'scope'  => 'rekening_pusat',
+      'cabang' => [
+        'id'   => (int) $auth->cabang_id,
+        'kode' => $auth->kode_cabang,
+        'nama' => $auth->nama_cabang
+      ],
+      'data' => $rekening
+    ]);
   }
 
   // ==========================================
