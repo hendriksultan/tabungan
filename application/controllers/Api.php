@@ -4457,61 +4457,268 @@ class Api extends CI_Controller
 
   public function tambah_nasabah()
   {
-    header("Access-Control-Allow-Origin: *");
-    header("Content-Type: application/json; charset=UTF-8");
-    header("Access-Control-Allow-Methods: POST");
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
+
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
+      return;
+    }
+
+    // Wajib menggunakan Bearer token yang aktif.
+    $auth = $this->authenticate_api();
+
+    if (!$auth) {
+      return;
+    }
+
+    // Hanya Administrator dan Super Admin.
+    if (!in_array($auth->level, ['Administrator', 'Super Admin'], true)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Anda tidak memiliki izin untuk menambahkan nasabah.'
+      ], 403);
+      return;
+    }
+
+    // Batasi ukuran request JSON.
+    $content_length = (int) $this->input->server('CONTENT_LENGTH');
+
+    if ($content_length > 65536) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Ukuran data terlalu besar.'
+      ], 413);
+      return;
+    }
 
     $json = file_get_contents('php://input');
     $data = json_decode($json, true);
 
-    if (!empty($data['nama']) && !empty($data['username']) && !empty($data['password'])) {
-
-      $username = $data['username'];
-
-      $cek_user = $this->db->get_where('tb_user', ['username' => $username])->num_rows();
-
-      if ($cek_user > 0) {
-        echo json_encode([
-          'status' => false,
-          'message' => 'Username sudah terdaftar! Silakan gunakan username lain.'
-        ]);
-        return;
-      }
-
-      $insert_data = [
-        'nama'         => $data['nama'],
-        'jenisKelamin' => 'Laki-Laki',
-        'telp'         => $data['telp'],
-        'email'        => $data['email'],
-        'alamat'       => $data['alamat'],
-        'username'     => $username,
-        'password'     => password_hash($data['password'], PASSWORD_BCRYPT),
-        'foto'         => 'no-image.png',
-        'skin'         => 'green',
-        'level'        => 'Nasabah',
-        'login'        => 'Ya',
-        'terdaftar'    => date('Y-m-d H:i:s')
-      ];
-
-      $insert = $this->db->insert('tb_user', $insert_data);
-
-      if ($insert) {
-        echo json_encode([
-          'status' => true,
-          'message' => 'Nasabah baru berhasil ditambahkan dan akun langsung aktif!'
-        ]);
-      } else {
-        echo json_encode([
-          'status' => false,
-          'message' => 'Gagal menambahkan nasabah ke database.'
-        ]);
-      }
-    } else {
-      echo json_encode([
-        'status' => false,
-        'message' => 'Data pendaftaran tidak lengkap.'
-      ]);
+    if (!is_array($data)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format JSON tidak valid.'
+      ], 400);
+      return;
     }
+
+    $nama = isset($data['nama'])
+      ? trim((string) $data['nama'])
+      : '';
+
+    $username = isset($data['username'])
+      ? trim((string) $data['username'])
+      : '';
+
+    $password = isset($data['password'])
+      ? (string) $data['password']
+      : '';
+
+    // Mendukung nama field lama dan baru.
+    $jenis_kelamin = isset($data['jenis_kelamin'])
+      ? trim((string) $data['jenis_kelamin'])
+      : (
+        isset($data['jenisKelamin'])
+        ? trim((string) $data['jenisKelamin'])
+        : 'Laki-Laki'
+      );
+
+    $telp = isset($data['telp'])
+      ? trim((string) $data['telp'])
+      : '';
+
+    $email = isset($data['email'])
+      ? trim((string) $data['email'])
+      : '';
+
+    $alamat = isset($data['alamat'])
+      ? trim((string) $data['alamat'])
+      : '';
+
+    if ($nama === '' || $username === '' || $password === '') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Nama, username, dan password wajib diisi.'
+      ], 422);
+      return;
+    }
+
+    if (strlen($nama) < 3 || strlen($nama) > 100) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Nama harus terdiri dari 3 sampai 100 karakter.'
+      ], 422);
+      return;
+    }
+
+    if (
+      strlen($username) < 4 ||
+      strlen($username) > 50 ||
+      !preg_match('/^[A-Za-z0-9._-]+$/', $username)
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Username harus terdiri dari 4 sampai 50 karakter dan hanya boleh berisi huruf, angka, titik, garis bawah, atau tanda hubung.'
+      ], 422);
+      return;
+    }
+
+    if (strlen($password) < 8 || strlen($password) > 72) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Password harus terdiri dari 8 sampai 72 karakter.'
+      ], 422);
+      return;
+    }
+
+    if (!in_array($jenis_kelamin, ['Laki-Laki', 'Perempuan'], true)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Jenis kelamin tidak valid.'
+      ], 422);
+      return;
+    }
+
+    if ($telp !== '' && !preg_match('/^[0-9+]{8,20}$/', $telp)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format nomor telepon tidak valid.'
+      ], 422);
+      return;
+    }
+
+    if ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format email tidak valid.'
+      ], 422);
+      return;
+    }
+
+    /*
+     * Administrator selalu menggunakan cabangnya sendiri.
+     * cabang_id dan id_admin dari request tidak dipercaya.
+     */
+    if ($auth->level === 'Administrator') {
+      $cabang_id = (int) $auth->cabang_id;
+    } else {
+      // Super Admin diperbolehkan menentukan cabang.
+      $cabang_id = isset($data['cabang_id'])
+        ? (int) $data['cabang_id']
+        : (int) $auth->cabang_id;
+    }
+
+    if ($cabang_id <= 0) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Cabang nasabah wajib dipilih.'
+      ], 422);
+      return;
+    }
+
+    // Pastikan cabang tersedia dan aktif.
+    $cabang = $this->db
+      ->select('id, kode, nama, status')
+      ->where('id', $cabang_id)
+      ->where('status', 'Aktif')
+      ->get('tb_cabang')
+      ->row();
+
+    if (!$cabang) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Cabang tidak ditemukan atau sedang tidak aktif.'
+      ], 422);
+      return;
+    }
+
+    // Perlindungan tambahan untuk Administrator.
+    if (
+      $auth->level === 'Administrator' &&
+      (int) $auth->cabang_id !== (int) $cabang->id
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Administrator hanya dapat menambahkan nasabah pada cabangnya sendiri.'
+      ], 403);
+      return;
+    }
+
+    $cek_username = $this->db
+      ->select('id')
+      ->where('username', $username)
+      ->limit(1)
+      ->get('tb_user')
+      ->row();
+
+    if ($cek_username) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Username sudah terdaftar. Silakan gunakan username lain.'
+      ], 409);
+      return;
+    }
+
+    $waktu_sekarang = date('Y-m-d H:i:s');
+
+    $insert_data = [
+      'nama'                => $nama,
+      'jenisKelamin'        => $jenis_kelamin,
+      'telp'                => $telp,
+      'email'               => $email,
+      'alamat'              => $alamat,
+      'username'            => $username,
+      'password'            => password_hash($password, PASSWORD_BCRYPT),
+      'foto'                => 'no-image.png',
+      'skin'                => 'green',
+      'level'               => 'Nasabah',
+      'login'               => 'Ya',
+      'cabang_id'           => (int) $cabang->id,
+      'diverifikasi_oleh'    => (int) $auth->id_user,
+      'diverifikasi_pada'    => $waktu_sekarang,
+      'terdaftar'           => $waktu_sekarang
+    ];
+
+    $this->db->trans_begin();
+
+    $insert = $this->db->insert('tb_user', $insert_data);
+    $id_user_baru = (int) $this->db->insert_id();
+
+    if (!$insert || $this->db->trans_status() === false) {
+      $this->db->trans_rollback();
+
+      // Termasuk kemungkinan username duplikat akibat request bersamaan.
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Nasabah gagal ditambahkan.'
+      ], 500);
+      return;
+    }
+
+    $this->db->trans_commit();
+
+    $this->api_response([
+      'status'  => true,
+      'message' => 'Nasabah berhasil ditambahkan dan akun langsung aktif.',
+      'data'    => [
+        'id_user'              => $id_user_baru,
+        'nama'                 => $nama,
+        'username'             => $username,
+        'level'                => 'Nasabah',
+        'status_akun'          => 'Aktif',
+        'cabang_id'            => (int) $cabang->id,
+        'kode_cabang'          => $cabang->kode,
+        'nama_cabang'          => $cabang->nama,
+        'ditambahkan_oleh'     => (int) $auth->id_user,
+        'nama_operator'        => $auth->nama,
+        'diverifikasi_pada'    => $waktu_sekarang
+      ]
+    ], 201);
   }
 
   // 🔥 FUNGSI INFAQ YANG SUDAH DILENGKAPI NOTIFIKASI WA & PUSH 🔥
