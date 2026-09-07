@@ -22,6 +22,156 @@ class Api extends CI_Controller
     $this->load->database();
   }
 
+
+  /**
+   * Mengirim respons JSON dengan HTTP status code.
+   */
+  private function api_response($data, $http_code = 200)
+  {
+    $this->output->set_status_header($http_code);
+    echo json_encode($data);
+  }
+
+  /**
+   * Mengambil Bearer token dari header Authorization.
+   */
+  private function get_bearer_token()
+  {
+    $authorization = $this->input->get_request_header(
+      'Authorization',
+      true
+    );
+
+    // Fallback untuk beberapa konfigurasi Apache/XAMPP
+    if (empty($authorization) && isset($_SERVER['HTTP_AUTHORIZATION'])) {
+      $authorization = $_SERVER['HTTP_AUTHORIZATION'];
+    }
+
+    if (
+      empty($authorization) &&
+      isset($_SERVER['REDIRECT_HTTP_AUTHORIZATION'])
+    ) {
+      $authorization = $_SERVER['REDIRECT_HTTP_AUTHORIZATION'];
+    }
+
+    if (
+      empty($authorization) ||
+      !preg_match(
+        '/^Bearer\s+(\S+)$/i',
+        trim($authorization),
+        $matches
+      )
+    ) {
+      return null;
+    }
+
+    $token = trim($matches[1]);
+
+    // Token yang dibuat saat login berupa 64 karakter hexadecimal
+    if (strlen($token) !== 64 || !ctype_xdigit($token)) {
+      return null;
+    }
+
+    return $token;
+  }
+
+  /**
+   * Memvalidasi Bearer token dan mengembalikan data pengguna.
+   */
+  private function authenticate_api()
+  {
+    $token = $this->get_bearer_token();
+
+    if (empty($token)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Bearer token tidak ditemukan.'
+      ], 401);
+
+      return null;
+    }
+
+    $token_hash = hash('sha256', $token);
+
+    $this->db->select(
+      't.id AS token_id,
+         t.id_user,
+         t.expires_at,
+         t.revoked_at,
+         u.nama,
+         u.username,
+         u.level,
+         u.cabang_id,
+         c.kode AS kode_cabang,
+         c.nama AS nama_cabang,
+         c.status AS status_cabang,
+         c.is_pusat'
+    );
+    $this->db->from('tb_api_token AS t');
+    $this->db->join('tb_user AS u', 'u.id = t.id_user', 'inner');
+    $this->db->join('tb_cabang AS c', 'c.id = u.cabang_id', 'left');
+    $this->db->where('t.token_hash', $token_hash);
+    $this->db->limit(1);
+
+    $auth = $this->db->get()->row();
+
+    if (!$auth) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Token tidak valid.'
+      ], 401);
+
+      return null;
+    }
+
+    if (!empty($auth->revoked_at)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Token sudah tidak aktif.'
+      ], 401);
+
+      return null;
+    }
+
+    if (
+      empty($auth->expires_at) ||
+      strtotime($auth->expires_at) <= time()
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Sesi login telah berakhir. Silakan login kembali.'
+      ], 401);
+
+      return null;
+    }
+
+    if (empty($auth->cabang_id)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Akun belum terhubung dengan cabang.'
+      ], 403);
+
+      return null;
+    }
+
+    if ($auth->status_cabang !== 'Aktif') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Cabang akun sedang tidak aktif.'
+      ], 403);
+
+      return null;
+    }
+
+    // Catat waktu terakhir token digunakan
+    $this->db->where('id', $auth->token_id);
+    $this->db->update('tb_api_token', [
+      'last_used_at' => date('Y-m-d H:i:s')
+    ]);
+
+    return $auth;
+  }
+
   // ==========================================
   // 1. ENDPOINT LOGIN (SUDAH DENGAN FOTO)
   // ==========================================
@@ -155,6 +305,48 @@ class Api extends CI_Controller
       ]);
     }
   }
+
+
+  // ==========================================
+  // ENDPOINT LOGOUT API
+  // ==========================================
+  public function logout()
+  {
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gunakan metode POST.'
+      ], 405);
+
+      return;
+    }
+
+    $auth = $this->authenticate_api();
+
+    if (!$auth) {
+      return;
+    }
+
+    $this->db->where('id', $auth->token_id);
+    $updated = $this->db->update('tb_api_token', [
+      'revoked_at' => date('Y-m-d H:i:s')
+    ]);
+
+    if (!$updated) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Logout gagal diproses.'
+      ], 500);
+
+      return;
+    }
+
+    $this->api_response([
+      'status'  => true,
+      'message' => 'Logout berhasil.'
+    ]);
+  }
+
 
   // ==========================================
   // 2. ENDPOINT SALDO 
