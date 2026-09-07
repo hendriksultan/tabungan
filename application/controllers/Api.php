@@ -2744,9 +2744,6 @@ class Api extends CI_Controller
   }
 
   // ==========================================
-  // FUNGSI HELPER
-  // ==========================================
-  // ==========================================
   // ENDPOINT UPDATE EXPO TOKEN TERPROTEKSI
   // ==========================================
   public function update_token()
@@ -2964,60 +2961,326 @@ class Api extends CI_Controller
     }
   }
 
+  // ==========================================
+  // ENDPOINT UPDATE PENGATURAN TERPROTEKSI
+  // ==========================================
   public function update_pengaturan()
   {
-    $input = json_decode(file_get_contents('php://input'), true);
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gunakan metode POST.'
+      ], 405);
 
-    // Pastikan yang mengakses adalah Super Admin
-    $this->db->where('id', $input['id_admin']);
-    $this->db->where('level', 'Super Admin');
-    $admin = $this->db->get('tb_user')->row();
+      return;
+    }
 
-    if (!$admin) {
-      echo json_encode(['status' => false, 'message' => 'Akses ditolak! Khusus Super Admin.']);
+    $auth = $this->authenticate_api();
+
+    if (!$auth) {
+      return;
+    }
+
+    if ($auth->level !== 'Super Admin') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Akses ditolak. Khusus Super Admin.'
+      ], 403);
+
+      return;
+    }
+
+    $request = json_decode($this->input->raw_input_stream, true);
+
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format permintaan tidak valid.'
+      ], 400);
+
+      return;
+    }
+
+    /*
+     * id_admin dari request tidak digunakan.
+     * Identitas pengelola berasal dari Bearer token.
+     */
+    $pengaturan_lama = $this->db
+      ->order_by('id', 'ASC')
+      ->limit(1)
+      ->get('tb_aplikasi')
+      ->row();
+
+    $nama = array_key_exists('nama', $request)
+      ? trim((string) $request['nama'])
+      : ($pengaturan_lama->nama ?? '');
+
+    $telp = array_key_exists('telp', $request)
+      ? trim((string) $request['telp'])
+      : ($pengaturan_lama->telp ?? '');
+
+    $email = array_key_exists('email', $request)
+      ? trim((string) $request['email'])
+      : ($pengaturan_lama->email ?? '');
+
+    $alamat = array_key_exists('alamat', $request)
+      ? trim((string) $request['alamat'])
+      : ($pengaturan_lama->alamat ?? '');
+
+    $logo_base64 = (string) (
+      $request['logo_base64'] ?? ''
+    );
+
+    if ($nama === '') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Nama aplikasi wajib diisi.'
+      ], 422);
+
+      return;
+    }
+
+    if (mb_strlen($nama) > 256) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Nama aplikasi terlalu panjang.'
+      ], 422);
+
+      return;
+    }
+
+    if (mb_strlen($telp) > 16) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Nomor telepon maksimal 16 karakter.'
+      ], 422);
+
+      return;
+    }
+
+    if (
+      $email !== '' &&
+      !filter_var($email, FILTER_VALIDATE_EMAIL)
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format email tidak valid.'
+      ], 422);
+
+      return;
+    }
+
+    if (mb_strlen($email) > 256) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Email terlalu panjang.'
+      ], 422);
+
+      return;
+    }
+
+    if (mb_strlen($alamat) > 5000) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Alamat terlalu panjang.'
+      ], 422);
+
+      return;
+    }
+
+    // ==========================================
+    // VALIDASI LOGO
+    // ==========================================
+    $image_binary = null;
+    $image_extension = null;
+
+    if ($logo_base64 !== '') {
+      if (
+        !preg_match(
+          '/^data:image\/(jpeg|jpg|png|webp);base64,(.+)$/is',
+          $logo_base64,
+          $image_matches
+        )
+      ) {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Format logo tidak didukung.'
+        ], 422);
+
+        return;
+      }
+
+      $image_binary = base64_decode(
+        $image_matches[2],
+        true
+      );
+
+      if ($image_binary === false) {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Logo tidak dapat dibaca.'
+        ], 422);
+
+        return;
+      }
+
+      if (strlen($image_binary) > 5 * 1024 * 1024) {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Ukuran logo maksimal 5 MB.'
+        ], 422);
+
+        return;
+      }
+
+      $image_info = @getimagesizefromstring($image_binary);
+      $mime = $image_info['mime'] ?? '';
+
+      $allowed_mimes = [
+        'image/jpeg' => 'jpg',
+        'image/png'  => 'png',
+        'image/webp' => 'webp'
+      ];
+
+      if (!isset($allowed_mimes[$mime])) {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Isi file logo bukan gambar yang valid.'
+        ], 422);
+
+        return;
+      }
+
+      $image_extension = $allowed_mimes[$mime];
+    }
+
+    /*
+     * Jika tabel masih kosong, logo wajib diberikan
+     * karena kolom logo pada database bersifat NOT NULL.
+     */
+    if (!$pengaturan_lama && $image_binary === null) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Logo wajib diunggah pada pengaturan pertama.'
+      ], 422);
+
       return;
     }
 
     $data_update = [
-      'nama' => $input['nama'] ?? '',
-      'telp' => $input['telp'] ?? '',
-      'email' => $input['email'] ?? '',
-      'alamat' => $input['alamat'] ?? ''
+      'nama'   => $nama,
+      'telp'   => $telp,
+      'email'  => $email,
+      'alamat' => $alamat
     ];
 
-    // Jika Admin mengubah logo
-    if (!empty($input['logo_base64'])) {
-      $image_parts = explode(";base64,", $input['logo_base64']);
-      if (count($image_parts) == 2) {
-        $image_base64 = base64_decode($image_parts[1]);
-        $file_name = 'Logo-' . time() . '.png';
+    $file_name = null;
+    $saved_file_path = null;
 
-        $file_path = FCPATH . 'assets/logo/' . $file_name;
+    if ($image_binary !== null) {
+      $upload_dir = FCPATH . 'assets/logo/';
 
-        if (file_put_contents($file_path, $image_base64)) {
-          $data_update['logo'] = $file_name;
-        }
+      if (
+        !is_dir($upload_dir) &&
+        !mkdir($upload_dir, 0755, true)
+      ) {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Folder logo tidak dapat dibuat.'
+        ], 500);
+
+        return;
       }
+
+      try {
+        $random_name = bin2hex(random_bytes(8));
+      } catch (Exception $e) {
+        $random_name = uniqid('', true);
+      }
+
+      $file_name = 'logo_' .
+        date('YmdHis') . '_' .
+        $random_name . '.' .
+        $image_extension;
+
+      $saved_file_path = $upload_dir . $file_name;
+
+      if (
+        file_put_contents(
+          $saved_file_path,
+          $image_binary,
+          LOCK_EX
+        ) === false
+      ) {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Logo gagal disimpan.'
+        ], 500);
+
+        return;
+      }
+
+      $data_update['logo'] = $file_name;
     }
 
-    // 🔥 PERBAIKAN: Logika Cerdas (Jika tabel kosong maka INSERT, jika ada maka UPDATE)
-    $cek_data = $this->db->get('tb_aplikasi')->num_rows();
+    $this->db->trans_begin();
 
-    if ($cek_data > 0) {
-      $this->db->where('id', 1);
-      $update = $this->db->update('tb_aplikasi', $data_update);
+    if ($pengaturan_lama) {
+      $this->db->where('id', $pengaturan_lama->id);
+      $saved = $this->db->update(
+        'tb_aplikasi',
+        $data_update
+      );
     } else {
       $data_update['id'] = 1;
-      $update = $this->db->insert('tb_aplikasi', $data_update);
+      $saved = $this->db->insert(
+        'tb_aplikasi',
+        $data_update
+      );
     }
 
-    if ($update) {
-      echo json_encode(['status' => true, 'message' => 'Pengaturan aplikasi berhasil disimpan!']);
-    } else {
-      echo json_encode(['status' => false, 'message' => 'Gagal menyimpan pengaturan.']);
+    if (!$saved || $this->db->trans_status() === false) {
+      $database_error = $this->db->error();
+      $this->db->trans_rollback();
+
+      if (
+        $saved_file_path !== null &&
+        is_file($saved_file_path)
+      ) {
+        unlink($saved_file_path);
+      }
+
+      log_message(
+        'error',
+        'Gagal memperbarui pengaturan aplikasi: ' .
+          json_encode($database_error)
+      );
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Pengaturan aplikasi gagal disimpan.'
+      ], 500);
+
+      return;
     }
+
+    $this->db->trans_commit();
+
+    $this->api_response([
+      'status'  => true,
+      'message' => 'Pengaturan aplikasi berhasil disimpan.',
+      'data'    => [
+        'nama'             => $nama,
+        'telp'             => $telp,
+        'email'            => $email,
+        'alamat'           => $alamat,
+        'logo'             => $file_name
+          ?? ($pengaturan_lama->logo ?? null),
+        'diperbarui_oleh'  => (int) $auth->id_user,
+        'nama_operator'    => $auth->nama
+      ]
+    ]);
   }
-
   // ==========================================
   // 10. ENDPOINT BANNER DINAMIS
   // ==========================================
