@@ -3291,71 +3291,365 @@ class Api extends CI_Controller
     echo json_encode(['status' => true, 'data' => $data]);
   }
 
+  // ==========================================
+  // ENDPOINT UPLOAD BANNER GLOBAL
+  // ==========================================
   public function upload_banner()
   {
-    $input = json_decode(file_get_contents('php://input'), true);
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gunakan metode POST.'
+      ], 405);
 
-    // Pastikan hanya Administrator yang bisa upload
-    $this->db->where('id', $input['id_admin']);
-    $this->db->where_in('level', ['Administrator', 'Super Admin']); // ✅ Sisa teks dihapus
-    $admin = $this->db->get('tb_user')->row();
-    if (!$admin) {
-      echo json_encode(['status' => false, 'message' => 'Akses ditolak! Khusus Admin.']);
       return;
     }
 
-    if (!empty($input['gambar_base64'])) {
-      $image_parts = explode(";base64,", $input['gambar_base64']);
-      if (count($image_parts) == 2) {
-        $image_base64 = base64_decode($image_parts[1]);
-        $file_name = 'banner_' . time() . '_' . uniqid() . '.jpg';
+    $auth = $this->authenticate_api();
 
-        $upload_dir = FCPATH . 'assets/banner/';
-        if (!is_dir($upload_dir)) {
-          mkdir($upload_dir, 0777, true);
-        }
-
-        if (file_put_contents($upload_dir . $file_name, $image_base64)) {
-          $this->db->insert('tb_banner', [
-            'gambar' => $file_name,
-            'terdaftar' => date('Y-m-d H:i:s')
-          ]);
-          echo json_encode(['status' => true, 'message' => 'Banner berhasil dipublikasikan!']);
-          return;
-        }
-      }
-    }
-    echo json_encode(['status' => false, 'message' => 'Gagal mengupload gambar.']);
-  }
-
-  public function hapus_banner()
-  {
-    $input = json_decode(file_get_contents('php://input'), true);
-
-    $this->db->where('id', $input['id_admin']);
-    $this->db->where_in('level', ['Administrator', 'Super Admin']);
-    $admin = $this->db->get('tb_user')->row();
-    if (!$admin) {
-      echo json_encode(['status' => false, 'message' => 'Akses ditolak!']);
+    if (!$auth) {
       return;
     }
 
-    $id_banner = $input['id_banner'] ?? '';
-    $banner = $this->db->get_where('tb_banner', ['id' => $id_banner])->row();
+    if ($auth->level !== 'Super Admin') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Akses ditolak. Khusus Super Admin.'
+      ], 403);
 
-    if ($banner) {
-      $file_path = FCPATH . 'assets/banner/' . $banner->gambar;
-      if (file_exists($file_path)) {
+      return;
+    }
+
+    $request = json_decode($this->input->raw_input_stream, true);
+
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format permintaan tidak valid.'
+      ], 400);
+
+      return;
+    }
+
+    /*
+     * id_admin dari request diabaikan.
+     * Operator selalu berasal dari Bearer token.
+     */
+    $gambar_base64 = (string) (
+      $request['gambar_base64'] ?? ''
+    );
+
+    if ($gambar_base64 === '') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gambar banner wajib dipilih.'
+      ], 422);
+
+      return;
+    }
+
+    if (
+      !preg_match(
+        '/^data:image\/(jpeg|jpg|png|webp);base64,(.+)$/is',
+        $gambar_base64,
+        $image_matches
+      )
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format banner tidak didukung.'
+      ], 422);
+
+      return;
+    }
+
+    $image_binary = base64_decode(
+      $image_matches[2],
+      true
+    );
+
+    if ($image_binary === false) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gambar banner tidak dapat dibaca.'
+      ], 422);
+
+      return;
+    }
+
+    if (strlen($image_binary) > 5 * 1024 * 1024) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Ukuran banner maksimal 5 MB.'
+      ], 422);
+
+      return;
+    }
+
+    $image_info = @getimagesizefromstring($image_binary);
+    $mime = $image_info['mime'] ?? '';
+    $width = (int) ($image_info[0] ?? 0);
+    $height = (int) ($image_info[1] ?? 0);
+
+    $allowed_mimes = [
+      'image/jpeg' => 'jpg',
+      'image/png'  => 'png',
+      'image/webp' => 'webp'
+    ];
+
+    if (!isset($allowed_mimes[$mime])) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Isi file bukan gambar yang valid.'
+      ], 422);
+
+      return;
+    }
+
+    if (
+      $width <= 0 ||
+      $height <= 0 ||
+      $width > 10000 ||
+      $height > 10000 ||
+      ($width * $height) > 40000000
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Dimensi gambar banner tidak valid.'
+      ], 422);
+
+      return;
+    }
+
+    $upload_dir = FCPATH . 'assets/banner/';
+
+    if (
+      !is_dir($upload_dir) &&
+      !mkdir($upload_dir, 0755, true)
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Folder banner tidak dapat dibuat.'
+      ], 500);
+
+      return;
+    }
+
+    try {
+      $random_name = bin2hex(random_bytes(8));
+    } catch (Exception $e) {
+      $random_name = uniqid('', true);
+    }
+
+    $file_name = 'banner_' .
+      date('YmdHis') . '_' .
+      $random_name . '.' .
+      $allowed_mimes[$mime];
+
+    $file_path = $upload_dir . $file_name;
+
+    if (
+      file_put_contents(
+        $file_path,
+        $image_binary,
+        LOCK_EX
+      ) === false
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gambar banner gagal disimpan.'
+      ], 500);
+
+      return;
+    }
+
+    $insert = $this->db->insert('tb_banner', [
+      'gambar'     => $file_name,
+      'terdaftar'  => date('Y-m-d H:i:s')
+    ]);
+
+    $id_banner = (int) $this->db->insert_id();
+
+    if (!$insert) {
+      if (is_file($file_path)) {
         unlink($file_path);
       }
 
-      $this->db->where('id', $id_banner);
-      $this->db->delete('tb_banner');
-      echo json_encode(['status' => true, 'message' => 'Banner berhasil dihapus!']);
-    } else {
-      echo json_encode(['status' => false, 'message' => 'Data banner tidak ditemukan.']);
+      log_message(
+        'error',
+        'Gagal menyimpan banner: ' .
+          json_encode($this->db->error())
+      );
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Data banner gagal disimpan.'
+      ], 500);
+
+      return;
     }
+
+    $this->api_response([
+      'status'  => true,
+      'message' => 'Banner berhasil dipublikasikan.',
+      'data'    => [
+        'id'                 => $id_banner,
+        'gambar'             => $file_name,
+        'width'              => $width,
+        'height'             => $height,
+        'dipublikasikan_oleh' => (int) $auth->id_user,
+        'nama_operator'      => $auth->nama
+      ]
+    ]);
   }
+
+  // ==========================================
+  // ENDPOINT HAPUS BANNER GLOBAL
+  // ==========================================
+  public function hapus_banner()
+  {
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gunakan metode POST.'
+      ], 405);
+
+      return;
+    }
+
+    $auth = $this->authenticate_api();
+
+    if (!$auth) {
+      return;
+    }
+
+    if ($auth->level !== 'Super Admin') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Akses ditolak. Khusus Super Admin.'
+      ], 403);
+
+      return;
+    }
+
+    $request = json_decode($this->input->raw_input_stream, true);
+
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format permintaan tidak valid.'
+      ], 400);
+
+      return;
+    }
+
+    $id_banner = (int) ($request['id_banner'] ?? 0);
+
+    if ($id_banner <= 0) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'ID banner tidak valid.'
+      ], 422);
+
+      return;
+    }
+
+    $this->db->trans_begin();
+
+    $banner = $this->db->query(
+      'SELECT id, gambar
+         FROM tb_banner
+         WHERE id = ?
+         FOR UPDATE',
+      [$id_banner]
+    )->row();
+
+    if (!$banner) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Data banner tidak ditemukan.'
+      ], 404);
+
+      return;
+    }
+
+    $this->db->where('id', $id_banner);
+    $deleted = $this->db->delete('tb_banner');
+
+    if (!$deleted || $this->db->trans_status() === false) {
+      $database_error = $this->db->error();
+      $this->db->trans_rollback();
+
+      log_message(
+        'error',
+        'Gagal menghapus banner: ' .
+          json_encode($database_error)
+      );
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Banner gagal dihapus.'
+      ], 500);
+
+      return;
+    }
+
+    $this->db->trans_commit();
+
+    /*
+     * Hapus file hanya jika benar-benar berada
+     * di dalam folder assets/banner.
+     */
+    $file_removed = false;
+    $upload_root = realpath(
+      FCPATH . 'assets/banner/'
+    );
+
+    if (
+      $upload_root !== false &&
+      basename($banner->gambar) === $banner->gambar
+    ) {
+      $candidate_path = $upload_root .
+        DIRECTORY_SEPARATOR .
+        $banner->gambar;
+
+      $real_file_path = realpath($candidate_path);
+
+      if (
+        $real_file_path !== false &&
+        strpos(
+          $real_file_path,
+          $upload_root . DIRECTORY_SEPARATOR
+        ) === 0 &&
+        is_file($real_file_path)
+      ) {
+        $file_removed = unlink($real_file_path);
+      }
+    }
+
+    if (!$file_removed) {
+      log_message(
+        'debug',
+        'File banner tidak ditemukan atau tidak perlu dihapus: ' .
+          $banner->gambar
+      );
+    }
+
+    $this->api_response([
+      'status'  => true,
+      'message' => 'Banner berhasil dihapus.',
+      'data'    => [
+        'id_banner'       => $id_banner,
+        'gambar'          => $banner->gambar,
+        'file_dihapus'    => $file_removed,
+        'dihapus_oleh'    => (int) $auth->id_user,
+        'nama_operator'   => $auth->nama
+      ]
+    ]);
+  }
+
   public function register()
   {
     header("Access-Control-Allow-Origin: *");
