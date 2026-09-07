@@ -6704,56 +6704,302 @@ class Api extends CI_Controller
 
   public function export_laporan_kas()
   {
-    // 1. Tangkap parameter tanggal dari React Native
-    $start = $this->input->get('start');
-    $end = $this->input->get('end');
+    header('Access-Control-Allow-Origin: *');
+    header('Access-Control-Allow-Methods: GET');
+    header('Access-Control-Allow-Headers: Authorization, Content-Type');
 
-    // 2. Buat nama file menjadi dinamis berdasarkan periode
-    if (!empty($start) && !empty($end)) {
-      $nama_file = "Laporan_Kas_{$start}_sd_{$end}.csv";
-    } else {
-      $nama_file = "Laporan_Kas_Semua_" . date('Y-m-d') . ".csv";
+    if ($this->input->method(TRUE) !== 'GET') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
+      return;
     }
 
-    header("Content-Type: text/csv; charset=utf-8");
-    header("Content-Disposition: attachment; filename={$nama_file}");
+    $auth = $this->authenticate_api();
+
+    if (!$auth) {
+      return;
+    }
+
+    if (!in_array($auth->level, ['Administrator', 'Super Admin'], true)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Anda tidak memiliki izin untuk mengekspor laporan kas.'
+      ], 403);
+      return;
+    }
+
+    if (
+      $auth->level === 'Administrator' &&
+      (int) $auth->cabang_id <= 0
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Administrator belum terhubung dengan cabang yang valid.'
+      ], 403);
+      return;
+    }
+
+    $start = trim((string) $this->input->get('start', true));
+    $end = trim((string) $this->input->get('end', true));
+
+    // Tanggal awal dan akhir harus diisi bersamaan.
+    if (
+      ($start === '' && $end !== '') ||
+      ($start !== '' && $end === '')
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Tanggal awal dan tanggal akhir harus diisi bersamaan.'
+      ], 422);
+      return;
+    }
+
+    if ($start !== '' && $end !== '') {
+      $tanggal_awal = DateTime::createFromFormat(
+        '!Y-m-d',
+        $start
+      );
+
+      $tanggal_akhir = DateTime::createFromFormat(
+        '!Y-m-d',
+        $end
+      );
+
+      $start_valid = $tanggal_awal &&
+        $tanggal_awal->format('Y-m-d') === $start;
+
+      $end_valid = $tanggal_akhir &&
+        $tanggal_akhir->format('Y-m-d') === $end;
+
+      if (!$start_valid || !$end_valid) {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Format tanggal harus YYYY-MM-DD.'
+        ], 422);
+        return;
+      }
+
+      if ($tanggal_awal > $tanggal_akhir) {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Tanggal awal tidak boleh melebihi tanggal akhir.'
+        ], 422);
+        return;
+      }
+
+      $selisih_hari = (int) $tanggal_awal
+        ->diff($tanggal_akhir)
+        ->format('%a');
+
+      if ($selisih_hari > 366) {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Periode laporan maksimal 366 hari.'
+        ], 422);
+        return;
+      }
+    }
+
+    /*
+     * Query dibangun menggunakan Query Builder.
+     * Tidak ada parameter tanggal yang ditempel langsung ke SQL.
+     */
+    $this->db->select(
+      "
+        t.id,
+        t.tanggal,
+        u.nama AS nama_nasabah,
+        t.jenis,
+        t.nominal,
+        t.keterangan,
+        t.status_konfirmasi,
+        COALESCE(t.cabang_id, u.cabang_id) AS cabang_id,
+        c.kode AS kode_cabang,
+        c.nama AS nama_cabang
+        ",
+      false
+    );
+
+    $this->db->from('tb_transaksi AS t');
+
+    $this->db->join(
+      'tb_user AS u',
+      't.idNasabah = u.id',
+      'left'
+    );
+
+    $this->db->join(
+      'tb_cabang AS c',
+      'c.id = COALESCE(t.cabang_id, u.cabang_id)',
+      'left',
+      false
+    );
+
+    $this->db->where(
+      't.status_konfirmasi',
+      'Sukses'
+    );
+
+    if ($start !== '' && $end !== '') {
+      $this->db->where('t.tanggal >=', $start);
+      $this->db->where('t.tanggal <=', $end);
+    }
+
+    /*
+     * Administrator hanya melihat transaksi cabangnya.
+     * Transaksi lama tanpa cabang_id mengikuti cabang Nasabah.
+     */
+    if ($auth->level === 'Administrator') {
+      $this->db->group_start();
+
+      $this->db->where(
+        't.cabang_id',
+        (int) $auth->cabang_id
+      );
+
+      $this->db->or_group_start();
+
+      $this->db->where(
+        't.cabang_id IS NULL',
+        null,
+        false
+      );
+
+      $this->db->where(
+        'u.cabang_id',
+        (int) $auth->cabang_id
+      );
+
+      $this->db->group_end();
+      $this->db->group_end();
+    }
+
+    $this->db->order_by('t.tanggal', 'DESC');
+    $this->db->order_by('t.id', 'DESC');
+
+    $query = $this->db->get();
+
+    if (!$query) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gagal mengambil data laporan kas.'
+      ], 500);
+      return;
+    }
+
+    $data_laporan = $query->result_array();
+
+    // Nama file hanya berasal dari tanggal yang telah divalidasi.
+    if ($start !== '' && $end !== '') {
+      $periode_file = $start . '_sd_' . $end;
+    } else {
+      $periode_file = 'Semua_' . date('Y-m-d');
+    }
+
+    if ($auth->level === 'Administrator') {
+      $cakupan_file = 'Cabang_' .
+        (int) $auth->cabang_id;
+    } else {
+      $cakupan_file = 'Semua_Cabang';
+    }
+
+    $nama_file = 'Laporan_Kas_' .
+      $cakupan_file . '_' .
+      $periode_file . '.csv';
+
+    /*
+     * Perlindungan CSV/Excel formula injection.
+     * Sel yang diawali =, +, -, atau @ diberi tanda petik.
+     */
+    $csv_safe = static function ($value) {
+      $text = (string) $value;
+
+      if (
+        $text !== '' &&
+        preg_match('/^[=+\-@]/', $text)
+      ) {
+        return "'" . $text;
+      }
+
+      return $text;
+    };
+
+    header('Content-Type: text/csv; charset=UTF-8');
+    header(
+      'Content-Disposition: attachment; filename="' .
+        $nama_file . '"'
+    );
+    header('X-Content-Type-Options: nosniff');
+    header('Cache-Control: no-store, no-cache, must-revalidate');
+    header('Pragma: no-cache');
 
     $output = fopen('php://output', 'w');
 
-    // BOM UTF-8 agar Excel mengenali enkripsi file
-    fprintf($output, chr(0xEF) . chr(0xBB) . chr(0xBF));
-    fputcsv($output, ['No', 'ID Transaksi', 'Tanggal', 'Nama Anggota', 'Jenis', 'Nominal', 'Keterangan', 'Status'], ';');
-
-    // 3. Siapkan kondisi filter tanggal untuk SQL
-    $where_date = "";
-    if (!empty($start) && !empty($end)) {
-      $where_date = " AND t.tanggal >= '{$start}' AND t.tanggal <= '{$end}' ";
+    if ($output === false) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gagal membuat file laporan.'
+      ], 500);
+      return;
     }
 
-    // 4. Sisipkan kondisi tanggal ke dalam Query Utama
-    $sql = "SELECT t.id, t.tanggal, u.nama, t.jenis, t.nominal, t.keterangan, t.status_konfirmasi 
-            FROM tb_transaksi t 
-            LEFT JOIN tb_user u ON t.idNasabah = u.id 
-            WHERE t.status_konfirmasi = 'Sukses' 
-            {$where_date} 
-            ORDER BY t.tanggal DESC";
+    // BOM UTF-8 agar karakter Indonesia terbaca oleh Excel.
+    fwrite(
+      $output,
+      chr(0xEF) . chr(0xBB) . chr(0xBF)
+    );
 
-    $query = $this->db->query($sql)->result_array();
+    fputcsv(
+      $output,
+      [
+        'No',
+        'ID Transaksi',
+        'Tanggal',
+        'Nama Nasabah',
+        'Cabang',
+        'Jenis',
+        'Nominal',
+        'Keterangan',
+        'Status'
+      ],
+      ';'
+    );
 
     $no = 1;
-    foreach ($query as $row) {
-      fputcsv($output, [
-        $no++,
-        'TX-' . $row['id'],
-        $row['tanggal'],
-        $row['nama'] ?? 'Nasabah Umum',
-        $row['jenis'],
-        $row['nominal'],
-        $row['keterangan'],
-        $row['status_konfirmasi']
-      ], ';');
+
+    foreach ($data_laporan as $row) {
+      $nama_cabang = !empty($row['nama_cabang'])
+        ? $row['nama_cabang']
+        : 'Cabang tidak diketahui';
+
+      if (!empty($row['kode_cabang'])) {
+        $nama_cabang = $row['kode_cabang'] .
+          ' - ' . $nama_cabang;
+      }
+
+      fputcsv(
+        $output,
+        [
+          $no++,
+          'TX-' . (int) $row['id'],
+          $csv_safe($row['tanggal']),
+          $csv_safe(
+            $row['nama_nasabah'] ?? 'Nasabah Umum'
+          ),
+          $csv_safe($nama_cabang),
+          $csv_safe($row['jenis']),
+          (float) $row['nominal'],
+          $csv_safe($row['keterangan']),
+          $csv_safe($row['status_konfirmasi'])
+        ],
+        ';'
+      );
     }
+
     fclose($output);
+    exit;
   }
 
   // ==========================================
