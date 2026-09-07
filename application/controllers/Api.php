@@ -8240,21 +8240,205 @@ class Api extends CI_Controller
   // Endpoint Admin: Ambil Semua Daftar Toko
   public function admin_get_semua_toko()
   {
-    $request = json_decode($this->input->raw_input_stream, true);
-    $level = $request['level'] ?? '';
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
 
-    if ($level !== 'Administrator' && $level !== 'Super Admin') {
-      echo json_encode(['status' => false, 'message' => 'Akses ditolak. Khusus Admin.']);
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
       return;
     }
 
-    $this->db->select('tb_toko.*, tb_user.nama as nama_pemilik');
-    $this->db->from('tb_toko');
-    $this->db->join('tb_user', 'tb_toko.id_user = tb_user.id', 'left');
-    $this->db->order_by('tb_toko.id_toko', 'DESC');
-    $toko = $this->db->get()->result_array();
+    $auth = $this->authenticate_api();
 
-    echo json_encode(['status' => true, 'data' => $toko]);
+    if (!$auth) {
+      return;
+    }
+
+    /*
+     * level, id_admin, dan cabang_id dari request tidak dipercaya.
+     */
+    if (!in_array($auth->level, ['Administrator', 'Super Admin'], true)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Akses ditolak. Endpoint ini khusus Administrator.'
+      ], 403);
+      return;
+    }
+
+    if (
+      $auth->level === 'Administrator' &&
+      (int) $auth->cabang_id <= 0
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Administrator belum terhubung dengan cabang yang valid.'
+      ], 403);
+      return;
+    }
+
+    /*
+     * Jumlah dan status produk dihitung dalam satu subquery
+     * sehingga tidak terjadi N+1 query.
+     */
+    $this->db->select(
+      "
+        t.id_toko,
+        t.id_user,
+        t.nama_toko,
+        t.deskripsi_toko,
+        t.foto_toko,
+        t.alamat_toko,
+        t.logo_toko,
+        t.status_toko,
+        t.status_diubah_oleh,
+        t.status_diubah_pada,
+        t.terdaftar,
+
+        u.nama AS nama_pemilik,
+        u.cabang_id,
+
+        c.kode AS kode_cabang,
+        c.nama AS nama_cabang,
+
+        operator.nama AS nama_pengubah_status,
+
+        COALESCE(produk.jumlah_produk, 0)
+            AS jumlah_produk,
+
+        COALESCE(produk.produk_tersedia, 0)
+            AS produk_tersedia,
+
+        COALESCE(produk.produk_habis, 0)
+            AS produk_habis,
+
+        COALESCE(produk.produk_arsip, 0)
+            AS produk_arsip
+        ",
+      false
+    );
+
+    $this->db->from('tb_toko AS t');
+
+    $this->db->join(
+      'tb_user AS u',
+      'u.id = t.id_user',
+      'inner'
+    );
+
+    $this->db->join(
+      'tb_cabang AS c',
+      'c.id = u.cabang_id',
+      'left'
+    );
+
+    $this->db->join(
+      'tb_user AS operator',
+      'operator.id = t.status_diubah_oleh',
+      'left'
+    );
+
+    $this->db->join(
+      "(
+            SELECT
+                id_toko,
+                COUNT(*) AS jumlah_produk,
+                SUM(status_produk = 'Tersedia')
+                    AS produk_tersedia,
+                SUM(status_produk = 'Habis')
+                    AS produk_habis,
+                SUM(status_produk = 'Arsip')
+                    AS produk_arsip
+            FROM tb_produk
+            GROUP BY id_toko
+        ) AS produk",
+      'produk.id_toko = t.id_toko',
+      'left',
+      false
+    );
+
+    // Administrator hanya melihat toko pada cabangnya.
+    if ($auth->level === 'Administrator') {
+      $this->db->where(
+        'u.cabang_id',
+        (int) $auth->cabang_id
+      );
+    }
+
+    $this->db->order_by('t.id_toko', 'DESC');
+
+    $hasil_query = $this->db->get();
+
+    if (!$hasil_query) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gagal mengambil daftar toko.'
+      ], 500);
+      return;
+    }
+
+    $toko = $hasil_query->result_array();
+    $data_toko = [];
+
+    foreach ($toko as $row) {
+      $data_toko[] = [
+        'id_toko'              => (int) $row['id_toko'],
+        'id_user'              => (int) $row['id_user'],
+        'nama_pemilik'         => $row['nama_pemilik'],
+        'nama_toko'            => $row['nama_toko'],
+        'deskripsi_toko'       => $row['deskripsi_toko'],
+        'foto_toko'            => $row['foto_toko'],
+        'alamat_toko'          => $row['alamat_toko'],
+        'logo_toko'            => $row['logo_toko'],
+        'status_toko'          => $row['status_toko'],
+        'toko_aktif'           =>
+        $row['status_toko'] === 'Aktif',
+
+        'cabang_id'            => (int) $row['cabang_id'],
+        'kode_cabang'          => $row['kode_cabang'],
+        'nama_cabang'          => $row['nama_cabang'],
+
+        'jumlah_produk'        =>
+        (int) $row['jumlah_produk'],
+        'produk_tersedia'      =>
+        (int) $row['produk_tersedia'],
+        'produk_habis'         =>
+        (int) $row['produk_habis'],
+        'produk_arsip'         =>
+        (int) $row['produk_arsip'],
+
+        'status_diubah_oleh'   =>
+        $row['status_diubah_oleh'] !== null
+          ? (int) $row['status_diubah_oleh']
+          : null,
+
+        'nama_pengubah_status' =>
+        $row['nama_pengubah_status'],
+
+        'status_diubah_pada'   =>
+        $row['status_diubah_pada'],
+
+        'terdaftar'            => $row['terdaftar']
+      ];
+    }
+
+    $this->api_response([
+      'status' => true,
+      'akses'  => [
+        'level'     => $auth->level,
+        'cabang_id' => $auth->level === 'Administrator'
+          ? (int) $auth->cabang_id
+          : null,
+        'cakupan'   => $auth->level === 'Super Admin'
+          ? 'Semua cabang'
+          : 'Cabang sendiri'
+      ],
+      'jumlah' => count($data_toko),
+      'data'   => $data_toko
+    ]);
   }
   // ==========================================
   // FITUR MARKETPLACE: MANAJEMEN PRODUK TOKO
