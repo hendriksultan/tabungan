@@ -32,18 +32,18 @@ class Api extends CI_Controller
     echo json_encode($data);
   }
 
-  /**
-   * Mengambil Bearer token dari header Authorization.
-   */
-  private function get_bearer_token()
+
+  private function get_authorization_header()
   {
     $authorization = $this->input->get_request_header(
       'Authorization',
       true
     );
 
-    // Fallback untuk beberapa konfigurasi Apache/XAMPP
-    if (empty($authorization) && isset($_SERVER['HTTP_AUTHORIZATION'])) {
+    if (
+      empty($authorization) &&
+      isset($_SERVER['HTTP_AUTHORIZATION'])
+    ) {
       $authorization = $_SERVER['HTTP_AUTHORIZATION'];
     }
 
@@ -51,14 +51,29 @@ class Api extends CI_Controller
       empty($authorization) &&
       isset($_SERVER['REDIRECT_HTTP_AUTHORIZATION'])
     ) {
-      $authorization = $_SERVER['REDIRECT_HTTP_AUTHORIZATION'];
+      $authorization =
+        $_SERVER['REDIRECT_HTTP_AUTHORIZATION'];
     }
 
+    if (!is_string($authorization)) {
+      return '';
+    }
+
+    return trim($authorization);
+  }
+  /**
+   * Mengambil Bearer token dari header Authorization.
+   */
+  private function get_bearer_token()
+  {
+    $authorization =
+      $this->get_authorization_header();
+
     if (
-      empty($authorization) ||
+      $authorization === '' ||
       !preg_match(
         '/^Bearer\s+(\S+)$/i',
-        trim($authorization),
+        $authorization,
         $matches
       )
     ) {
@@ -67,8 +82,11 @@ class Api extends CI_Controller
 
     $token = trim($matches[1]);
 
-    // Token yang dibuat saat login berupa 64 karakter hexadecimal
-    if (strlen($token) !== 64 || !ctype_xdigit($token)) {
+    // Token login harus berupa 64 karakter hexadecimal.
+    if (
+      strlen($token) !== 64 ||
+      !ctype_xdigit($token)
+    ) {
       return null;
     }
 
@@ -80,12 +98,24 @@ class Api extends CI_Controller
    */
   private function authenticate_api()
   {
+    $authorization =
+      $this->get_authorization_header();
+
+    if ($authorization === '') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Bearer token tidak ditemukan.'
+      ], 401);
+
+      return null;
+    }
+
     $token = $this->get_bearer_token();
 
     if (empty($token)) {
       $this->api_response([
         'status'  => false,
-        'message' => 'Bearer token tidak ditemukan.'
+        'message' => 'Format Bearer token tidak valid.'
       ], 401);
 
       return null;
@@ -9733,33 +9763,170 @@ class Api extends CI_Controller
   // 5. Endpoint Etalase Semua Toko (Beranda Marketplace)
   public function get_marketplace()
   {
-    // 🔥 PERBAIKAN: Ubah menjadi POST agar bisa menangkap id_user dari aplikasi
-    $request = json_decode($this->input->raw_input_stream, true);
-    $id_user = $request['id_user'] ?? 0;
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
 
-    $this->db->select('tb_produk.*, tb_toko.nama_toko, tb_toko.alamat_toko, tb_toko.foto_toko, tb_toko.deskripsi_toko, tb_user.alamat as alamat_penjual, tb_user.telp as no_hp_toko');
-
-    // 🔥 TAMBAHAN BARU: Cek otomatis apakah barang ini sudah di-wishlist oleh user yang sedang login
-    if (!empty($id_user)) {
-      // Menggunakan subquery untuk menghasilkan nilai 1 (true) atau 0 (false)
-      $this->db->select("(SELECT COUNT(id_wishlist) FROM tb_wishlist WHERE tb_wishlist.id_produk = tb_produk.id_produk AND tb_wishlist.id_pembeli = '$id_user') as is_wishlist");
-    } else {
-      $this->db->select("0 as is_wishlist");
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
+      return;
     }
 
-    // 🔥 TAMBAHAN BARU (UNTUK REKOMENDASI): Hitung TOTAL semua orang yang menjadikan produk ini wishlist
-    $this->db->select("(SELECT COUNT(id_wishlist) FROM tb_wishlist WHERE tb_wishlist.id_produk = tb_produk.id_produk) as total_wishlist");
+    /*
+   * Etalase dapat dibaca tanpa login.
+   * Jika Bearer dikirim, token wajib valid.
+   */
+    $authorization =
+      $this->get_authorization_header();
 
-    $this->db->from('tb_produk');
-    $this->db->join('tb_toko', 'tb_produk.id_toko = tb_toko.id_toko');
-    $this->db->join('tb_user', 'tb_toko.id_user = tb_user.id', 'left');
-    $this->db->where('tb_produk.stok >', 0);
-    $this->db->where('tb_produk.status_produk', 'Tersedia');
-    $this->db->where('tb_toko.status_toko', 'Aktif');
-    $this->db->order_by('tb_produk.id_produk', 'DESC');
-    $produk = $this->db->get()->result_array();
+    $auth = null;
 
-    echo json_encode(['status' => true, 'data' => $produk]);
+    if ($authorization !== '') {
+      $auth = $this->authenticate_api();
+
+      if (!$auth) {
+        return;
+      }
+    }
+
+    /*
+   * id_user dari request tidak digunakan.
+   * Wishlist pribadi hanya berasal dari Bearer token Nasabah.
+   */
+    $id_pembeli = 0;
+
+    if (
+      $auth &&
+      $auth->level === 'Nasabah'
+    ) {
+      $id_pembeli = (int) $auth->id_user;
+    }
+
+    /*
+   * Satu agregasi wishlist digunakan untuk seluruh produk.
+   * Parameter id_pembeli dibinding, bukan digabungkan ke SQL.
+   */
+    $sql = "
+    SELECT
+      p.id_produk,
+      p.id_toko,
+      p.nama_produk,
+      p.kategori,
+      p.deskripsi_produk,
+      p.harga,
+      p.harga_coret,
+      p.stok,
+      p.berat,
+      p.rating,
+      p.terjual,
+      p.foto_produk,
+      p.foto_2,
+      p.foto_3,
+      p.status_produk,
+      p.terdaftar,
+
+      t.id_user,
+      t.nama_toko,
+      t.deskripsi_toko,
+      t.foto_toko,
+      t.alamat_toko,
+      t.logo_toko,
+      t.status_toko,
+
+      u.nama AS nama_pemilik,
+      u.alamat AS alamat_penjual,
+      u.telp AS no_hp_toko,
+      u.cabang_id,
+
+      c.kode AS kode_cabang,
+      c.nama AS nama_cabang,
+
+      COALESCE(w.total_wishlist, 0)
+        AS total_wishlist,
+
+      COALESCE(w.is_wishlist, 0)
+        AS is_wishlist
+
+    FROM tb_produk AS p
+
+    INNER JOIN tb_toko AS t
+      ON t.id_toko = p.id_toko
+
+    INNER JOIN tb_user AS u
+      ON u.id = t.id_user
+
+    INNER JOIN tb_cabang AS c
+      ON c.id = u.cabang_id
+
+    LEFT JOIN (
+      SELECT
+        id_produk,
+        COUNT(id_wishlist) AS total_wishlist,
+        MAX(
+          CASE
+            WHEN id_pembeli = ? THEN 1
+            ELSE 0
+          END
+        ) AS is_wishlist
+      FROM tb_wishlist
+      GROUP BY id_produk
+    ) AS w
+      ON w.id_produk = p.id_produk
+
+    WHERE p.stok > 0
+      AND p.status_produk = 'Tersedia'
+      AND t.status_toko = 'Aktif'
+      AND c.status = 'Aktif'
+
+    ORDER BY p.id_produk DESC
+  ";
+
+    $produk = $this->db->query(
+      $sql,
+      [$id_pembeli]
+    )->result_array();
+
+    /*
+   * Normalisasi tipe data agar aplikasi menerima angka
+   * dan boolean yang konsisten, bukan string dari MySQL.
+   */
+    foreach ($produk as &$row) {
+      $row['id_produk'] = (int) $row['id_produk'];
+      $row['id_toko'] = (int) $row['id_toko'];
+      $row['id_user'] = (int) $row['id_user'];
+      $row['cabang_id'] = (int) $row['cabang_id'];
+
+      $row['harga'] = (int) $row['harga'];
+      $row['harga_coret'] = (int) $row['harga_coret'];
+      $row['stok'] = (int) $row['stok'];
+      $row['berat'] = (int) $row['berat'];
+      $row['terjual'] = (int) $row['terjual'];
+      $row['rating'] = (float) $row['rating'];
+
+      $row['total_wishlist'] =
+        (int) $row['total_wishlist'];
+
+      $row['is_wishlist'] =
+        (bool) ((int) $row['is_wishlist']);
+    }
+
+    unset($row);
+
+    $this->api_response([
+      'status' => true,
+      'jumlah' => count($produk),
+      'akses'  => [
+        'login' => $auth !== null,
+        'wishlist_personal' => (
+          $auth !== null &&
+          $auth->level === 'Nasabah'
+        )
+      ],
+      'data' => $produk
+    ]);
   }
 
   // ==========================================
