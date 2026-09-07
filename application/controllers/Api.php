@@ -8447,109 +8447,724 @@ class Api extends CI_Controller
   // 3. Endpoint Ambil Produk Milik Toko (Dasbor Penjual)
   public function get_produk_toko()
   {
-    $request = json_decode($this->input->raw_input_stream, true);
-    $id_toko = $request['id_toko'] ?? '';
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
 
-    if (empty($id_toko)) {
-      echo json_encode(['status' => false, 'message' => 'ID Toko tidak valid.']);
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
       return;
     }
 
-    // Ambil semua produk yang dijual oleh toko tersebut
-    $this->db->where('id_toko', $id_toko);
-    $this->db->where('status_produk !=', 'Arsip');
-    $this->db->order_by('id_produk', 'DESC');
-    $produk = $this->db->get('tb_produk')->result_array();
+    $auth = $this->authenticate_api();
 
-    echo json_encode(['status' => true, 'data' => $produk]);
+    if (!$auth) {
+      return;
+    }
+
+    if ($auth->level !== 'Nasabah') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Daftar produk toko pribadi hanya dapat diakses oleh Nasabah.'
+      ], 403);
+      return;
+    }
+
+    /*
+     * id_toko dan id_user dari request diabaikan.
+     * Toko selalu dicari berdasarkan pemilik Bearer token.
+     */
+    $id_user = (int) $auth->id_user;
+
+    $toko = $this->db
+      ->select(
+        'id_toko, id_user, nama_toko, status_toko'
+      )
+      ->where('id_user', $id_user)
+      ->limit(1)
+      ->get('tb_toko')
+      ->row();
+
+    if (!$toko) {
+      $this->api_response([
+        'status'        => false,
+        'memiliki_toko' => false,
+        'message'       => 'Nasabah belum memiliki toko.',
+        'data'          => []
+      ]);
+      return;
+    }
+
+    /*
+     * Pertahankan perilaku aplikasi lama:
+     * produk berstatus Arsip tidak ditampilkan di etalase penjual.
+     */
+    $produk = $this->db
+      ->select(
+        'id_produk, id_toko, nama_produk, kategori, ' .
+          'deskripsi_produk, harga, harga_coret, stok, berat, ' .
+          'rating, terjual, foto_produk, foto_2, foto_3, ' .
+          'status_produk, terdaftar'
+      )
+      ->where('id_toko', (int) $toko->id_toko)
+      ->where('status_produk !=', 'Arsip')
+      ->order_by('id_produk', 'DESC')
+      ->get('tb_produk')
+      ->result_array();
+
+    $data_produk = [];
+
+    foreach ($produk as $row) {
+      $data_produk[] = [
+        'id_produk'       => (int) $row['id_produk'],
+        'id_toko'         => (int) $row['id_toko'],
+        'nama_produk'     => $row['nama_produk'],
+        'kategori'        => $row['kategori'],
+        'deskripsi_produk' => $row['deskripsi_produk'],
+        'harga'           => (int) $row['harga'],
+        'harga_coret'     => (int) $row['harga_coret'],
+        'stok'            => (int) $row['stok'],
+        'berat'           => (int) $row['berat'],
+        'rating'          => (float) $row['rating'],
+        'terjual'         => (int) $row['terjual'],
+        'foto_produk'     => $row['foto_produk'],
+        'foto_2'          => $row['foto_2'],
+        'foto_3'          => $row['foto_3'],
+        'status_produk'   => $row['status_produk'],
+        'terdaftar'       => $row['terdaftar']
+      ];
+    }
+
+    $this->api_response([
+      'status'        => true,
+      'memiliki_toko' => true,
+      'toko'          => [
+        'id_toko'     => (int) $toko->id_toko,
+        'id_user'     => (int) $toko->id_user,
+        'nama_toko'   => $toko->nama_toko,
+        'status_toko' => $toko->status_toko
+      ],
+      'jumlah'        => count($data_produk),
+      'data'          => $data_produk
+    ]);
+  }
+
+  private function simpan_gambar_produk_base64(
+    $data_uri,
+    $awalan_file
+  ) {
+    if ($data_uri === null || trim((string) $data_uri) === '') {
+      return [
+        'status'    => true,
+        'nama_file' => null,
+        'path_file' => null,
+        'message'   => null
+      ];
+    }
+
+    $data_uri = trim((string) $data_uri);
+
+    /*
+     * Hanya menerima PNG, JPG/JPEG, dan WEBP.
+     * Jenis MIME tetap akan diperiksa dari isi file.
+     */
+    $cocok = preg_match(
+      '#^data:image/(png|jpe?g|webp);base64,(.+)$#is',
+      $data_uri,
+      $bagian
+    );
+
+    if (!$cocok) {
+      return [
+        'status'    => false,
+        'nama_file' => null,
+        'path_file' => null,
+        'message'   => 'Format gambar produk tidak valid.'
+      ];
+    }
+
+    $binary = base64_decode($bagian[2], true);
+
+    if ($binary === false) {
+      return [
+        'status'    => false,
+        'nama_file' => null,
+        'path_file' => null,
+        'message'   => 'Data base64 gambar produk tidak valid.'
+      ];
+    }
+
+    $ukuran = strlen($binary);
+
+    if ($ukuran < 1 || $ukuran > 2097152) {
+      return [
+        'status'    => false,
+        'nama_file' => null,
+        'path_file' => null,
+        'message'   => 'Ukuran setiap gambar produk maksimal 2 MB.'
+      ];
+    }
+
+    $informasi_gambar = @getimagesizefromstring($binary);
+
+    if ($informasi_gambar === false) {
+      return [
+        'status'    => false,
+        'nama_file' => null,
+        'path_file' => null,
+        'message'   => 'File yang dikirim bukan gambar yang valid.'
+      ];
+    }
+
+    $lebar = (int) $informasi_gambar[0];
+    $tinggi = (int) $informasi_gambar[1];
+
+    if (
+      $lebar < 1 ||
+      $tinggi < 1 ||
+      $lebar > 4000 ||
+      $tinggi > 4000
+    ) {
+      return [
+        'status'    => false,
+        'nama_file' => null,
+        'path_file' => null,
+        'message'   => 'Dimensi gambar produk maksimal 4000 × 4000 piksel.'
+      ];
+    }
+
+    $finfo = finfo_open(FILEINFO_MIME_TYPE);
+
+    if ($finfo === false) {
+      return [
+        'status'    => false,
+        'nama_file' => null,
+        'path_file' => null,
+        'message'   => 'Server gagal memeriksa jenis gambar.'
+      ];
+    }
+
+    $mime_asli = finfo_buffer($finfo, $binary);
+    finfo_close($finfo);
+
+    $mime_diizinkan = [
+      'image/jpeg' => 'jpg',
+      'image/png'  => 'png',
+      'image/webp' => 'webp'
+    ];
+
+    if (!isset($mime_diizinkan[$mime_asli])) {
+      return [
+        'status'    => false,
+        'nama_file' => null,
+        'path_file' => null,
+        'message'   => 'Jenis gambar produk tidak diizinkan.'
+      ];
+    }
+
+    /*
+     * Awalan nama tidak boleh berasal langsung dari pengguna.
+     */
+    if (!in_array(
+      $awalan_file,
+      ['produk_1_', 'produk_2_', 'produk_3_'],
+      true
+    )) {
+      return [
+        'status'    => false,
+        'nama_file' => null,
+        'path_file' => null,
+        'message'   => 'Awalan file gambar tidak valid.'
+      ];
+    }
+
+    $upload_dir = FCPATH . 'assets/produk/';
+
+    if (
+      !is_dir($upload_dir) &&
+      !mkdir($upload_dir, 0755, true)
+    ) {
+      return [
+        'status'    => false,
+        'nama_file' => null,
+        'path_file' => null,
+        'message'   => 'Folder gambar produk tidak dapat dibuat.'
+      ];
+    }
+
+    if (!is_writable($upload_dir)) {
+      return [
+        'status'    => false,
+        'nama_file' => null,
+        'path_file' => null,
+        'message'   => 'Folder gambar produk tidak dapat ditulis.'
+      ];
+    }
+
+    $nama_file = $awalan_file .
+      bin2hex(random_bytes(16)) .
+      '.' . $mime_diizinkan[$mime_asli];
+
+    $path_file = $upload_dir . $nama_file;
+
+    $hasil_simpan = file_put_contents(
+      $path_file,
+      $binary,
+      LOCK_EX
+    );
+
+    if (
+      $hasil_simpan === false ||
+      $hasil_simpan !== $ukuran
+    ) {
+      if (is_file($path_file)) {
+        unlink($path_file);
+      }
+
+      return [
+        'status'    => false,
+        'nama_file' => null,
+        'path_file' => null,
+        'message'   => 'Gambar produk gagal disimpan.'
+      ];
+    }
+
+    return [
+      'status'    => true,
+      'nama_file' => $nama_file,
+      'path_file' => $path_file,
+      'message'   => null
+    ];
   }
 
   // 4. Endpoint Tambah Produk Baru ke Etalase (Mendukung 3 Foto, Harga Coret & Kategori)
   public function tambah_produk()
   {
-    $request = json_decode($this->input->raw_input_stream, true);
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
 
-    $id_toko = $request['id_toko'] ?? '';
-    $nama_produk = $request['nama_produk'] ?? '';
-    // 🔥 TAMBAHAN: Tangkap kategori
-    $kategori = $request['kategori'] ?? 'Sembako';
-    $deskripsi = $request['deskripsi_produk'] ?? '';
-    $harga = str_replace('.', '', $request['harga'] ?? '0');
-    $harga_coret = str_replace('.', '', $request['harga_coret'] ?? '0');
-    $stok = $request['stok'] ?? 0;
-    $berat = $request['berat'] ?? 1000;
-
-    // Tangkap 3 Data Foto Base64
-    $foto_base64 = $request['foto_base64'] ?? '';
-    $foto_base64_2 = $request['foto_base64_2'] ?? '';
-    $foto_base64_3 = $request['foto_base64_3'] ?? '';
-
-    if (empty($id_toko) || empty($nama_produk) || empty($harga)) {
-      echo json_encode(['status' => false, 'message' => 'Data produk tidak lengkap! Nama dan harga wajib diisi.']);
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
       return;
     }
 
-    $upload_dir = FCPATH . 'assets/produk/';
-    if (!is_dir($upload_dir)) {
-      mkdir($upload_dir, 0777, true);
+    $auth = $this->authenticate_api();
+
+    if (!$auth) {
+      return;
     }
 
-    // Proses Foto 1 (Utama)
-    $file_name_1 = 'no-product.png';
-    if (!empty($foto_base64)) {
-      $image_parts = explode(";base64,", $foto_base64);
-      if (count($image_parts) == 2) {
-        $image_base64 = base64_decode($image_parts[1]);
-        $file_name_1 = 'produk_1_' . time() . '_' . uniqid() . '.jpg';
-        file_put_contents($upload_dir . $file_name_1, $image_base64);
+    if ($auth->level !== 'Nasabah') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Produk hanya dapat ditambahkan oleh pemilik toko.'
+      ], 403);
+      return;
+    }
+
+    /*
+     * Maksimal sekitar 10 MB untuk JSON dan tiga gambar base64.
+     * Setiap gambar dibatasi lagi menjadi 2 MB oleh helper.
+     */
+    $content_length = (int) $this->input->server(
+      'CONTENT_LENGTH'
+    );
+
+    if ($content_length > 10485760) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Ukuran request terlalu besar.'
+      ], 413);
+      return;
+    }
+
+    $request = json_decode(
+      $this->input->raw_input_stream,
+      true
+    );
+
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format JSON tidak valid.'
+      ], 400);
+      return;
+    }
+
+    $nama_produk = isset($request['nama_produk'])
+      ? trim((string) $request['nama_produk'])
+      : '';
+
+    $kategori = isset($request['kategori'])
+      ? trim((string) $request['kategori'])
+      : 'Sembako';
+
+    $deskripsi = isset($request['deskripsi_produk'])
+      ? trim((string) $request['deskripsi_produk'])
+      : '';
+
+    $harga_text = isset($request['harga'])
+      ? trim((string) $request['harga'])
+      : '';
+
+    $harga_coret_text = isset($request['harga_coret'])
+      ? trim((string) $request['harga_coret'])
+      : '0';
+
+    $stok_text = isset($request['stok'])
+      ? trim((string) $request['stok'])
+      : '0';
+
+    $berat_text = isset($request['berat'])
+      ? trim((string) $request['berat'])
+      : '1000';
+
+    // Mendukung format angka seperti "10.000".
+    $harga_text = preg_replace('/[.\s]/', '', $harga_text);
+    $harga_coret_text = preg_replace(
+      '/[.\s]/',
+      '',
+      $harga_coret_text
+    );
+    $stok_text = preg_replace('/[\s]/', '', $stok_text);
+    $berat_text = preg_replace('/[.\s]/', '', $berat_text);
+
+    if (
+      strlen($nama_produk) < 3 ||
+      strlen($nama_produk) > 150
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Nama produk harus terdiri dari 3 sampai 150 karakter.'
+      ], 422);
+      return;
+    }
+
+    if (
+      strlen($kategori) < 2 ||
+      strlen($kategori) > 50
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Kategori harus terdiri dari 2 sampai 50 karakter.'
+      ], 422);
+      return;
+    }
+
+    if (
+      !preg_match(
+        '/^[\p{L}\p{N}\s&\/().,-]+$/u',
+        $kategori
+      )
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Kategori mengandung karakter yang tidak diizinkan.'
+      ], 422);
+      return;
+    }
+
+    if (strlen($deskripsi) > 5000) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Deskripsi produk maksimal 5.000 karakter.'
+      ], 422);
+      return;
+    }
+
+    if ($harga_text === '' || !ctype_digit($harga_text)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Harga produk harus berupa angka bulat.'
+      ], 422);
+      return;
+    }
+
+    if (
+      $harga_coret_text === '' ||
+      !ctype_digit($harga_coret_text)
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Harga coret harus berupa angka bulat.'
+      ], 422);
+      return;
+    }
+
+    if ($stok_text === '' || !ctype_digit($stok_text)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Stok harus berupa angka bulat.'
+      ], 422);
+      return;
+    }
+
+    if ($berat_text === '' || !ctype_digit($berat_text)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Berat harus berupa angka bulat dalam gram.'
+      ], 422);
+      return;
+    }
+
+    $harga = (int) $harga_text;
+    $harga_coret = (int) $harga_coret_text;
+    $stok = (int) $stok_text;
+    $berat = (int) $berat_text;
+
+    if ($harga < 1 || $harga > 2000000000) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Harga produk tidak valid.'
+      ], 422);
+      return;
+    }
+
+    if (
+      $harga_coret < 0 ||
+      $harga_coret > 2000000000
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Harga coret tidak valid.'
+      ], 422);
+      return;
+    }
+
+    if ($harga_coret > 0 && $harga_coret < $harga) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Harga coret harus lebih besar atau sama dengan harga jual.'
+      ], 422);
+      return;
+    }
+
+    if ($stok < 0 || $stok > 1000000) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Jumlah stok tidak valid.'
+      ], 422);
+      return;
+    }
+
+    if ($berat < 1 || $berat > 1000000) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Berat produk harus antara 1 dan 1.000.000 gram.'
+      ], 422);
+      return;
+    }
+
+    $foto_1 = $request['foto_base64'] ?? '';
+    $foto_2 = $request['foto_base64_2'] ?? '';
+    $foto_3 = $request['foto_base64_3'] ?? '';
+
+    /*
+     * id_toko dan id_user dari request diabaikan.
+     * Toko ditentukan dari pemilik Bearer token.
+     */
+    $id_user = (int) $auth->id_user;
+
+    $this->db->trans_begin();
+
+    $toko = $this->db->query(
+      "SELECT
+            t.id_toko,
+            t.id_user,
+            t.nama_toko,
+            t.status_toko,
+            u.cabang_id
+         FROM tb_toko AS t
+         INNER JOIN tb_user AS u
+            ON u.id = t.id_user
+         WHERE t.id_user = ?
+         LIMIT 1
+         FOR UPDATE",
+      [$id_user]
+    )->row();
+
+    if (!$toko) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'        => false,
+        'memiliki_toko' => false,
+        'message'       => 'Anda belum memiliki toko.'
+      ], 404);
+      return;
+    }
+
+    if ($toko->status_toko !== 'Aktif') {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Produk tidak dapat ditambahkan karena toko sedang nonaktif.'
+      ], 403);
+      return;
+    }
+
+    $jumlah_produk = $this->db
+      ->where('id_toko', (int) $toko->id_toko)
+      ->count_all_results('tb_produk');
+
+    if ($jumlah_produk >= 500) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Maksimal 500 produk untuk setiap toko.'
+      ], 422);
+      return;
+    }
+
+    $file_baru = [];
+
+    $hasil_foto_1 = $this->simpan_gambar_produk_base64(
+      $foto_1,
+      'produk_1_'
+    );
+
+    if (!$hasil_foto_1['status']) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => $hasil_foto_1['message']
+      ], 422);
+      return;
+    }
+
+    if ($hasil_foto_1['path_file'] !== null) {
+      $file_baru[] = $hasil_foto_1['path_file'];
+    }
+
+    $hasil_foto_2 = $this->simpan_gambar_produk_base64(
+      $foto_2,
+      'produk_2_'
+    );
+
+    if (!$hasil_foto_2['status']) {
+      foreach ($file_baru as $path_file) {
+        if (is_file($path_file)) {
+          unlink($path_file);
+        }
       }
+
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => $hasil_foto_2['message']
+      ], 422);
+      return;
     }
 
-    // Proses Foto 2
-    $file_name_2 = null;
-    if (!empty($foto_base64_2)) {
-      $image_parts = explode(";base64,", $foto_base64_2);
-      if (count($image_parts) == 2) {
-        $image_base64 = base64_decode($image_parts[1]);
-        $file_name_2 = 'produk_2_' . time() . '_' . uniqid() . '.jpg';
-        file_put_contents($upload_dir . $file_name_2, $image_base64);
+    if ($hasil_foto_2['path_file'] !== null) {
+      $file_baru[] = $hasil_foto_2['path_file'];
+    }
+
+    $hasil_foto_3 = $this->simpan_gambar_produk_base64(
+      $foto_3,
+      'produk_3_'
+    );
+
+    if (!$hasil_foto_3['status']) {
+      foreach ($file_baru as $path_file) {
+        if (is_file($path_file)) {
+          unlink($path_file);
+        }
       }
+
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => $hasil_foto_3['message']
+      ], 422);
+      return;
     }
 
-    // Proses Foto 3
-    $file_name_3 = null;
-    if (!empty($foto_base64_3)) {
-      $image_parts = explode(";base64,", $foto_base64_3);
-      if (count($image_parts) == 2) {
-        $image_base64 = base64_decode($image_parts[1]);
-        $file_name_3 = 'produk_3_' . time() . '_' . uniqid() . '.jpg';
-        file_put_contents($upload_dir . $file_name_3, $image_base64);
-      }
+    if ($hasil_foto_3['path_file'] !== null) {
+      $file_baru[] = $hasil_foto_3['path_file'];
     }
 
-    $data = [
-      'id_toko' => $id_toko,
-      'nama_produk' => $nama_produk,
-      'kategori' => $kategori, // 🔥 TAMBAHAN: Masukkan kategori ke database
+    $nama_foto_1 = $hasil_foto_1['nama_file'] !== null
+      ? $hasil_foto_1['nama_file']
+      : 'no-product.png';
+
+    $status_produk = $stok > 0
+      ? 'Tersedia'
+      : 'Habis';
+
+    $waktu_sekarang = date('Y-m-d H:i:s');
+
+    $insert = $this->db->insert('tb_produk', [
+      'id_toko'         => (int) $toko->id_toko,
+      'nama_produk'     => $nama_produk,
+      'kategori'        => $kategori,
       'deskripsi_produk' => $deskripsi,
-      'harga' => $harga,
-      'harga_coret' => $harga_coret,
-      'stok' => $stok,
-      'berat' => $berat,
-      'foto_produk' => $file_name_1,
-      'foto_2' => $file_name_2,
-      'foto_3' => $file_name_3,
-      'status_produk' => 'Tersedia',
-      'terdaftar' => date('Y-m-d H:i:s')
-    ];
+      'harga'           => $harga,
+      'harga_coret'     => $harga_coret,
+      'stok'            => $stok,
+      'berat'           => $berat,
+      'foto_produk'     => $nama_foto_1,
+      'foto_2'          => $hasil_foto_2['nama_file'],
+      'foto_3'          => $hasil_foto_3['nama_file'],
+      'status_produk'   => $status_produk,
+      'terdaftar'       => $waktu_sekarang
+    ]);
 
-    $insert = $this->db->insert('tb_produk', $data);
+    $id_produk = (int) $this->db->insert_id();
 
-    if ($insert) {
-      echo json_encode(['status' => true, 'message' => 'Produk berhasil ditambahkan ke etalase!']);
-    } else {
-      echo json_encode(['status' => false, 'message' => 'Gagal menambahkan produk. Terjadi kesalahan server.']);
+    if (!$insert || $this->db->trans_status() === false) {
+      foreach ($file_baru as $path_file) {
+        if (is_file($path_file)) {
+          unlink($path_file);
+        }
+      }
+
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gagal menambahkan produk.'
+      ], 500);
+      return;
     }
+
+    $this->db->trans_commit();
+
+    $this->api_response([
+      'status'  => true,
+      'message' => "\u{2705} Produk berhasil ditambahkan ke etalase.",
+      'data'    => [
+        'id_produk'       => $id_produk,
+        'id_toko'         => (int) $toko->id_toko,
+        'id_user'         => $id_user,
+        'nama_toko'       => $toko->nama_toko,
+        'nama_produk'     => $nama_produk,
+        'kategori'        => $kategori,
+        'deskripsi_produk' => $deskripsi,
+        'harga'           => $harga,
+        'harga_coret'     => $harga_coret,
+        'stok'            => $stok,
+        'berat'           => $berat,
+        'foto_produk'     => $nama_foto_1,
+        'foto_2'          => $hasil_foto_2['nama_file'],
+        'foto_3'          => $hasil_foto_3['nama_file'],
+        'status_produk'   => $status_produk,
+        'cabang_id'       => (int) $toko->cabang_id,
+        'terdaftar'       => $waktu_sekarang
+      ]
+    ], 201);
   }
 
   // 4B. Endpoint Edit Produk di Etalase (Mendukung 3 Foto, Harga Coret & Kategori)
