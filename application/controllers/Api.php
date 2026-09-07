@@ -6376,48 +6376,330 @@ class Api extends CI_Controller
     ], 401);
   }
 
-  // ==========================================
-  // H. Ubah PIN Transaksi
-  // ==========================================
   public function ubah_pin()
   {
-    header("Access-Control-Allow-Origin: *");
-    header("Content-Type: application/json; charset=UTF-8");
-    header("Access-Control-Allow-Methods: POST");
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
+
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
+      return;
+    }
+
+    $auth = $this->authenticate_api();
+
+    if (!$auth) {
+      return;
+    }
+
+    if ($auth->level !== 'Nasabah') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Perubahan PIN hanya dapat dilakukan oleh Nasabah.'
+      ], 403);
+      return;
+    }
 
     $request = json_decode($this->input->raw_input_stream, true);
-    $id_user = $request['id_user'] ?? '';
-    $pin_lama = $request['pin_lama'] ?? '';
-    $pin_baru = $request['pin_baru'] ?? '';
 
-    if (empty($id_user) || empty($pin_lama) || empty($pin_baru)) {
-      echo json_encode(['status' => false, 'message' => 'Semua kolom wajib diisi.']);
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format JSON tidak valid.'
+      ], 400);
       return;
     }
 
-    if (strlen($pin_baru) !== 6) {
-      echo json_encode(['status' => false, 'message' => 'PIN baru harus terdiri dari 6 digit angka.']);
+    $pin_lama = isset($request['pin_lama'])
+      ? trim((string) $request['pin_lama'])
+      : '';
+
+    $pin_baru = isset($request['pin_baru'])
+      ? trim((string) $request['pin_baru'])
+      : '';
+
+    $konfirmasi_pin_baru = isset($request['konfirmasi_pin_baru'])
+      ? trim((string) $request['konfirmasi_pin_baru'])
+      : '';
+
+    if (!preg_match('/^[0-9]{6}$/', $pin_baru)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'PIN baru harus terdiri dari tepat 6 digit angka.'
+      ], 422);
       return;
     }
 
-    // Ambil data user
-    $this->db->where('id', $id_user);
-    $user = $this->db->get('tb_user')->row();
+    if ($pin_baru !== $konfirmasi_pin_baru) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Konfirmasi PIN baru tidak cocok.'
+      ], 422);
+      return;
+    }
 
-    // Cocokkan PIN Lama
-    if ($user && $user->pin === $pin_lama) {
-      // Update ke PIN Baru
-      $this->db->where('id', $id_user);
-      $update = $this->db->update('tb_user', ['pin' => $pin_baru]);
+    /*
+     * Tolak PIN yang terlalu mudah ditebak.
+     */
+    $pin_lemah = [
+      '000000',
+      '111111',
+      '222222',
+      '333333',
+      '444444',
+      '555555',
+      '666666',
+      '777777',
+      '888888',
+      '999999',
+      '123456',
+      '654321'
+    ];
 
-      if ($update) {
-        echo json_encode(['status' => true, 'message' => 'PIN transaksi berhasil diperbarui!']);
-      } else {
-        echo json_encode(['status' => false, 'message' => 'Terjadi kesalahan sistem, gagal mengubah PIN.']);
+    if (in_array($pin_baru, $pin_lemah, true)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'PIN baru terlalu mudah ditebak. Gunakan kombinasi angka lain.'
+      ], 422);
+      return;
+    }
+
+    /*
+     * id_user dari request tidak digunakan.
+     * Pengguna selalu berasal dari Bearer token.
+     */
+    $id_user = (int) $auth->id_user;
+
+    $this->db->trans_begin();
+
+    $user = $this->db->query(
+      "SELECT
+            id,
+            level,
+            login,
+            pin,
+            pin_gagal,
+            pin_terkunci_sampai
+         FROM tb_user
+         WHERE id = ?
+         LIMIT 1
+         FOR UPDATE",
+      [$id_user]
+    )->row();
+
+    if (
+      !$user ||
+      $user->level !== 'Nasabah' ||
+      $user->login !== 'Ya'
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Akun Nasabah tidak ditemukan atau tidak aktif.'
+      ], 403);
+      return;
+    }
+
+    $waktu_sekarang = time();
+
+    if (
+      !empty($user->pin_terkunci_sampai) &&
+      strtotime($user->pin_terkunci_sampai) > $waktu_sekarang
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Perubahan PIN sementara dikunci karena terlalu banyak percobaan.',
+        'data'    => [
+          'terkunci_sampai' => $user->pin_terkunci_sampai
+        ]
+      ], 429);
+      return;
+    }
+
+    $pin_gagal = (int) $user->pin_gagal;
+
+    if (
+      !empty($user->pin_terkunci_sampai) &&
+      strtotime($user->pin_terkunci_sampai) <= $waktu_sekarang
+    ) {
+      $pin_gagal = 0;
+
+      $this->db
+        ->where('id', $id_user)
+        ->update('tb_user', [
+          'pin_gagal'           => 0,
+          'pin_terkunci_sampai' => null
+        ]);
+    }
+
+    $pin_tersimpan = (string) $user->pin;
+    $pin_belum_diatur = $pin_tersimpan === '';
+
+    /*
+     * Untuk akun lama, PIN lama wajib benar.
+     * Untuk akun baru dengan PIN NULL, PIN dapat dibuat tanpa PIN lama.
+     */
+    if (!$pin_belum_diatur) {
+      if (!preg_match('/^[0-9]{6}$/', $pin_lama)) {
+        $this->db->trans_rollback();
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'PIN lama harus terdiri dari tepat 6 digit angka.'
+        ], 422);
+        return;
       }
-    } else {
-      echo json_encode(['status' => false, 'message' => 'PIN Lama yang Anda masukkan salah!']);
+
+      $info_hash = password_get_info($pin_tersimpan);
+      $sudah_hash = isset($info_hash['algo']) &&
+        $info_hash['algo'] !== 0;
+
+      if ($sudah_hash) {
+        $pin_lama_valid = password_verify(
+          $pin_lama,
+          $pin_tersimpan
+        );
+      } else {
+        // Dukungan sementara untuk PIN lama yang masih berupa teks.
+        $pin_lama_valid = hash_equals(
+          $pin_tersimpan,
+          $pin_lama
+        );
+      }
+
+      if (!$pin_lama_valid) {
+        $pin_gagal++;
+        $batas_percobaan = 5;
+
+        if ($pin_gagal >= $batas_percobaan) {
+          $terkunci_sampai = date(
+            'Y-m-d H:i:s',
+            strtotime('+15 minutes')
+          );
+
+          $this->db
+            ->where('id', $id_user)
+            ->update('tb_user', [
+              'pin_gagal'           => 0,
+              'pin_terkunci_sampai' => $terkunci_sampai
+            ]);
+
+          if ($this->db->trans_status() === false) {
+            $this->db->trans_rollback();
+
+            $this->api_response([
+              'status'  => false,
+              'message' => 'Gagal memproses perubahan PIN.'
+            ], 500);
+            return;
+          }
+
+          $this->db->trans_commit();
+
+          $this->api_response([
+            'status'  => false,
+            'message' => 'PIN lama salah lima kali. Perubahan PIN dikunci selama 15 menit.',
+            'data'    => [
+              'terkunci_sampai' => $terkunci_sampai
+            ]
+          ], 429);
+          return;
+        }
+
+        $this->db
+          ->where('id', $id_user)
+          ->update('tb_user', [
+            'pin_gagal'           => $pin_gagal,
+            'pin_terkunci_sampai' => null
+          ]);
+
+        if ($this->db->trans_status() === false) {
+          $this->db->trans_rollback();
+
+          $this->api_response([
+            'status'  => false,
+            'message' => 'Gagal memproses perubahan PIN.'
+          ], 500);
+          return;
+        }
+
+        $this->db->trans_commit();
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'PIN lama yang Anda masukkan salah.',
+          'data'    => [
+            'sisa_percobaan' =>
+            $batas_percobaan - $pin_gagal
+          ]
+        ], 401);
+        return;
+      }
+
+      if ($pin_baru === $pin_lama) {
+        $this->db->trans_rollback();
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'PIN baru tidak boleh sama dengan PIN lama.'
+        ], 422);
+        return;
+      }
     }
+
+    $hash_pin_baru = password_hash(
+      $pin_baru,
+      PASSWORD_BCRYPT
+    );
+
+    if ($hash_pin_baru === false) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gagal melindungi PIN baru.'
+      ], 500);
+      return;
+    }
+
+    $update = $this->db
+      ->where('id', $id_user)
+      ->update('tb_user', [
+        'pin'                  => $hash_pin_baru,
+        'pin_gagal'            => 0,
+        'pin_terkunci_sampai'  => null
+      ]);
+
+    if (!$update || $this->db->trans_status() === false) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Terjadi kesalahan sistem. PIN gagal diperbarui.'
+      ], 500);
+      return;
+    }
+
+    $this->db->trans_commit();
+
+    $this->api_response([
+      'status'  => true,
+      'message' => $pin_belum_diatur
+        ? "\u{1F510} PIN transaksi berhasil dibuat."
+        : "\u{1F510} PIN transaksi berhasil diperbarui.",
+      'data'    => [
+        'id_user'        => $id_user,
+        'pin_terlindungi' => true,
+        'login_ulang'    => false
+      ]
+    ]);
   }
 
   public function export_laporan_kas()
