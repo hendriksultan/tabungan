@@ -550,165 +550,395 @@ class Api extends CI_Controller
   }
 
   // ==========================================
-  // 3. ENDPOINT RIWAYAT TRANSAKSI (SUPER AMAN)
+  // ENDPOINT RIWAYAT TRANSAKSI TERPROTEKSI
   // ==========================================
   public function transaksi()
   {
-    $request = json_decode($this->input->raw_input_stream, true);
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gunakan metode POST.'
+      ], 405);
 
-    if ($_SERVER['REQUEST_METHOD'] !== 'POST' || empty($request)) {
-      echo json_encode(['status' => false, 'message' => 'Permintaan tidak valid.']);
       return;
     }
 
-    $id_user = $request['id_user'] ?? '';
-    $level = $request['level'] ?? '';
-    $limit = $request['limit'] ?? '10';
-    $start = $request['start'] ?? '';
-    $end = $request['end'] ?? '';
+    $auth = $this->authenticate_api();
 
-    if (empty($id_user) || empty($level)) {
-      echo json_encode(['status' => false, 'message' => 'Data user tidak lengkap.']);
+    if (!$auth) {
       return;
+    }
+
+    $request = json_decode($this->input->raw_input_stream, true);
+
+    if (!is_array($request)) {
+      $request = [];
+    }
+
+    /*
+     * id_user dan level tidak lagi diambil dari request.
+     * Seluruh identitas berasal dari Bearer token.
+     */
+    $id_user   = (int) $auth->id_user;
+    $level     = $auth->level;
+    $cabang_id = (int) $auth->cabang_id;
+
+    $start = trim((string) ($request['start'] ?? ''));
+    $end   = trim((string) ($request['end'] ?? ''));
+    $limit_request = $request['limit'] ?? 10;
+
+    if (
+      ($start !== '' || $end !== '') &&
+      (
+        !preg_match('/^\d{4}-\d{2}-\d{2}$/', $start) ||
+        !preg_match('/^\d{4}-\d{2}-\d{2}$/', $end)
+      )
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format tanggal harus YYYY-MM-DD.'
+      ], 422);
+
+      return;
+    }
+
+    if (
+      !in_array(
+        $level,
+        ['Super Admin', 'Administrator', 'Nasabah'],
+        true
+      )
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Level pengguna tidak memiliki akses.'
+      ], 403);
+
+      return;
+    }
+
+    if ($limit_request === 'all') {
+      $limit = null;
+    } else {
+      $limit = (int) $limit_request;
+
+      if ($limit < 1) {
+        $limit = 10;
+      }
+
+      // Batasi respons agar endpoint tidak terlalu berat
+      if ($limit > 500) {
+        $limit = 500;
+      }
     }
 
     $formatted_data = [];
 
-    // --- 1. AMBIL DATA SETOR & TARIK (tb_transaksi) ---
-    $this->db->select('tb_transaksi.*, tb_user.nama as nama_nasabah');
+    // ==========================================
+    // 1. TRANSAKSI SETOR DAN TARIK
+    // ==========================================
+    $this->db->select(
+      'tb_transaksi.*,
+         tb_user.nama AS nama_nasabah,
+         tb_cabang.kode AS kode_cabang,
+         tb_cabang.nama AS nama_cabang'
+    );
     $this->db->from('tb_transaksi');
-    $this->db->join('tb_user', 'tb_transaksi.idNasabah = tb_user.id', 'left');
+    $this->db->join(
+      'tb_user',
+      'tb_transaksi.idNasabah = tb_user.id',
+      'left'
+    );
+    $this->db->join(
+      'tb_cabang',
+      'tb_transaksi.cabang_id = tb_cabang.id',
+      'left'
+    );
 
-    if ($level === 'Nasabah') {
-      $this->db->where('tb_transaksi.idNasabah', $id_user);
+    if ($level === 'Administrator') {
+      $this->db->where(
+        'tb_transaksi.cabang_id',
+        $cabang_id
+      );
+    } elseif ($level === 'Nasabah') {
+      $this->db->where(
+        'tb_transaksi.idNasabah',
+        $id_user
+      );
     }
 
-    // 🔥 FILTER TANGGAL SETOR/TARIK
-    if (!empty($start) && !empty($end)) {
-      $this->db->where('tb_transaksi.tanggal >=', $start);
-      $this->db->where('tb_transaksi.tanggal <=', $end);
+    if ($start !== '' && $end !== '') {
+      $this->db->where(
+        'tb_transaksi.tanggal >=',
+        $start
+      );
+      $this->db->where(
+        'tb_transaksi.tanggal <=',
+        $end
+      );
     }
 
-    $trx_query = $this->db->get();
+    $transaksi_query = $this->db->get();
 
-    if ($trx_query && $trx_query->num_rows() > 0) {
-      $trx_data = $trx_query->result_array();
-      foreach ($trx_data as $row) {
-        $type = $row['jenis'] ?? '';
-        $color = ($type === 'Masuk') ? '#10b981' : '#ef4444';
-        $prefix = ($type === 'Masuk') ? '+ Rp ' : '- Rp ';
-        $nama = $row['nama_nasabah'] ?? 'Tidak Diketahui';
-        $title = $row['keterangan'] ?? 'Transaksi';
-        // Nama nasabah hanya ditampilkan pada riwayat milik pengelola.
-        $is_admin = in_array($level, ['Administrator', 'Super Admin'], true);
-        if ($is_admin) {
-          $title .= ' (' . $nama . ')';
+    if ($transaksi_query->num_rows() > 0) {
+      foreach ($transaksi_query->result_array() as $row) {
+        $jenis = $row['jenis'] ?? '';
+        $is_masuk = $jenis === 'Masuk';
+
+        $color  = $is_masuk ? '#10b981' : '#ef4444';
+        $prefix = $is_masuk ? '+ Rp ' : '- Rp ';
+
+        $nama_nasabah = $row['nama_nasabah']
+          ?? 'Tidak diketahui';
+
+        $title = !empty($row['keterangan'])
+          ? $row['keterangan']
+          : 'Transaksi';
+
+        if (
+          in_array(
+            $level,
+            ['Super Admin', 'Administrator'],
+            true
+          )
+        ) {
+          $title .= ' (' . $nama_nasabah . ')';
         }
 
-        $tgl = $row['tanggal'] ?? date('Y-m-d');
-        $waktu_lengkap = !empty($row['terdaftar']) ? $row['terdaftar'] : ($tgl . ' 00:00:00');
+        $tanggal = $row['tanggal'] ?? date('Y-m-d');
+
+        $waktu_lengkap = !empty($row['terdaftar'])
+          ? $row['terdaftar']
+          : $tanggal . ' 00:00:00';
 
         $formatted_data[] = [
-          'id' => 'trx_' . ($row['id'] ?? uniqid()),
-          'type' => $type,
-          'direction' => strtolower($type),
-          'source' => 'transaksi',
-          'nama_nasabah' => $nama,
-          'title' => $title,
-          'keterangan' => $row['keterangan'] ?? '',
-          'date' => date('d M Y', strtotime($tgl)),
-          'waktu_struk' => date('d-m-Y H:i:s', strtotime($waktu_lengkap)),
-          'timestamp' => strtotime($waktu_lengkap),
-          'amount' => $prefix . number_format((float)($row['nominal'] ?? 0), 0, ',', '.'),
-          'color' => $color,
-          'status' => $row['status_konfirmasi'] ?? 'Pending',
-          'bukti' => $row['bukti_transfer'] ?? null,
-          'gold_gram' => isset($row['gram_emas']) && (float)$row['gram_emas'] != 0
-            ? abs((float)$row['gram_emas'])
+          'id'             => 'trx_' . $row['id'],
+          'type'           => $jenis,
+          'direction'      => strtolower($jenis),
+          'source'         => 'transaksi',
+          'nama_nasabah'   => $nama_nasabah,
+          'title'          => $title,
+          'keterangan'     => $row['keterangan'] ?? '',
+          'date'           => date(
+            'd M Y',
+            strtotime($tanggal)
+          ),
+          'waktu_struk'    => date(
+            'd-m-Y H:i:s',
+            strtotime($waktu_lengkap)
+          ),
+          'timestamp'      => strtotime($waktu_lengkap),
+          'amount'         => $prefix . number_format(
+            (float) ($row['nominal'] ?? 0),
+            0,
+            ',',
+            '.'
+          ),
+          'nominal_raw'    => (int) ($row['nominal'] ?? 0),
+          'color'          => $color,
+          'status'         => $row['status_konfirmasi']
+            ?? 'Pending',
+          'bukti'          => $row['bukti_transfer'] ?? null,
+          'kode_cabang'    => $row['kode_cabang'] ?? null,
+          'nama_cabang'    => $row['nama_cabang'] ?? null,
+          'gold_gram'      => (
+            isset($row['gram_emas']) &&
+            (float) $row['gram_emas'] != 0
+          )
+            ? abs((float) $row['gram_emas'])
             : null
         ];
       }
     }
 
-    // --- 2. AMBIL DATA TRANSFER (tb_transfer) ---
+    // ==========================================
+    // 2. RIWAYAT TRANSFER
+    // ==========================================
     if ($this->db->table_exists('tb_transfer')) {
-      $this->db->select('tb_transfer.*, pengirim.nama as nama_pengirim, penerima.nama as nama_penerima');
+      $this->db->select(
+        'tb_transfer.*,
+             pengirim.nama AS nama_pengirim,
+             penerima.nama AS nama_penerima,
+             cabang_asal.kode AS kode_cabang_asal,
+             cabang_asal.nama AS nama_cabang_asal,
+             cabang_tujuan.kode AS kode_cabang_tujuan,
+             cabang_tujuan.nama AS nama_cabang_tujuan'
+      );
       $this->db->from('tb_transfer');
-      $this->db->join('tb_user as pengirim', 'tb_transfer.idPengirim = pengirim.id', 'left');
-      $this->db->join('tb_user as penerima', 'tb_transfer.idPenerima = penerima.id', 'left');
 
-      if ($level === 'Nasabah') {
+      $this->db->join(
+        'tb_user AS pengirim',
+        'tb_transfer.idPengirim = pengirim.id',
+        'left'
+      );
+      $this->db->join(
+        'tb_user AS penerima',
+        'tb_transfer.idPenerima = penerima.id',
+        'left'
+      );
+      $this->db->join(
+        'tb_cabang AS cabang_asal',
+        'tb_transfer.cabang_asal_id = cabang_asal.id',
+        'left'
+      );
+      $this->db->join(
+        'tb_cabang AS cabang_tujuan',
+        'tb_transfer.cabang_tujuan_id = cabang_tujuan.id',
+        'left'
+      );
+
+      if ($level === 'Administrator') {
         $this->db->group_start();
-        $this->db->where('tb_transfer.idPengirim', $id_user);
-        $this->db->or_where('tb_transfer.idPenerima', $id_user);
+        $this->db->where(
+          'tb_transfer.cabang_asal_id',
+          $cabang_id
+        );
+        $this->db->or_where(
+          'tb_transfer.cabang_tujuan_id',
+          $cabang_id
+        );
+        $this->db->group_end();
+      } elseif ($level === 'Nasabah') {
+        $this->db->group_start();
+        $this->db->where(
+          'tb_transfer.idPengirim',
+          $id_user
+        );
+        $this->db->or_where(
+          'tb_transfer.idPenerima',
+          $id_user
+        );
         $this->db->group_end();
       }
 
-      // 🔥 FILTER TANGGAL TRANSFER (MENGGUNAKAN KOLOM TERDAFTAR)
-      if (!empty($start) && !empty($end)) {
-        $this->db->where('DATE(tb_transfer.terdaftar) >=', $start);
-        $this->db->where('DATE(tb_transfer.terdaftar) <=', $end);
+      if ($start !== '' && $end !== '') {
+        $this->db->where(
+          'tb_transfer.terdaftar >=',
+          $start . ' 00:00:00'
+        );
+        $this->db->where(
+          'tb_transfer.terdaftar <=',
+          $end . ' 23:59:59'
+        );
       }
 
-      $tf_query = $this->db->get();
+      $transfer_query = $this->db->get();
 
-      if ($tf_query && $tf_query->num_rows() > 0) {
-        $tf_data = $tf_query->result_array();
-        foreach ($tf_data as $row) {
-          $isSender = ($level === 'Nasabah' && ($row['idPengirim'] ?? '') == $id_user);
+      if ($transfer_query->num_rows() > 0) {
+        foreach ($transfer_query->result_array() as $row) {
+          $is_sender = (
+            $level === 'Nasabah' &&
+            (int) $row['idPengirim'] === $id_user
+          );
 
           if ($level === 'Nasabah') {
-            $type = $isSender ? 'Keluar' : 'Masuk';
-            $prefix = $isSender ? '- Rp ' : '+ Rp ';
-            $color = $isSender ? '#ef4444' : '#10b981';
-            $title_suffix = $isSender ? ' ke ' . ($row['nama_penerima'] ?? 'Nasabah') : ' dari ' . ($row['nama_pengirim'] ?? 'Nasabah');
-            $title = ($row['keterangan'] ?: 'Transfer') . $title_suffix;
+            $jenis = $is_sender ? 'Keluar' : 'Masuk';
+            $prefix = $is_sender ? '- Rp ' : '+ Rp ';
+            $color = $is_sender ? '#ef4444' : '#10b981';
+
+            if ($is_sender) {
+              $title_suffix = ' ke ' .
+                ($row['nama_penerima'] ?? 'Nasabah');
+            } else {
+              $title_suffix = ' dari ' .
+                ($row['nama_pengirim'] ?? 'Nasabah');
+            }
+
+            $title = (
+              !empty($row['keterangan'])
+              ? $row['keterangan']
+              : 'Transfer'
+            ) . $title_suffix;
           } else {
-            $type = 'Transfer';
+            $jenis  = 'Transfer';
             $prefix = 'Rp ';
-            $color = '#3b82f6';
-            $title = ($row['keterangan'] ?: 'Transfer') . ' (' . ($row['nama_pengirim'] ?? '') . ' -> ' . ($row['nama_penerima'] ?? '') . ')';
+            $color  = '#3b82f6';
+
+            $title = (
+              !empty($row['keterangan'])
+              ? $row['keterangan']
+              : 'Transfer'
+            );
+
+            $title .= ' (' .
+              ($row['nama_pengirim'] ?? 'Tidak diketahui') .
+              ' → ' .
+              ($row['nama_penerima'] ?? 'Tidak diketahui') .
+              ')';
           }
 
-          $tgl = $row['tanggal'] ?? date('Y-m-d');
-          $waktu_lengkap = !empty($row['terdaftar']) ? $row['terdaftar'] : ($tgl . ' 00:00:00');
+          $waktu_lengkap = !empty($row['terdaftar'])
+            ? $row['terdaftar']
+            : date('Y-m-d H:i:s');
 
           $formatted_data[] = [
-            'id' => 'tf_' . ($row['id'] ?? uniqid()),
-            'type' => $type,
-            'direction' => strtolower($type),
-            'source' => 'transfer',
-            'title' => $title,
-            'keterangan' => $row['keterangan'] ?? '',
-            'date' => date('d M Y', strtotime($tgl)),
-            'waktu_struk' => date('d-m-Y H:i:s', strtotime($waktu_lengkap)),
-            'timestamp' => strtotime($waktu_lengkap),
-            'amount' => $prefix . number_format((float)($row['nominal'] ?? 0), 0, ',', '.'),
-            'color' => $color,
-            'status' => 'Sukses',
-            'bukti' => null
+            'id'                    => 'tf_' . $row['id'],
+            'kode_transfer'         => $row['kode_transfer']
+              ?? null,
+            'type'                  => $jenis,
+            'direction'             => strtolower($jenis),
+            'source'                => 'transfer',
+            'nama_pengirim'         => $row['nama_pengirim']
+              ?? 'Tidak diketahui',
+            'nama_penerima'         => $row['nama_penerima']
+              ?? 'Tidak diketahui',
+            'title'                 => $title,
+            'keterangan'            => $row['keterangan'] ?? '',
+            'date'                  => date(
+              'd M Y',
+              strtotime($waktu_lengkap)
+            ),
+            'waktu_struk'           => date(
+              'd-m-Y H:i:s',
+              strtotime($waktu_lengkap)
+            ),
+            'timestamp'             => strtotime($waktu_lengkap),
+            'amount'                => $prefix . number_format(
+              (float) ($row['nominal'] ?? 0),
+              0,
+              ',',
+              '.'
+            ),
+            'nominal_raw'           => (int) ($row['nominal'] ?? 0),
+            'color'                 => $color,
+            'status'                => $row['status_transfer']
+              ?? 'Sukses',
+            'bukti'                 => null,
+            'kode_cabang_asal'      => $row['kode_cabang_asal']
+              ?? null,
+            'nama_cabang_asal'      => $row['nama_cabang_asal']
+              ?? null,
+            'kode_cabang_tujuan'    => $row['kode_cabang_tujuan']
+              ?? null,
+            'nama_cabang_tujuan'    => $row['nama_cabang_tujuan']
+              ?? null
           ];
         }
       }
     }
 
     // Urutkan berdasarkan waktu terbaru
-    if (!empty($formatted_data)) {
-      usort($formatted_data, function ($a, $b) {
-        return $b['timestamp'] <=> $a['timestamp'];
-      });
+    usort($formatted_data, function ($a, $b) {
+      return $b['timestamp'] <=> $a['timestamp'];
+    });
+
+    if ($limit !== null) {
+      $formatted_data = array_slice(
+        $formatted_data,
+        0,
+        $limit
+      );
     }
 
-    // Batasi jumlah jika diminta
-    if ($limit !== 'all' && !empty($formatted_data)) {
-      $formatted_data = array_slice($formatted_data, 0, (int)$limit);
-    }
-
-
-    // 🔥 PASTIKAN OUTPUT BERSIH DARI ERROR PHP
-    @ob_clean(); // Bersihkan output buffer jika ada error PHP yang tersembunyi
-    echo json_encode(['status' => true, 'data' => $formatted_data]);
-    exit; // Matikan script agar tidak ada spasi atau karakter aneh yang terikut
+    $this->api_response([
+      'status' => true,
+      'cabang' => [
+        'id'   => $cabang_id,
+        'kode' => $auth->kode_cabang,
+        'nama' => $auth->nama_cabang
+      ],
+      'data' => $formatted_data
+    ]);
   }
 
   // ==========================================
