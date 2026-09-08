@@ -13950,24 +13950,440 @@ class Api extends CI_Controller
   // 12. Endpoint Admin: Ambil Semua Pesanan dari Semua Toko
   public function admin_get_semua_pesanan()
   {
-    if (ob_get_length()) ob_clean(); // 🔥 PENGAMAN JSON
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
 
-    $request = json_decode($this->input->raw_input_stream, true);
-    $level = $request['level'] ?? '';
-
-    if ($level !== 'Administrator' && $level !== 'Super Admin') {
-      echo json_encode(['status' => false, 'message' => 'Akses ditolak. Khusus Admin.']);
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
       return;
     }
 
-    $this->db->select('tb_pesanan.*, tb_user.nama as nama_pembeli, tb_toko.nama_toko');
-    $this->db->from('tb_pesanan');
-    $this->db->join('tb_user', 'tb_pesanan.id_pembeli = tb_user.id');
-    $this->db->join('tb_toko', 'tb_pesanan.id_toko = tb_toko.id_toko');
-    $this->db->order_by('tb_pesanan.id_pesanan', 'DESC');
-    $pesanan = $this->db->get()->result_array();
+    $auth = $this->authenticate_api();
 
-    echo json_encode(['status' => true, 'data' => $pesanan]);
+    if (!$auth) {
+      return;
+    }
+
+    /*
+   * Level, id_admin, dan cabang_id dari request
+   * tidak dipercaya.
+   */
+    if (!in_array(
+      $auth->level,
+      ['Administrator', 'Super Admin'],
+      true
+    )) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Akses ditolak. Endpoint ini khusus Administrator.'
+      ], 403);
+      return;
+    }
+
+    if (
+      $auth->level === 'Administrator' &&
+      (int) $auth->cabang_id <= 0
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Administrator belum terhubung dengan cabang yang valid.'
+      ], 403);
+      return;
+    }
+
+    $request = json_decode(
+      $this->input->raw_input_stream,
+      true
+    );
+
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format JSON tidak valid.'
+      ], 400);
+      return;
+    }
+
+    $page = isset($request['page'])
+      ? (int) $request['page']
+      : 1;
+
+    $limit = isset($request['limit'])
+      ? (int) $request['limit']
+      : 20;
+
+    if ($page < 1) {
+      $page = 1;
+    }
+
+    if ($limit < 1) {
+      $limit = 20;
+    }
+
+    if ($limit > 100) {
+      $limit = 100;
+    }
+
+    $offset = ($page - 1) * $limit;
+
+    $filter_status = trim(
+      (string) ($request['status_pesanan'] ?? '')
+    );
+
+    $status_diizinkan = [
+      'Menunggu Ongkir',
+      'Menunggu Pembayaran',
+      'Diproses',
+      'Dikirim',
+      'Selesai',
+      'Dibatalkan'
+    ];
+
+    if (
+      $filter_status !== '' &&
+      !in_array($filter_status, $status_diizinkan, true)
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Filter status pesanan tidak valid.'
+      ], 422);
+      return;
+    }
+
+    $pencarian = trim(
+      (string) ($request['search'] ?? '')
+    );
+
+    if (strlen($pencarian) > 100) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Kata pencarian maksimal 100 karakter.'
+      ], 422);
+      return;
+    }
+
+    $filter_id_toko = null;
+
+    if (
+      isset($request['id_toko']) &&
+      $request['id_toko'] !== ''
+    ) {
+      $id_toko_valid = filter_var(
+        $request['id_toko'],
+        FILTER_VALIDATE_INT,
+        [
+          'options' => [
+            'min_range' => 1
+          ]
+        ]
+      );
+
+      if ($id_toko_valid === false) {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Filter ID toko tidak valid.'
+        ], 422);
+        return;
+      }
+
+      $filter_id_toko = (int) $id_toko_valid;
+    }
+
+    /*
+   * Hitung total data berdasarkan batas cabang token.
+   */
+    $this->db->from('tb_pesanan p');
+    $this->db->join(
+      'tb_user pembeli',
+      'p.id_pembeli = pembeli.id'
+    );
+    $this->db->join(
+      'tb_toko toko',
+      'p.id_toko = toko.id_toko'
+    );
+
+    if ($auth->level === 'Administrator') {
+      $this->db->where(
+        'p.cabang_toko_id',
+        (int) $auth->cabang_id
+      );
+    }
+
+    if ($filter_status !== '') {
+      $this->db->where(
+        'p.status_pesanan',
+        $filter_status
+      );
+    }
+
+    if ($filter_id_toko !== null) {
+      $this->db->where(
+        'p.id_toko',
+        $filter_id_toko
+      );
+    }
+
+    if ($pencarian !== '') {
+      $this->db->group_start();
+      $this->db->like(
+        'p.invoice_pesanan',
+        $pencarian
+      );
+      $this->db->or_like(
+        'pembeli.nama',
+        $pencarian
+      );
+      $this->db->or_like(
+        'toko.nama_toko',
+        $pencarian
+      );
+      $this->db->group_end();
+    }
+
+    $total_data = (int) $this->db->count_all_results();
+
+    /*
+   * Data sensitif checkout_key dan checkout_hash
+   * tidak dikirim ke panel administrator.
+   */
+    $this->db->select([
+      'p.id_pesanan',
+      'p.invoice_pesanan',
+      'p.id_pembeli',
+      'p.cabang_pembeli_id',
+      'p.id_toko',
+      'p.cabang_toko_id',
+      'p.total_harga',
+      'p.ongkir',
+      'p.kurir',
+      'p.resi',
+      'p.status_pesanan',
+      'p.is_dinilai',
+      'p.catatan_pembeli',
+      'p.stok_dikembalikan',
+      'p.ongkir_ditetapkan_oleh',
+      'p.ongkir_ditetapkan_pada',
+      'p.id_transaksi_pembayaran',
+      'p.nominal_dibayar',
+      'p.pembayaran_oleh',
+      'p.dibayar_pada',
+      'p.terdaftar',
+      'pembeli.nama AS nama_pembeli',
+      'penjual.nama AS nama_penjual',
+      'toko.nama_toko',
+      'cabang_pembeli.kode AS kode_cabang_pembeli',
+      'cabang_pembeli.nama AS nama_cabang_pembeli',
+      'cabang_toko.kode AS kode_cabang_toko',
+      'cabang_toko.nama AS nama_cabang_toko'
+    ]);
+
+    $this->db->from('tb_pesanan p');
+
+    $this->db->join(
+      'tb_user pembeli',
+      'p.id_pembeli = pembeli.id'
+    );
+
+    $this->db->join(
+      'tb_toko toko',
+      'p.id_toko = toko.id_toko'
+    );
+
+    $this->db->join(
+      'tb_user penjual',
+      'toko.id_user = penjual.id'
+    );
+
+    $this->db->join(
+      'tb_cabang cabang_pembeli',
+      'p.cabang_pembeli_id = cabang_pembeli.id',
+      'left'
+    );
+
+    $this->db->join(
+      'tb_cabang cabang_toko',
+      'p.cabang_toko_id = cabang_toko.id',
+      'left'
+    );
+
+    if ($auth->level === 'Administrator') {
+      $this->db->where(
+        'p.cabang_toko_id',
+        (int) $auth->cabang_id
+      );
+    }
+
+    if ($filter_status !== '') {
+      $this->db->where(
+        'p.status_pesanan',
+        $filter_status
+      );
+    }
+
+    if ($filter_id_toko !== null) {
+      $this->db->where(
+        'p.id_toko',
+        $filter_id_toko
+      );
+    }
+
+    if ($pencarian !== '') {
+      $this->db->group_start();
+      $this->db->like(
+        'p.invoice_pesanan',
+        $pencarian
+      );
+      $this->db->or_like(
+        'pembeli.nama',
+        $pencarian
+      );
+      $this->db->or_like(
+        'toko.nama_toko',
+        $pencarian
+      );
+      $this->db->group_end();
+    }
+
+    $this->db->order_by('p.id_pesanan', 'DESC');
+    $this->db->limit($limit, $offset);
+
+    $query = $this->db->get();
+
+    if (!$query) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gagal mengambil daftar pesanan.'
+      ], 500);
+      return;
+    }
+
+    $hasil = $query->result_array();
+    $data_pesanan = [];
+
+    foreach ($hasil as $row) {
+      $data_pesanan[] = [
+        'id_pesanan' =>
+        (int) $row['id_pesanan'],
+
+        'invoice_pesanan' =>
+        $row['invoice_pesanan'],
+
+        'id_pembeli' =>
+        (int) $row['id_pembeli'],
+
+        'nama_pembeli' =>
+        $row['nama_pembeli'],
+
+        'cabang_pembeli_id' =>
+        (int) $row['cabang_pembeli_id'],
+
+        'kode_cabang_pembeli' =>
+        $row['kode_cabang_pembeli'],
+
+        'nama_cabang_pembeli' =>
+        $row['nama_cabang_pembeli'],
+
+        'id_toko' =>
+        (int) $row['id_toko'],
+
+        'nama_toko' =>
+        $row['nama_toko'],
+
+        'nama_penjual' =>
+        $row['nama_penjual'],
+
+        'cabang_toko_id' =>
+        (int) $row['cabang_toko_id'],
+
+        'kode_cabang_toko' =>
+        $row['kode_cabang_toko'],
+
+        'nama_cabang_toko' =>
+        $row['nama_cabang_toko'],
+
+        'total_harga' =>
+        (int) $row['total_harga'],
+
+        'ongkir' =>
+        (int) $row['ongkir'],
+
+        'total_tagihan' =>
+        (int) $row['total_harga'] +
+          (int) $row['ongkir'],
+
+        'kurir' =>
+        $row['kurir'],
+
+        'resi' =>
+        $row['resi'],
+
+        'status_pesanan' =>
+        $row['status_pesanan'],
+
+        'is_dinilai' =>
+        (int) $row['is_dinilai'],
+
+        'catatan_pembeli' =>
+        $row['catatan_pembeli'],
+
+        'stok_dikembalikan' =>
+        (bool) $row['stok_dikembalikan'],
+
+        'ongkir_ditetapkan_oleh' =>
+        $row['ongkir_ditetapkan_oleh'] !== null
+          ? (int) $row['ongkir_ditetapkan_oleh']
+          : null,
+
+        'ongkir_ditetapkan_pada' =>
+        $row['ongkir_ditetapkan_pada'],
+
+        'id_transaksi_pembayaran' =>
+        $row['id_transaksi_pembayaran'] !== null
+          ? (int) $row['id_transaksi_pembayaran']
+          : null,
+
+        'nominal_dibayar' =>
+        $row['nominal_dibayar'] !== null
+          ? (int) $row['nominal_dibayar']
+          : null,
+
+        'pembayaran_oleh' =>
+        $row['pembayaran_oleh'] !== null
+          ? (int) $row['pembayaran_oleh']
+          : null,
+
+        'dibayar_pada' =>
+        $row['dibayar_pada'],
+
+        'terdaftar' =>
+        $row['terdaftar']
+      ];
+    }
+
+    $this->api_response([
+      'status'  => true,
+      'message' => 'Daftar pesanan berhasil diambil.',
+      'data'    => $data_pesanan,
+      'pagination' => [
+        'page'       => $page,
+        'limit'      => $limit,
+        'total_data' => $total_data,
+        'total_page' => $total_data > 0
+          ? (int) ceil($total_data / $limit)
+          : 0
+      ],
+      'scope' => [
+        'level'     => $auth->level,
+        'cabang_id' =>
+        $auth->level === 'Administrator'
+          ? (int) $auth->cabang_id
+          : null
+      ]
+    ]);
   }
 
   // 13. Endpoint Admin: Batalkan Paksa Pesanan & Refund
