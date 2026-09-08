@@ -12115,67 +12115,336 @@ class Api extends CI_Controller
   // 7. Endpoint Riwayat Pesanan (Bisa untuk Pembeli atau Penjual) - OPTIMIZED O(1)
   public function get_pesanan()
   {
-    $request = json_decode($this->input->raw_input_stream, true);
-    $role = $request['role'] ?? ''; // 'pembeli' atau 'penjual'
-    $id = $request['id'] ?? ''; // id_user (jika pembeli) atau id_toko (jika penjual)
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
 
-    if (empty($role) || empty($id)) {
-      echo json_encode(['status' => false, 'message' => 'Parameter tidak lengkap.']);
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
       return;
     }
 
-    // --- QUERY 1: Ambil data pesanan utama ---
-    // (tb_pesanan.* akan otomatis mengambil kolom 'is_dinilai' yang baru kita buat)
-    $this->db->select('tb_pesanan.*, tb_user.nama as nama_pembeli, tb_toko.nama_toko');
+    $auth = $this->authenticate_api();
+
+    if (!$auth) {
+      return;
+    }
+
+    if ($auth->level !== 'Nasabah') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Riwayat pesanan hanya dapat diakses oleh Nasabah.'
+      ], 403);
+      return;
+    }
+
+    $request = json_decode(
+      $this->input->raw_input_stream,
+      true
+    );
+
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format JSON tidak valid.'
+      ], 400);
+      return;
+    }
+
+    $role = strtolower(
+      trim((string) ($request['role'] ?? ''))
+    );
+
+    if (!in_array($role, ['pembeli', 'penjual'], true)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Role harus berupa pembeli atau penjual.'
+      ], 422);
+      return;
+    }
+
+    /*
+   * Identitas pengguna selalu berasal dari Bearer token.
+   * Parameter id dari request sengaja diabaikan.
+   */
+    $id_user = (int) $auth->id_user;
+
+    $page = isset($request['page'])
+      ? (int) $request['page']
+      : 1;
+
+    $limit = isset($request['limit'])
+      ? (int) $request['limit']
+      : 20;
+
+    if ($page < 1) {
+      $page = 1;
+    }
+
+    if ($limit < 1) {
+      $limit = 20;
+    }
+
+    /*
+   * Batasi jumlah data agar request tidak mengambil
+   * seluruh riwayat sekaligus.
+   */
+    if ($limit > 50) {
+      $limit = 50;
+    }
+
+    $offset = ($page - 1) * $limit;
+
+    $filter_status = trim(
+      (string) ($request['status_pesanan'] ?? '')
+    );
+
+    $status_diizinkan = [
+      'Menunggu Ongkir',
+      'Menunggu Pembayaran',
+      'Diproses',
+      'Dikirim',
+      'Selesai',
+      'Dibatalkan'
+    ];
+
+    if (
+      $filter_status !== '' &&
+      !in_array($filter_status, $status_diizinkan, true)
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Filter status pesanan tidak valid.'
+      ], 422);
+      return;
+    }
+
+    $id_toko = null;
+
+    if ($role === 'penjual') {
+      /*
+     * Toko ditentukan dari pemilik token.
+     * id_toko dari request tidak dipercaya.
+     */
+      $toko = $this->db
+        ->select('id_toko')
+        ->from('tb_toko')
+        ->where('id_user', $id_user)
+        ->limit(1)
+        ->get()
+        ->row();
+
+      if (!$toko) {
+        $this->api_response([
+          'status' => true,
+          'message' => 'Akun ini belum memiliki toko.',
+          'data' => [],
+          'pagination' => [
+            'page'       => $page,
+            'limit'      => $limit,
+            'total_data' => 0,
+            'total_page' => 0
+          ]
+        ]);
+        return;
+      }
+
+      $id_toko = (int) $toko->id_toko;
+    }
+
+    /*
+   * Hitung total riwayat sesuai identitas token.
+   */
     $this->db->from('tb_pesanan');
-    $this->db->join('tb_user', 'tb_pesanan.id_pembeli = tb_user.id');
-    $this->db->join('tb_toko', 'tb_pesanan.id_toko = tb_toko.id_toko');
 
     if ($role === 'pembeli') {
-      $this->db->where('tb_pesanan.id_pembeli', $id);
-    } else if ($role === 'penjual') {
-      $this->db->where('tb_pesanan.id_toko', $id);
+      $this->db->where('id_pembeli', $id_user);
+    } else {
+      $this->db->where('id_toko', $id_toko);
     }
 
-    $this->db->order_by('tb_pesanan.id_pesanan', 'DESC');
-    $pesanan = $this->db->get()->result_array();
+    if ($filter_status !== '') {
+      $this->db->where(
+        'status_pesanan',
+        $filter_status
+      );
+    }
 
-    if (empty($pesanan)) {
-      echo json_encode(['status' => true, 'data' => []]);
+    $total_data = (int) $this->db->count_all_results();
+
+    /*
+   * Data sensitif seperti checkout_hash dan checkout_key
+   * tidak dikirimkan ke aplikasi.
+   */
+    $this->db->select([
+      'p.id_pesanan',
+      'p.invoice_pesanan',
+      'p.id_pembeli',
+      'p.cabang_pembeli_id',
+      'p.id_toko',
+      'p.cabang_toko_id',
+      'p.total_harga',
+      'p.ongkir',
+      'p.kurir',
+      'p.resi',
+      'p.status_pesanan',
+      'p.is_dinilai',
+      'p.catatan_pembeli',
+      'p.stok_dikembalikan',
+      'p.ongkir_ditetapkan_oleh',
+      'p.ongkir_ditetapkan_pada',
+      'p.id_transaksi_pembayaran',
+      'p.nominal_dibayar',
+      'p.pembayaran_oleh',
+      'p.dibayar_pada',
+      'p.terdaftar',
+      'pembeli.nama AS nama_pembeli',
+      't.nama_toko'
+    ]);
+
+    $this->db->from('tb_pesanan p');
+
+    $this->db->join(
+      'tb_user pembeli',
+      'p.id_pembeli = pembeli.id'
+    );
+
+    $this->db->join(
+      'tb_toko t',
+      'p.id_toko = t.id_toko'
+    );
+
+    if ($role === 'pembeli') {
+      $this->db->where('p.id_pembeli', $id_user);
+    } else {
+      $this->db->where('p.id_toko', $id_toko);
+    }
+
+    if ($filter_status !== '') {
+      $this->db->where(
+        'p.status_pesanan',
+        $filter_status
+      );
+    }
+
+    $this->db->order_by('p.id_pesanan', 'DESC');
+    $this->db->limit($limit, $offset);
+
+    $query_pesanan = $this->db->get();
+
+    if (!$query_pesanan) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gagal mengambil riwayat pesanan.'
+      ], 500);
       return;
     }
 
-    // --- OPTIMASI N+1 QUERY ---
+    $pesanan = $query_pesanan->result_array();
 
-    // 1. Kumpulkan semua id_pesanan menggunakan array_column
-    $id_pesanan_list = array_column($pesanan, 'id_pesanan');
+    if (empty($pesanan)) {
+      $this->api_response([
+        'status' => true,
+        'message' => 'Riwayat pesanan kosong.',
+        'data' => [],
+        'pagination' => [
+          'page'       => $page,
+          'limit'      => $limit,
+          'total_data' => $total_data,
+          'total_page' => $total_data > 0
+            ? (int) ceil($total_data / $limit)
+            : 0
+        ]
+      ]);
+      return;
+    }
 
-    // 2. QUERY 2: 🔥 TAMBAHKAN tb_produk.berat AGAR MUNCUL DI RIWAYAT BELANJA 🔥
-    $this->db->select('tb_pesanan_detail.*, tb_produk.nama_produk, tb_produk.berat');
-    $this->db->from('tb_pesanan_detail');
-    $this->db->join('tb_produk', 'tb_pesanan_detail.id_produk = tb_produk.id_produk', 'left');
-    $this->db->where_in('tb_pesanan_detail.id_pesanan', $id_pesanan_list);
-    $semua_detail = $this->db->get()->result_array();
+    /*
+   * Ambil seluruh detail untuk pesanan pada halaman ini
+   * menggunakan satu query agar tidak terjadi N+1 query.
+   */
+    $id_pesanan_list = array_map(
+      'intval',
+      array_column($pesanan, 'id_pesanan')
+    );
 
-    // 3. Kelompokkan detail barang berdasarkan id_pesanan menggunakan PHP
-    $grouped_detail = [];
+    $this->db->select([
+      'd.id_detail',
+      'd.id_pesanan',
+      'd.id_produk',
+      'd.jumlah',
+      'd.harga_satuan',
+      'd.subtotal',
+      'produk.nama_produk',
+      'produk.berat',
+      'produk.foto_produk'
+    ]);
+
+    $this->db->from('tb_pesanan_detail d');
+
+    $this->db->join(
+      'tb_produk produk',
+      'd.id_produk = produk.id_produk',
+      'left'
+    );
+
+    $this->db->where_in(
+      'd.id_pesanan',
+      $id_pesanan_list
+    );
+
+    $this->db->order_by('d.id_detail', 'ASC');
+
+    $query_detail = $this->db->get();
+
+    if (!$query_detail) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gagal mengambil detail pesanan.'
+      ], 500);
+      return;
+    }
+
+    $semua_detail = $query_detail->result_array();
+    $detail_per_pesanan = [];
+
     foreach ($semua_detail as $detail) {
-      $id_pes = $detail['id_pesanan'];
-      if (!isset($grouped_detail[$id_pes])) {
-        $grouped_detail[$id_pes] = [];
+      $id_detail_pesanan = (int) $detail['id_pesanan'];
+
+      if (!isset($detail_per_pesanan[$id_detail_pesanan])) {
+        $detail_per_pesanan[$id_detail_pesanan] = [];
       }
-      $grouped_detail[$id_pes][] = $detail;
+
+      $detail_per_pesanan[$id_detail_pesanan][] = $detail;
     }
 
-    // 4. Masukkan array barang yang sudah dikelompokkan ke data pesanan utama
-    $formatted_pesanan = [];
-    foreach ($pesanan as $p) {
-      $p['items'] = $grouped_detail[$p['id_pesanan']] ?? [];
-      $formatted_pesanan[] = $p;
+    foreach ($pesanan as &$baris_pesanan) {
+      $id_baris = (int) $baris_pesanan['id_pesanan'];
+
+      $baris_pesanan['total_tagihan'] =
+        (int) $baris_pesanan['total_harga'] +
+        (int) $baris_pesanan['ongkir'];
+
+      $baris_pesanan['items'] =
+        $detail_per_pesanan[$id_baris] ?? [];
     }
 
-    // Kembalikan hasilnya ke React Native
-    echo json_encode(['status' => true, 'data' => $formatted_pesanan]);
+    unset($baris_pesanan);
+
+    $this->api_response([
+      'status'  => true,
+      'message' => 'Riwayat pesanan berhasil diambil.',
+      'data'    => $pesanan,
+      'pagination' => [
+        'page'       => $page,
+        'limit'      => $limit,
+        'total_data' => $total_data,
+        'total_page' => (int) ceil($total_data / $limit)
+      ]
+    ]);
   }
 
   // 8. Endpoint Update Status Pesanan (Oleh Penjual)
