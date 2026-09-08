@@ -13751,25 +13751,198 @@ class Api extends CI_Controller
   // 11. Endpoint Hapus Produk (Soft Delete)
   public function hapus_produk()
   {
-    $request = json_decode($this->input->raw_input_stream, true);
-    $id_produk = $request['id_produk'] ?? '';
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
 
-    if (empty($id_produk)) {
-      echo json_encode(['status' => false, 'message' => 'ID Produk tidak valid.']);
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
       return;
     }
 
-    $this->db->where('id_produk', $id_produk);
-    $update = $this->db->update('tb_produk', ['status_produk' => 'Arsip']);
+    $auth = $this->authenticate_api();
 
-    if ($update) {
-      echo json_encode(['status' => true, 'message' => 'Produk berhasil dihapus dari etalase.']);
-    } else {
-      echo json_encode(['status' => false, 'message' => 'Gagal menghapus produk.']);
+    if (!$auth) {
+      return;
     }
+
+    if ($auth->level !== 'Nasabah') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Produk hanya dapat diarsipkan oleh pemilik toko.'
+      ], 403);
+      return;
+    }
+
+    $request = json_decode(
+      $this->input->raw_input_stream,
+      true
+    );
+
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format JSON tidak valid.'
+      ], 400);
+      return;
+    }
+
+    $id_produk = filter_var(
+      $request['id_produk'] ?? null,
+      FILTER_VALIDATE_INT,
+      [
+        'options' => [
+          'min_range' => 1
+        ]
+      ]
+    );
+
+    if ($id_produk === false) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'ID produk tidak valid.'
+      ], 422);
+      return;
+    }
+
+    $id_produk = (int) $id_produk;
+    $id_penjual = (int) $auth->id_user;
+
+    $this->db->trans_begin();
+
+    /*
+   * Produk dikunci dan langsung dibatasi berdasarkan
+   * pemilik toko dari Bearer token.
+   */
+    $produk = $this->db->query(
+      "SELECT
+        p.id_produk,
+        p.id_toko,
+        p.nama_produk,
+        p.status_produk,
+        p.status_sebelum_toko_nonaktif,
+        t.id_user AS id_penjual,
+        t.nama_toko,
+        t.status_toko
+     FROM tb_produk p
+     INNER JOIN tb_toko t
+       ON t.id_toko = p.id_toko
+     WHERE p.id_produk = ?
+       AND t.id_user = ?
+     LIMIT 1
+     FOR UPDATE",
+      [
+        $id_produk,
+        $id_penjual
+      ]
+    )->row();
+
+    if (!$produk) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Produk tidak ditemukan atau bukan milik toko Anda.'
+      ], 404);
+      return;
+    }
+
+    /*
+   * Saat toko aktif, status Arsip berarti produk memang
+   * sudah dihapus dari etalase.
+   *
+   * Saat toko nonaktif, seluruh produk sementara berstatus
+   * Arsip. Status permanennya berada pada
+   * status_sebelum_toko_nonaktif.
+   */
+    $sudah_diarsipkan =
+      (
+        $produk->status_toko === 'Aktif' &&
+        $produk->status_produk === 'Arsip'
+      ) ||
+      (
+        $produk->status_toko === 'Nonaktif' &&
+        $produk->status_produk === 'Arsip' &&
+        $produk->status_sebelum_toko_nonaktif === 'Arsip'
+      );
+
+    if ($sudah_diarsipkan) {
+      if ($this->db->trans_status() === false) {
+        $this->db->trans_rollback();
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Gagal memeriksa status produk.'
+        ], 500);
+        return;
+      }
+
+      $this->db->trans_commit();
+
+      $this->api_response([
+        'status'  => true,
+        'message' => 'Produk ini sudah diarsipkan sebelumnya.',
+        'data'    => [
+          'id_produk'     => $id_produk,
+          'nama_produk'   => $produk->nama_produk,
+          'id_toko'       => (int) $produk->id_toko,
+          'nama_toko'     => $produk->nama_toko,
+          'status_produk' => 'Arsip',
+          'idempotent'    => true
+        ]
+      ]);
+      return;
+    }
+
+    $data_update = [
+      'status_produk' => 'Arsip'
+    ];
+
+    /*
+   * Jika toko sedang nonaktif, ubah juga status yang akan
+   * dipulihkan ketika toko kembali aktif.
+   */
+    if ($produk->status_toko === 'Nonaktif') {
+      $data_update['status_sebelum_toko_nonaktif'] =
+        'Arsip';
+    }
+
+    $this->db
+      ->where('id_produk', $id_produk)
+      ->where('id_toko', (int) $produk->id_toko)
+      ->update('tb_produk', $data_update);
+
+    if (
+      $this->db->affected_rows() !== 1 ||
+      $this->db->trans_status() === false
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gagal mengarsipkan produk.'
+      ], 500);
+      return;
+    }
+
+    $this->db->trans_commit();
+
+    $this->api_response([
+      'status'  => true,
+      'message' => 'Produk berhasil dihapus dari etalase.',
+      'data'    => [
+        'id_produk'     => $id_produk,
+        'nama_produk'   => $produk->nama_produk,
+        'id_toko'       => (int) $produk->id_toko,
+        'nama_toko'     => $produk->nama_toko,
+        'status_produk' => 'Arsip',
+        'idempotent'    => false
+      ]
+    ]);
   }
-
-
   // ==========================================
   // FITUR MARKETPLACE: SISI ADMIN (PUSAT KENDALI)
   // ==========================================
