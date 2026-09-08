@@ -14097,10 +14097,12 @@ class Api extends CI_Controller
    * Hitung total data berdasarkan batas cabang token.
    */
     $this->db->from('tb_pesanan p');
+
     $this->db->join(
       'tb_user pembeli',
       'p.id_pembeli = pembeli.id'
     );
+
     $this->db->join(
       'tb_toko toko',
       'p.id_toko = toko.id_toko'
@@ -14129,18 +14131,22 @@ class Api extends CI_Controller
 
     if ($pencarian !== '') {
       $this->db->group_start();
+
       $this->db->like(
         'p.invoice_pesanan',
         $pencarian
       );
+
       $this->db->or_like(
         'pembeli.nama',
         $pencarian
       );
+
       $this->db->or_like(
         'toko.nama_toko',
         $pencarian
       );
+
       $this->db->group_end();
     }
 
@@ -14148,7 +14154,7 @@ class Api extends CI_Controller
 
     /*
    * Data sensitif checkout_key dan checkout_hash
-   * tidak dikirim ke panel administrator.
+   * tidak dikirim ke panel Administrator.
    */
     $this->db->select([
       'p.id_pesanan',
@@ -14165,18 +14171,31 @@ class Api extends CI_Controller
       'p.is_dinilai',
       'p.catatan_pembeli',
       'p.stok_dikembalikan',
+
       'p.ongkir_ditetapkan_oleh',
       'p.ongkir_ditetapkan_pada',
+
       'p.id_transaksi_pembayaran',
       'p.nominal_dibayar',
       'p.pembayaran_oleh',
       'p.dibayar_pada',
+
+      'p.dibatalkan_oleh',
+      'p.dibatalkan_pada',
+      'p.alasan_pembatalan',
+      'p.id_transaksi_refund',
+      'p.nominal_refund',
+      'p.refund_pada',
+
       'p.terdaftar',
+
       'pembeli.nama AS nama_pembeli',
       'penjual.nama AS nama_penjual',
       'toko.nama_toko',
+
       'cabang_pembeli.kode AS kode_cabang_pembeli',
       'cabang_pembeli.nama AS nama_cabang_pembeli',
+
       'cabang_toko.kode AS kode_cabang_toko',
       'cabang_toko.nama AS nama_cabang_toko'
     ]);
@@ -14233,23 +14252,34 @@ class Api extends CI_Controller
 
     if ($pencarian !== '') {
       $this->db->group_start();
+
       $this->db->like(
         'p.invoice_pesanan',
         $pencarian
       );
+
       $this->db->or_like(
         'pembeli.nama',
         $pencarian
       );
+
       $this->db->or_like(
         'toko.nama_toko',
         $pencarian
       );
+
       $this->db->group_end();
     }
 
-    $this->db->order_by('p.id_pesanan', 'DESC');
-    $this->db->limit($limit, $offset);
+    $this->db->order_by(
+      'p.id_pesanan',
+      'DESC'
+    );
+
+    $this->db->limit(
+      $limit,
+      $offset
+    );
 
     $query = $this->db->get();
 
@@ -14359,6 +14389,30 @@ class Api extends CI_Controller
         'dibayar_pada' =>
         $row['dibayar_pada'],
 
+        'dibatalkan_oleh' =>
+        $row['dibatalkan_oleh'] !== null
+          ? (int) $row['dibatalkan_oleh']
+          : null,
+
+        'dibatalkan_pada' =>
+        $row['dibatalkan_pada'],
+
+        'alasan_pembatalan' =>
+        $row['alasan_pembatalan'],
+
+        'id_transaksi_refund' =>
+        $row['id_transaksi_refund'] !== null
+          ? (int) $row['id_transaksi_refund']
+          : null,
+
+        'nominal_refund' =>
+        $row['nominal_refund'] !== null
+          ? (int) $row['nominal_refund']
+          : null,
+
+        'refund_pada' =>
+        $row['refund_pada'],
+
         'terdaftar' =>
         $row['terdaftar']
       ];
@@ -14368,6 +14422,7 @@ class Api extends CI_Controller
       'status'  => true,
       'message' => 'Daftar pesanan berhasil diambil.',
       'data'    => $data_pesanan,
+
       'pagination' => [
         'page'       => $page,
         'limit'      => $limit,
@@ -14376,8 +14431,11 @@ class Api extends CI_Controller
           ? (int) ceil($total_data / $limit)
           : 0
       ],
+
       'scope' => [
-        'level'     => $auth->level,
+        'level' =>
+        $auth->level,
+
         'cabang_id' =>
         $auth->level === 'Administrator'
           ? (int) $auth->cabang_id
@@ -14389,120 +14447,793 @@ class Api extends CI_Controller
   // 13. Endpoint Admin: Batalkan Paksa Pesanan & Refund
   public function admin_batalkan_pesanan()
   {
-    if (ob_get_length()) ob_clean(); // 🔥 PENGAMAN JSON
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
 
-    $request = json_decode($this->input->raw_input_stream, true);
-    $id_pesanan = $request['id_pesanan'] ?? '';
-    $level = $request['level'] ?? '';
-
-    if (!in_array($level, ['Administrator', 'Super Admin']) || empty($id_pesanan)) {
-      echo json_encode(['status' => false, 'message' => 'Akses ditolak atau data tidak valid.']);
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
       return;
     }
 
-    $this->db->trans_start();
+    $auth = $this->authenticate_api();
 
-    // 1. Cek Pesanan
-    $pesanan = $this->db->get_where('tb_pesanan', ['id_pesanan' => $id_pesanan])->row_array();
-
-    if (!$pesanan || $pesanan['status_pesanan'] === 'Selesai' || $pesanan['status_pesanan'] === 'Dibatalkan') {
-      echo json_encode(['status' => false, 'message' => 'Pesanan sudah selesai atau sudah dibatalkan sebelumnya.']);
+    if (!$auth) {
       return;
     }
 
-    // SIMPAN STATUS LAMA SEBELUM DIUBAH (Untuk Pengecekan Refund)
-    $status_lama = $pesanan['status_pesanan'];
-
-    // 2. Ubah Status Pesanan
-    $this->db->where('id_pesanan', $id_pesanan);
-    $this->db->update('tb_pesanan', ['status_pesanan' => 'Dibatalkan']);
-
-    // 3. KEMBALIKAN STOK BARANG KE TOKO
-    $detail_pesanan = $this->db->get_where('tb_pesanan_detail', ['id_pesanan' => $id_pesanan])->result_array();
-    foreach ($detail_pesanan as $item) {
-      $this->db->set('stok', 'stok + ' . (int)$item['jumlah'], FALSE);
-      $this->db->where('id_produk', $item['id_produk']);
-      $this->db->update('tb_produk');
+    if (!in_array(
+      $auth->level,
+      ['Administrator', 'Super Admin'],
+      true
+    )) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Akses ditolak. Endpoint ini khusus Administrator.'
+      ], 403);
+      return;
     }
 
-    // 4. LAKUKAN REFUND HANYA JIKA PEMBELI SUDAH BAYAR
-    $is_refunded = false;
-    if ($status_lama === 'Diproses' || $status_lama === 'Dikirim') {
-      $grand_total = $pesanan['total_harga'] + $pesanan['ongkir']; // Refund Harga Barang + Ongkir
+    if (
+      $auth->level === 'Administrator' &&
+      (int) $auth->cabang_id <= 0
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Administrator belum terhubung dengan cabang yang valid.'
+      ], 403);
+      return;
+    }
 
-      $this->db->insert('tb_transaksi', [
-        'idAdmin' => 0, // 0 karena otomatis
-        'idNasabah' => $pesanan['id_pembeli'],
-        'idPotongan' => 0,
-        'tanggal' => date('Y-m-d'),
-        'nominal' => $grand_total,
-        'jenis' => 'Masuk',
-        'keterangan' => 'Refund pembatalan Admin (INV: ' . $pesanan['invoice_pesanan'] . ')',
-        'status_konfirmasi' => 'Sukses',
-        'terdaftar' => date('Y-m-d H:i:s')
+    $request = json_decode(
+      $this->input->raw_input_stream,
+      true
+    );
+
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format JSON tidak valid.'
+      ], 400);
+      return;
+    }
+
+    $id_pesanan = filter_var(
+      $request['id_pesanan'] ?? null,
+      FILTER_VALIDATE_INT,
+      [
+        'options' => [
+          'min_range' => 1
+        ]
+      ]
+    );
+
+    if ($id_pesanan === false) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'ID pesanan tidak valid.'
+      ], 422);
+      return;
+    }
+
+    $alasan = trim(
+      (string) ($request['alasan'] ?? '')
+    );
+
+    if ($alasan === '') {
+      $alasan = 'Dibatalkan oleh Administrator.';
+    }
+
+    if (strlen($alasan) > 500) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Alasan pembatalan maksimal 500 karakter.'
+      ], 422);
+      return;
+    }
+
+    $id_pesanan = (int) $id_pesanan;
+    $id_admin = (int) $auth->id_user;
+
+    /*
+   * Pemeriksaan awal untuk memperoleh ID pembeli dan
+   * memastikan Administrator hanya mengakses cabangnya.
+   */
+    $this->db
+      ->select([
+        'id_pesanan',
+        'id_pembeli',
+        'cabang_toko_id'
+      ])
+      ->from('tb_pesanan')
+      ->where('id_pesanan', $id_pesanan);
+
+    if ($auth->level === 'Administrator') {
+      $this->db->where(
+        'cabang_toko_id',
+        (int) $auth->cabang_id
+      );
+    }
+
+    $pesanan_awal = $this->db
+      ->limit(1)
+      ->get()
+      ->row();
+
+    if (!$pesanan_awal) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Pesanan tidak ditemukan atau berada di luar cabang Anda.'
+      ], 404);
+      return;
+    }
+
+    $this->db->trans_begin();
+
+    /*
+   * Kunci pembeli agar refund terserialisasi dengan
+   * transaksi saldo lainnya.
+   */
+    $pembeli = $this->db->query(
+      "SELECT
+        id,
+        cabang_id,
+        expo_token
+     FROM tb_user
+     WHERE id = ?
+     LIMIT 1
+     FOR UPDATE",
+      [(int) $pesanan_awal->id_pembeli]
+    )->row();
+
+    if (!$pembeli) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Akun pembeli tidak ditemukan.'
+      ], 409);
+      return;
+    }
+
+    $sql_scope = '';
+    $parameter_pesanan = [
+      $id_pesanan
+    ];
+
+    if ($auth->level === 'Administrator') {
+      $sql_scope = ' AND p.cabang_toko_id = ?';
+      $parameter_pesanan[] = (int) $auth->cabang_id;
+    }
+
+    /*
+   * Kunci pesanan sesuai cakupan cabang token.
+   */
+    $pesanan = $this->db->query(
+      "SELECT
+        p.*,
+        toko.id_user AS id_penjual,
+        toko.nama_toko,
+        penjual.expo_token AS expo_token_penjual
+     FROM tb_pesanan p
+     INNER JOIN tb_toko toko
+       ON toko.id_toko = p.id_toko
+     INNER JOIN tb_user penjual
+       ON penjual.id = toko.id_user
+     WHERE p.id_pesanan = ?" .
+        $sql_scope .
+        " LIMIT 1
+       FOR UPDATE",
+      $parameter_pesanan
+    )->row();
+
+    if (!$pesanan) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Pesanan tidak ditemukan atau berada di luar cabang Anda.'
+      ], 404);
+      return;
+    }
+
+    $total_harga = (int) $pesanan->total_harga;
+    $ongkir = (int) $pesanan->ongkir;
+    $total_tagihan = $total_harga + $ongkir;
+
+    if (
+      $total_harga <= 0 ||
+      $ongkir < 0 ||
+      $total_tagihan <= 0 ||
+      $total_tagihan > 2147483647
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Nilai tagihan pesanan tidak valid.'
+      ], 409);
+      return;
+    }
+
+    /*
+   * Kunci seluruh ledger yang berhubungan dengan pesanan.
+   */
+    $pembayaran = $this->db->query(
+      "SELECT
+        id,
+        idNasabah,
+        nominal,
+        jenis,
+        status_konfirmasi,
+        referensi_tipe,
+        referensi_id
+     FROM tb_transaksi
+     WHERE referensi_tipe = ?
+       AND referensi_id = ?
+     LIMIT 1
+     FOR UPDATE",
+      [
+        'PembayaranPesanan',
+        $id_pesanan
+      ]
+    )->row();
+
+    $refund_lama = $this->db->query(
+      "SELECT
+        id,
+        idAdmin,
+        idNasabah,
+        nominal,
+        jenis,
+        status_konfirmasi,
+        referensi_tipe,
+        referensi_id,
+        terdaftar
+     FROM tb_transaksi
+     WHERE referensi_tipe = ?
+       AND referensi_id = ?
+     LIMIT 1
+     FOR UPDATE",
+      [
+        'RefundPesanan',
+        $id_pesanan
+      ]
+    )->row();
+
+    $pencairan_penjual = $this->db->query(
+      "SELECT
+        id,
+        idNasabah,
+        nominal,
+        status_konfirmasi
+     FROM tb_transaksi
+     WHERE referensi_tipe = ?
+       AND referensi_id = ?
+     LIMIT 1
+     FOR UPDATE",
+      [
+        'PencairanPesanan',
+        $id_pesanan
+      ]
+    )->row();
+
+    /*
+   * Pesanan yang sudah selesai dan sudah dicairkan kepada
+   * penjual tidak boleh langsung dibatalkan.
+   */
+    if (
+      $pesanan->status_pesanan === 'Selesai' ||
+      $pencairan_penjual
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Pesanan sudah selesai atau dana sudah dicairkan kepada penjual. Gunakan proses sengketa dan pembalikan dana.'
+      ], 409);
+      return;
+    }
+
+    $memiliki_data_pembayaran =
+      !empty($pesanan->id_transaksi_pembayaran) ||
+      $pesanan->nominal_dibayar !== null ||
+      $pembayaran !== null;
+
+    $pembayaran_valid =
+      $pembayaran &&
+      !empty($pesanan->id_transaksi_pembayaran) &&
+      (int) $pesanan->id_transaksi_pembayaran ===
+      (int) $pembayaran->id &&
+      (int) $pesanan->id_pembeli ===
+      (int) $pembayaran->idNasabah &&
+      (int) $pesanan->nominal_dibayar ===
+      $total_tagihan &&
+      (int) $pembayaran->nominal ===
+      $total_tagihan &&
+      (string) $pembayaran->jenis === 'Keluar' &&
+      (string) $pembayaran->status_konfirmasi ===
+      'Sukses' &&
+      (string) $pembayaran->referensi_tipe ===
+      'PembayaranPesanan' &&
+      (int) $pembayaran->referensi_id ===
+      $id_pesanan;
+
+    /*
+   * Idempotensi pembatalan admin.
+   */
+    if ($pesanan->status_pesanan === 'Dibatalkan') {
+      if ((int) $pesanan->stok_dikembalikan !== 1) {
+        $this->db->trans_rollback();
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Pesanan dibatalkan tetapi status pengembalian stok tidak konsisten.'
+        ], 409);
+        return;
+      }
+
+      if ($memiliki_data_pembayaran) {
+        $refund_valid =
+          $pembayaran_valid &&
+          $refund_lama &&
+          !empty($pesanan->id_transaksi_refund) &&
+          (int) $pesanan->id_transaksi_refund ===
+          (int) $refund_lama->id &&
+          (int) $refund_lama->idNasabah ===
+          (int) $pesanan->id_pembeli &&
+          (int) $refund_lama->nominal ===
+          $total_tagihan &&
+          (int) $pesanan->nominal_refund ===
+          $total_tagihan &&
+          (string) $refund_lama->jenis === 'Masuk' &&
+          (string) $refund_lama->status_konfirmasi ===
+          'Sukses';
+
+        if (!$refund_valid) {
+          $this->db->trans_rollback();
+
+          $this->api_response([
+            'status'  => false,
+            'message' => 'Pesanan dibatalkan tetapi data refund tidak konsisten. Hubungi administrator.'
+          ], 409);
+          return;
+        }
+      } elseif (
+        $refund_lama ||
+        !empty($pesanan->id_transaksi_refund) ||
+        $pesanan->nominal_refund !== null
+      ) {
+        $this->db->trans_rollback();
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Pesanan belum dibayar tetapi memiliki data refund yang tidak semestinya.'
+        ], 409);
+        return;
+      }
+
+      if ($this->db->trans_status() === false) {
+        $this->db->trans_rollback();
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Gagal memeriksa pembatalan pesanan.'
+        ], 500);
+        return;
+      }
+
+      $this->db->trans_commit();
+
+      $this->api_response([
+        'status'  => true,
+        'message' => 'Pesanan ini sudah dibatalkan sebelumnya.',
+        'data'    => [
+          'id_pesanan'            => $id_pesanan,
+          'invoice_pesanan'       =>
+          $pesanan->invoice_pesanan,
+          'status_pesanan'        => 'Dibatalkan',
+          'stok_dikembalikan'     => true,
+          'direfund'              =>
+          $memiliki_data_pembayaran,
+          'id_transaksi_refund'   =>
+          $refund_lama
+            ? (int) $refund_lama->id
+            : null,
+          'nominal_refund'        =>
+          $refund_lama
+            ? (int) $refund_lama->nominal
+            : null,
+          'dibatalkan_oleh'       =>
+          $pesanan->dibatalkan_oleh !== null
+            ? (int) $pesanan->dibatalkan_oleh
+            : null,
+          'dibatalkan_pada'       =>
+          $pesanan->dibatalkan_pada,
+          'alasan_pembatalan'     =>
+          $pesanan->alasan_pembatalan,
+          'idempotent'            => true
+        ]
       ]);
-
-      $is_refunded = true;
+      return;
     }
 
-    $this->db->trans_complete();
+    if ((int) $pesanan->stok_dikembalikan !== 0) {
+      $this->db->trans_rollback();
 
-    if ($this->db->trans_status() === FALSE) {
-      echo json_encode(['status' => false, 'message' => 'Gagal melakukan pembatalan pesanan.']);
-    } else {
-
-      // 🔥 1. NOTIFIKASI KE PEMBELI (DIPERBAIKI)
-      $this->db->select('id, expo_token');
-      $this->db->where('id', $pesanan['id_pembeli']);
-      $pembeli = $this->db->get('tb_user')->row();
-
-      if ($pembeli) {
-        $teks_refund = $is_refunded ? " Dana Anda (termasuk ongkir) telah dikembalikan ke saldo tabungan." : "";
-        $judul_notif = "⚠️ Pesanan Dibatalkan Admin";
-        $pesan_notif = "Pesanan " . $pesanan['invoice_pesanan'] . " dibatalkan oleh Admin." . $teks_refund;
-
-        // Simpan ke Lonceng Pembeli
-        $this->db->insert('tb_notifikasi', [
-          'id_user' => $pembeli->id,
-          'judul'   => $judul_notif,
-          'pesan'   => $pesan_notif,
-          'is_read' => 0,
-          'tanggal' => date('Y-m-d H:i:s')
-        ]);
-
-        if (!empty($pembeli->expo_token)) {
-          $this->send_expo_push_notification($pembeli->expo_token, $judul_notif, $pesan_notif);
-        }
-      }
-
-      // 🔥 2. NOTIFIKASI KE PENJUAL (DIPERBAIKI)
-      $this->db->select('tb_user.expo_token, tb_toko.id_user'); // Ditambahkan tb_toko.id_user
-      $this->db->from('tb_toko');
-      $this->db->join('tb_user', 'tb_toko.id_user = tb_user.id');
-      $this->db->where('tb_toko.id_toko', $pesanan['id_toko']);
-      $penjual = $this->db->get()->row();
-
-      if ($penjual) {
-        $judul_notif_penjual = "⚠️ Pesanan Dibatalkan Admin";
-        $pesan_notif_penjual = "Pesanan " . $pesanan['invoice_pesanan'] . " dibatalkan secara paksa oleh Admin. Stok barang telah dikembalikan ke etalase Anda.";
-
-        // Simpan ke Lonceng Penjual
-        $this->db->insert('tb_notifikasi', [
-          'id_user' => $penjual->id_user,
-          'judul'   => $judul_notif_penjual,
-          'pesan'   => $pesan_notif_penjual,
-          'is_read' => 0,
-          'tanggal' => date('Y-m-d H:i:s')
-        ]);
-
-        if (!empty($penjual->expo_token)) {
-          $this->send_expo_push_notification($penjual->expo_token, $judul_notif_penjual, $pesan_notif_penjual);
-        }
-      }
-
-      $pesan_sukses = $is_refunded ? 'Pesanan berhasil dibatalkan secara paksa dan dana (termasuk ongkir) dikembalikan ke pembeli.' : 'Pesanan berhasil dibatalkan. (Tidak ada refund karena belum dibayar).';
-      echo json_encode(['status' => true, 'message' => $pesan_sukses]);
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Status pesanan dan pengembalian stok tidak konsisten.'
+      ], 409);
+      return;
     }
+
+    $status_bisa_dibatalkan = [
+      'Menunggu Ongkir',
+      'Menunggu Pembayaran',
+      'Diproses',
+      'Dikirim'
+    ];
+
+    if (!in_array(
+      $pesanan->status_pesanan,
+      $status_bisa_dibatalkan,
+      true
+    )) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Status pesanan tidak dapat dibatalkan oleh Administrator.',
+        'data'    => [
+          'status_pesanan' =>
+          $pesanan->status_pesanan
+        ]
+      ], 409);
+      return;
+    }
+
+    /*
+   * Status sesudah pembayaran harus memiliki ledger pembayaran
+   * yang benar. Jika tidak, hentikan untuk pemeriksaan manual.
+   */
+    if (
+      in_array(
+        $pesanan->status_pesanan,
+        ['Diproses', 'Dikirim'],
+        true
+      ) &&
+      !$pembayaran_valid
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Pesanan berstatus telah dibayar tetapi ledger pembayarannya tidak valid.'
+      ], 409);
+      return;
+    }
+
+    if (
+      $memiliki_data_pembayaran &&
+      !$pembayaran_valid
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Data pembayaran pesanan tidak konsisten. Refund dihentikan.'
+      ], 409);
+      return;
+    }
+
+    if (
+      !$memiliki_data_pembayaran &&
+      $refund_lama
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Ditemukan refund tanpa transaksi pembayaran yang sah.'
+      ], 409);
+      return;
+    }
+
+    if (
+      $memiliki_data_pembayaran &&
+      $refund_lama
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Refund sudah tercatat tetapi status pesanan belum konsisten. Hubungi administrator.'
+      ], 409);
+      return;
+    }
+
+    $detail_pesanan = $this->db
+      ->select([
+        'id_produk',
+        'jumlah'
+      ])
+      ->from('tb_pesanan_detail')
+      ->where('id_pesanan', $id_pesanan)
+      ->order_by('id_produk', 'ASC')
+      ->get()
+      ->result_array();
+
+    if (empty($detail_pesanan)) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Detail barang pesanan tidak ditemukan.'
+      ], 409);
+      return;
+    }
+
+    $waktu_sekarang = date('Y-m-d H:i:s');
+    $id_transaksi_refund = null;
+    $nominal_refund = null;
+
+    /*
+   * Refund hanya dibuat jika pembayaran telah tercatat sah.
+   */
+    if ($pembayaran_valid) {
+      $refund_disimpan = $this->db->insert(
+        'tb_transaksi',
+        [
+          'cabang_id'         =>
+          !empty($pembeli->cabang_id)
+            ? (int) $pembeli->cabang_id
+            : null,
+          'idAdmin'           => $id_admin,
+          'idNasabah'         =>
+          (int) $pesanan->id_pembeli,
+          'idPotongan'        => 0,
+          'tanggal'           => date('Y-m-d'),
+          'nominal'           => $total_tagihan,
+          'gram_emas'         => null,
+          'jenis'             => 'Masuk',
+          'keterangan'        =>
+          'Refund Pembatalan Admin: ' .
+            $pesanan->invoice_pesanan,
+          'status_konfirmasi' => 'Sukses',
+          'bukti_transfer'    => null,
+          'referensi_tipe'    => 'RefundPesanan',
+          'referensi_id'      => $id_pesanan,
+          'terdaftar'         => $waktu_sekarang
+        ]
+      );
+
+      if (!$refund_disimpan) {
+        $this->db->trans_rollback();
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Gagal mencatat transaksi refund.'
+        ], 500);
+        return;
+      }
+
+      $id_transaksi_refund =
+        (int) $this->db->insert_id();
+
+      $nominal_refund = $total_tagihan;
+    }
+
+    $data_update = [
+      'status_pesanan'    => 'Dibatalkan',
+      'stok_dikembalikan' => 1,
+      'dibatalkan_oleh'   => $id_admin,
+      'dibatalkan_pada'   => $waktu_sekarang,
+      'alasan_pembatalan' => $alasan
+    ];
+
+    if ($pembayaran_valid) {
+      $data_update['id_transaksi_refund'] =
+        $id_transaksi_refund;
+
+      $data_update['nominal_refund'] =
+        $nominal_refund;
+
+      $data_update['refund_pada'] =
+        $waktu_sekarang;
+    }
+
+    $this->db
+      ->where('id_pesanan', $id_pesanan)
+      ->where_in(
+        'status_pesanan',
+        $status_bisa_dibatalkan
+      )
+      ->where('stok_dikembalikan', 0)
+      ->update('tb_pesanan', $data_update);
+
+    if ($this->db->affected_rows() !== 1) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Status pesanan telah berubah. Pembatalan dihentikan.'
+      ], 409);
+      return;
+    }
+
+    /*
+   * Kembalikan stok tepat satu kali.
+   */
+    foreach ($detail_pesanan as $item) {
+      $id_produk = (int) $item['id_produk'];
+      $jumlah = (int) $item['jumlah'];
+
+      if ($id_produk <= 0 || $jumlah <= 0) {
+        $this->db->trans_rollback();
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Detail jumlah barang pesanan tidak valid.'
+        ], 409);
+        return;
+      }
+
+      $this->db
+        ->set(
+          'stok',
+          'stok + ' . $jumlah,
+          false
+        )
+        ->set(
+          'status_produk',
+          "CASE
+          WHEN status_produk = 'Habis'
+          THEN 'Tersedia'
+          ELSE status_produk
+        END",
+          false
+        )
+        ->where('id_produk', $id_produk)
+        ->update('tb_produk');
+
+      if ($this->db->affected_rows() !== 1) {
+        $this->db->trans_rollback();
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Gagal mengembalikan stok produk.'
+        ], 500);
+        return;
+      }
+    }
+
+    $judul_pembeli =
+      "\u{26A0}\u{FE0F} Pesanan Dibatalkan Admin";
+
+    $pesan_pembeli =
+      'Pesanan ' .
+      $pesanan->invoice_pesanan .
+      ' dibatalkan oleh Administrator. Alasan: ' .
+      $alasan .
+      (
+        $pembayaran_valid
+        ? ' Dana Rp ' .
+        number_format(
+          $total_tagihan,
+          0,
+          ',',
+          '.'
+        ) .
+        ' telah dikembalikan ke saldo Anda.'
+        : ' Tidak ada refund karena pesanan belum dibayar.'
+      );
+
+    $judul_penjual =
+      "\u{26A0}\u{FE0F} Pesanan Dibatalkan Admin";
+
+    $pesan_penjual =
+      'Pesanan ' .
+      $pesanan->invoice_pesanan .
+      ' dibatalkan oleh Administrator. Alasan: ' .
+      $alasan .
+      ' Stok barang telah dikembalikan.';
+
+    $this->db->insert('tb_notifikasi', [
+      'id_user' =>
+      (int) $pesanan->id_pembeli,
+      'judul'   => $judul_pembeli,
+      'pesan'   => $pesan_pembeli,
+      'is_read' => 0,
+      'tanggal' => $waktu_sekarang
+    ]);
+
+    $this->db->insert('tb_notifikasi', [
+      'id_user' =>
+      (int) $pesanan->id_penjual,
+      'judul'   => $judul_penjual,
+      'pesan'   => $pesan_penjual,
+      'is_read' => 0,
+      'tanggal' => $waktu_sekarang
+    ]);
+
+    if ($this->db->trans_status() === false) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gagal melakukan pembatalan pesanan.'
+      ], 500);
+      return;
+    }
+
+    $this->db->trans_commit();
+
+    /*
+   * Push dikirim setelah commit.
+   */
+    try {
+      if (!empty($pembeli->expo_token)) {
+        $this->send_expo_push_notification(
+          $pembeli->expo_token,
+          $judul_pembeli,
+          $pesan_pembeli
+        );
+      }
+    } catch (Throwable $e) {
+      log_message(
+        'error',
+        'Push refund pembeli gagal: ' .
+          $e->getMessage()
+      );
+    }
+
+    try {
+      if (!empty($pesanan->expo_token_penjual)) {
+        $this->send_expo_push_notification(
+          $pesanan->expo_token_penjual,
+          $judul_penjual,
+          $pesan_penjual
+        );
+      }
+    } catch (Throwable $e) {
+      log_message(
+        'error',
+        'Push pembatalan admin ke penjual gagal: ' .
+          $e->getMessage()
+      );
+    }
+
+    $this->api_response([
+      'status'  => true,
+      'message' => $pembayaran_valid
+        ? 'Pesanan berhasil dibatalkan dan dana telah dikembalikan kepada pembeli.'
+        : 'Pesanan berhasil dibatalkan. Tidak ada refund karena pesanan belum dibayar.',
+      'data'    => [
+        'id_pesanan'            => $id_pesanan,
+        'invoice_pesanan'       =>
+        $pesanan->invoice_pesanan,
+        'status_sebelumnya'     =>
+        $pesanan->status_pesanan,
+        'status_pesanan'        => 'Dibatalkan',
+        'stok_dikembalikan'     => true,
+        'direfund'              =>
+        $pembayaran_valid,
+        'id_transaksi_refund'   =>
+        $id_transaksi_refund,
+        'nominal_refund'        =>
+        $nominal_refund,
+        'dibatalkan_oleh'       => $id_admin,
+        'nama_admin'            => $auth->nama,
+        'dibatalkan_pada'       =>
+        $waktu_sekarang,
+        'alasan_pembatalan'     => $alasan,
+        'idempotent'            => false
+      ]
+    ]);
   }
 
   // 12. Endpoint Simpan Ulasan Pembeli
