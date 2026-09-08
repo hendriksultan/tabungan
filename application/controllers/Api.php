@@ -6129,6 +6129,197 @@ class Api extends CI_Controller
     ]);
   }
 
+
+  private function verifikasi_pin_user_dalam_transaksi(
+    $user,
+    $pin
+  ) {
+    $id_user = (int) $user->id;
+    $waktu_sekarang = time();
+
+    /*
+   * Helper ini harus dipanggil setelah baris tb_user
+   * dikunci menggunakan FOR UPDATE.
+   */
+    if (
+      !empty($user->pin_terkunci_sampai) &&
+      strtotime($user->pin_terkunci_sampai) >
+      $waktu_sekarang
+    ) {
+      return [
+        'status'            => false,
+        'http_code'         => 429,
+        'message'           => 'Terlalu banyak percobaan PIN. Silakan coba kembali setelah waktu penguncian berakhir.',
+        'data'              => [
+          'terkunci_sampai' =>
+          $user->pin_terkunci_sampai
+        ],
+        'simpan_perubahan'  => false
+      ];
+    }
+
+    $pin_gagal = (int) $user->pin_gagal;
+
+    /*
+   * Masa penguncian yang sudah berakhir dimulai
+   * kembali dari nol.
+   */
+    if (
+      !empty($user->pin_terkunci_sampai) &&
+      strtotime($user->pin_terkunci_sampai) <=
+      $waktu_sekarang
+    ) {
+      $pin_gagal = 0;
+    }
+
+    $pin_tersimpan = (string) $user->pin;
+
+    if ($pin_tersimpan === '') {
+      return [
+        'status'           => false,
+        'http_code'        => 422,
+        'message'          => 'PIN transaksi belum diatur.',
+        'data'             => null,
+        'simpan_perubahan' => false
+      ];
+    }
+
+    $info_hash = password_get_info(
+      $pin_tersimpan
+    );
+
+    $sudah_hash =
+      isset($info_hash['algo']) &&
+      $info_hash['algo'] !== 0;
+
+    if ($sudah_hash) {
+      $pin_valid = password_verify(
+        $pin,
+        $pin_tersimpan
+      );
+    } else {
+      /*
+     * Kompatibilitas sementara untuk PIN plaintext lama.
+     */
+      $pin_valid = hash_equals(
+        $pin_tersimpan,
+        $pin
+      );
+    }
+
+    if ($pin_valid) {
+      $data_update = [
+        'pin_gagal'           => 0,
+        'pin_terkunci_sampai' => null
+      ];
+
+      if (
+        !$sudah_hash ||
+        password_needs_rehash(
+          $pin_tersimpan,
+          PASSWORD_BCRYPT
+        )
+      ) {
+        $data_update['pin'] = password_hash(
+          $pin,
+          PASSWORD_BCRYPT
+        );
+      }
+
+      $update = $this->db
+        ->where('id', $id_user)
+        ->update('tb_user', $data_update);
+
+      if (!$update) {
+        return [
+          'status'           => false,
+          'http_code'        => 500,
+          'message'          => 'Gagal memproses validasi PIN.',
+          'data'             => null,
+          'simpan_perubahan' => false
+        ];
+      }
+
+      return [
+        'status'           => true,
+        'http_code'        => 200,
+        'message'          => 'PIN valid.',
+        'data'             => null,
+        'simpan_perubahan' => true
+      ];
+    }
+
+    /*
+   * PIN salah: percobaan kelima mengunci PIN
+   * selama 15 menit.
+   */
+    $pin_gagal++;
+    $batas_percobaan = 5;
+
+    if ($pin_gagal >= $batas_percobaan) {
+      $terkunci_sampai = date(
+        'Y-m-d H:i:s',
+        strtotime('+15 minutes')
+      );
+
+      $update = $this->db
+        ->where('id', $id_user)
+        ->update('tb_user', [
+          'pin_gagal'           => 0,
+          'pin_terkunci_sampai' =>
+          $terkunci_sampai
+        ]);
+
+      if (!$update) {
+        return [
+          'status'           => false,
+          'http_code'        => 500,
+          'message'          => 'Gagal memproses validasi PIN.',
+          'data'             => null,
+          'simpan_perubahan' => false
+        ];
+      }
+
+      return [
+        'status'    => false,
+        'http_code' => 429,
+        'message'   => 'PIN salah lima kali. Validasi PIN dikunci selama 15 menit.',
+        'data'      => [
+          'terkunci_sampai' => $terkunci_sampai
+        ],
+        'simpan_perubahan' => true
+      ];
+    }
+
+    $update = $this->db
+      ->where('id', $id_user)
+      ->update('tb_user', [
+        'pin_gagal'           => $pin_gagal,
+        'pin_terkunci_sampai' => null
+      ]);
+
+    if (!$update) {
+      return [
+        'status'           => false,
+        'http_code'        => 500,
+        'message'          => 'Gagal memproses validasi PIN.',
+        'data'             => null,
+        'simpan_perubahan' => false
+      ];
+    }
+
+    return [
+      'status'    => false,
+      'http_code' => 401,
+      'message'   => 'PIN yang Anda masukkan salah.',
+      'data'      => [
+        'sisa_percobaan' =>
+        $batas_percobaan - $pin_gagal
+      ],
+      'simpan_perubahan' => true
+    ];
+  }
+
   // ==========================================
   // G. Validasi PIN Transaksi 6-Digit
   // ==========================================
@@ -11304,122 +11495,617 @@ class Api extends CI_Controller
   // FASE 3: Pembeli Membayar Pesanan (Status: Diproses) - Menggunakan PIN & Potong Saldo
   public function bayar_pesanan()
   {
-    $request = json_decode($this->input->raw_input_stream, true);
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
 
-    $id_pesanan = $request['id_pesanan'] ?? '';
-    $id_pembeli = $request['id_pembeli'] ?? '';
-    $pin = $request['pin'] ?? '';
-
-    if (empty($id_pesanan) || empty($id_pembeli) || empty($pin)) {
-      echo json_encode(['status' => false, 'message' => 'Data tidak lengkap atau PIN kosong.']);
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
       return;
     }
 
-    // Validasi PIN
-    $this->db->where('id', $id_pembeli);
-    $user = $this->db->get('tb_user')->row();
-    if (!$user || $user->pin !== $pin) {
-      echo json_encode(['status' => false, 'message' => 'PIN transaksi salah!']);
+    $auth = $this->authenticate_api();
+
+    if (!$auth) {
       return;
     }
 
-    // Ambil Data Pesanan
-    $this->db->where('id_pesanan', $id_pesanan);
-    $this->db->where('status_pesanan', 'Menunggu Pembayaran');
-    $pesanan = $this->db->get('tb_pesanan')->row();
+    if ($auth->level !== 'Nasabah') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Pembayaran hanya dapat dilakukan oleh Nasabah.'
+      ], 403);
+      return;
+    }
+
+    $request = json_decode(
+      $this->input->raw_input_stream,
+      true
+    );
+
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format JSON tidak valid.'
+      ], 400);
+      return;
+    }
+
+    $id_pesanan = filter_var(
+      $request['id_pesanan'] ?? null,
+      FILTER_VALIDATE_INT,
+      [
+        'options' => [
+          'min_range' => 1
+        ]
+      ]
+    );
+
+    $pin = isset($request['pin'])
+      ? trim((string) $request['pin'])
+      : '';
+
+    if ($id_pesanan === false) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'ID pesanan tidak valid.'
+      ], 422);
+      return;
+    }
+
+    if (!preg_match('/^[0-9]{6}$/', $pin)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'PIN harus terdiri dari tepat 6 digit angka.'
+      ], 422);
+      return;
+    }
+
+    /*
+   * Identitas pembeli selalu berasal dari Bearer token.
+   * id_pembeli dari request tidak digunakan.
+   */
+    $id_pembeli = (int) $auth->id_user;
+    $id_pesanan = (int) $id_pesanan;
+
+    /*
+   * Pemeriksaan kepemilikan awal.
+   * Ini mencegah PIN pengguna lain diperiksa ketika pesanan
+   * sebenarnya bukan miliknya.
+   */
+    $pesanan_milik = $this->db->query(
+      "SELECT id_pesanan
+     FROM tb_pesanan
+     WHERE id_pesanan = ?
+       AND id_pembeli = ?
+     LIMIT 1",
+      [
+        $id_pesanan,
+        $id_pembeli
+      ]
+    )->row();
+
+    if (!$pesanan_milik) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Pesanan tidak ditemukan atau bukan milik Anda.'
+      ], 404);
+      return;
+    }
+
+    $this->db->trans_begin();
+
+    /*
+   * Kunci akun pembeli agar dua pembayaran bersamaan
+   * tidak dapat menggunakan saldo yang sama.
+   */
+    $user = $this->db->query(
+      "SELECT
+        id,
+        level,
+        login,
+        pin,
+        pin_gagal,
+        pin_terkunci_sampai,
+        expo_token,
+        cabang_id
+     FROM tb_user
+     WHERE id = ?
+     LIMIT 1
+     FOR UPDATE",
+      [$id_pembeli]
+    )->row();
+
+    if (
+      !$user ||
+      $user->level !== 'Nasabah' ||
+      $user->login !== 'Ya'
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Akun Nasabah tidak ditemukan atau tidak aktif.'
+      ], 403);
+      return;
+    }
+
+    /*
+   * Verifikasi PIN dilakukan di dalam transaksi yang sama.
+   */
+    $hasil_pin = $this->verifikasi_pin_user_dalam_transaksi(
+      $user,
+      $pin
+    );
+
+    if (!$hasil_pin['status']) {
+      /*
+     * Kesalahan PIN atau penguncian baru harus disimpan.
+     */
+      if (
+        !empty($hasil_pin['simpan_perubahan']) &&
+        $this->db->trans_status() !== false
+      ) {
+        $this->db->trans_commit();
+      } else {
+        $this->db->trans_rollback();
+      }
+
+      $response_pin = [
+        'status'  => false,
+        'message' => $hasil_pin['message']
+      ];
+
+      if (!empty($hasil_pin['data'])) {
+        $response_pin['data'] = $hasil_pin['data'];
+      }
+
+      $this->api_response(
+        $response_pin,
+        (int) $hasil_pin['http_code']
+      );
+      return;
+    }
+
+    /*
+   * Ambil dan kunci pesanan setelah pengguna terkunci.
+   */
+    $pesanan = $this->db->query(
+      "SELECT
+        p.*,
+        t.id_user AS id_penjual,
+        t.nama_toko,
+        penjual.expo_token AS expo_token_penjual
+     FROM tb_pesanan p
+     INNER JOIN tb_toko t
+       ON t.id_toko = p.id_toko
+     INNER JOIN tb_user penjual
+       ON penjual.id = t.id_user
+     WHERE p.id_pesanan = ?
+       AND p.id_pembeli = ?
+     LIMIT 1
+     FOR UPDATE",
+      [
+        $id_pesanan,
+        $id_pembeli
+      ]
+    )->row();
 
     if (!$pesanan) {
-      echo json_encode(['status' => false, 'message' => 'Pesanan tidak ditemukan atau sudah dibayar.']);
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Pesanan tidak ditemukan atau bukan milik Anda.'
+      ], 404);
       return;
     }
 
-    $grand_total = $pesanan->total_harga + $pesanan->ongkir;
+    /*
+   * Idempotensi pembayaran:
+   * apabila pesanan sudah memiliki transaksi pembayaran yang sah,
+   * jangan memotong saldo dan membuat notifikasi kembali.
+   */
+    if (!empty($pesanan->id_transaksi_pembayaran)) {
+      $transaksi_lama = $this->db->query(
+        "SELECT
+          id,
+          idNasabah,
+          nominal,
+          jenis,
+          status_konfirmasi,
+          referensi_tipe,
+          referensi_id
+       FROM tb_transaksi
+       WHERE id = ?
+       LIMIT 1
+       FOR UPDATE",
+        [(int) $pesanan->id_transaksi_pembayaran]
+      )->row();
 
-    // Cek Saldo
-    $tbMsk = $this->db->query("SELECT SUM(nominal) AS total FROM tb_transaksi WHERE idNasabah=? AND jenis='Masuk' AND status_konfirmasi='Sukses'", [$id_pembeli])->row()->total ?? 0;
-    $tfMsk = $this->db->query("SELECT SUM(nominal) AS total FROM tb_transfer WHERE idPenerima=?", [$id_pembeli])->row()->total ?? 0;
-    $tbKlr = $this->db->query("SELECT SUM(nominal) AS total FROM tb_transaksi WHERE idNasabah=? AND jenis='Keluar' AND status_konfirmasi='Sukses'", [$id_pembeli])->row()->total ?? 0;
-    $tfKlr = $this->db->query("SELECT SUM(nominal) AS total FROM tb_transfer WHERE idPengirim=?", [$id_pembeli])->row()->total ?? 0;
+      $pembayaran_lama_valid =
+        $transaksi_lama &&
+        (int) $transaksi_lama->idNasabah === $id_pembeli &&
+        (string) $transaksi_lama->jenis === 'Keluar' &&
+        (string) $transaksi_lama->status_konfirmasi === 'Sukses' &&
+        (string) $transaksi_lama->referensi_tipe ===
+        'PembayaranPesanan' &&
+        (int) $transaksi_lama->referensi_id === $id_pesanan &&
+        (int) $transaksi_lama->nominal ===
+        (int) $pesanan->nominal_dibayar;
 
-    $saldo_aktif = ($tbMsk + $tfMsk) - ($tbKlr + $tfKlr);
+      if (!$pembayaran_lama_valid) {
+        $this->db->trans_rollback();
 
-    if ($saldo_aktif < $grand_total) {
-      echo json_encode(['status' => false, 'message' => 'Saldo tabungan tidak mencukupi. Total belanja + ongkir adalah Rp ' . number_format($grand_total, 0, ',', '.')]);
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Data pembayaran pesanan tidak konsisten. Hubungi administrator.'
+        ], 409);
+        return;
+      }
+
+      if ($this->db->trans_status() === false) {
+        $this->db->trans_rollback();
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Gagal memeriksa pembayaran pesanan.'
+        ], 500);
+        return;
+      }
+
+      /*
+     * Simpan perubahan PIN, misalnya reset penghitung
+     * atau migrasi PIN lama ke bcrypt.
+     */
+      $this->db->trans_commit();
+
+      $this->api_response([
+        'status'  => true,
+        'message' => 'Pesanan ini sudah dibayar sebelumnya.',
+        'data'    => [
+          'id_pesanan'              => $id_pesanan,
+          'invoice_pesanan'         => $pesanan->invoice_pesanan,
+          'id_transaksi_pembayaran' =>
+          (int) $transaksi_lama->id,
+          'nominal_dibayar'         =>
+          (int) $transaksi_lama->nominal,
+          'status_pesanan'          =>
+          $pesanan->status_pesanan,
+          'dibayar_pada'            =>
+          $pesanan->dibayar_pada,
+          'idempotent'              => true
+        ]
+      ]);
       return;
     }
 
-    $this->db->trans_start();
+    if ($pesanan->status_pesanan !== 'Menunggu Pembayaran') {
+      $this->db->trans_rollback();
 
-    // Kurangi saldo
-    $this->db->insert('tb_transaksi', [
-      'idAdmin' => 0,
-      'idNasabah' => $id_pembeli,
-      'idPotongan' => 0,
-      'tanggal' => date('Y-m-d'),
-      'nominal' => $grand_total,
-      'jenis' => 'Keluar',
-      'keterangan' => 'Bayar Pesanan: ' . $pesanan->invoice_pesanan,
-      'status_konfirmasi' => 'Sukses',
-      'terdaftar' => date('Y-m-d H:i:s')
-    ]);
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Pesanan belum siap dibayar atau statusnya sudah berubah.',
+        'data'    => [
+          'status_pesanan' => $pesanan->status_pesanan
+        ]
+      ], 409);
+      return;
+    }
 
-    // Update status
-    $this->db->where('id_pesanan', $id_pesanan);
-    $this->db->update('tb_pesanan', ['status_pesanan' => 'Diproses']);
+    if ((int) $pesanan->stok_dikembalikan !== 0) {
+      $this->db->trans_rollback();
 
-    $this->db->trans_complete();
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Pesanan telah dibatalkan dan stok sudah dikembalikan.'
+      ], 409);
+      return;
+    }
 
-    if ($this->db->trans_status() === FALSE) {
-      echo json_encode(['status' => false, 'message' => 'Gagal memproses pembayaran. Transaksi dibatalkan.']);
-    } else {
+    if (
+      empty($pesanan->ongkir_ditetapkan_oleh) ||
+      empty($pesanan->ongkir_ditetapkan_pada)
+    ) {
+      $this->db->trans_rollback();
 
-      // ==========================================
-      // 🔥 1. NOTIFIKASI UNTUK PEMBELI (NASABAH)
-      // ==========================================
-      $pesan_pembeli = "Pembayaran sebesar Rp " . number_format($grand_total, 0, ',', '.') . " untuk pesanan {$pesanan->invoice_pesanan} berhasil dipotong dari saldo Anda.";
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Ongkir pesanan belum ditetapkan oleh penjual.'
+      ], 409);
+      return;
+    }
 
-      // Simpan ke menu Lonceng Aplikasi
-      $this->db->insert('tb_notifikasi', [
-        'id_user' => $id_pembeli,
-        'judul'   => "💸 Pembayaran Berhasil!",
-        'pesan'   => $pesan_pembeli,
-        'tanggal' => date('Y-m-d H:i:s')
+    $total_harga = (int) $pesanan->total_harga;
+    $ongkir = (int) $pesanan->ongkir;
+    $grand_total = $total_harga + $ongkir;
+
+    if (
+      $total_harga <= 0 ||
+      $ongkir < 0 ||
+      $grand_total <= 0 ||
+      $grand_total > 2147483647
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Nilai tagihan pesanan tidak valid.'
+      ], 422);
+      return;
+    }
+
+    /*
+   * Perlindungan tambahan jika sudah ada ledger pembayaran
+   * tetapi hubungan pada tb_pesanan belum terisi.
+   */
+    $referensi_sudah_ada = $this->db->query(
+      "SELECT
+        id,
+        idNasabah,
+        nominal,
+        status_konfirmasi
+     FROM tb_transaksi
+     WHERE referensi_tipe = ?
+       AND referensi_id = ?
+     LIMIT 1
+     FOR UPDATE",
+      [
+        'PembayaranPesanan',
+        $id_pesanan
+      ]
+    )->row();
+
+    if ($referensi_sudah_ada) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Transaksi pembayaran sudah tercatat tetapi belum terhubung dengan pesanan. Hubungi administrator.',
+        'data'    => [
+          'id_transaksi' => (int) $referensi_sudah_ada->id
+        ]
+      ], 409);
+      return;
+    }
+
+    /*
+   * Hitung saldo dari transaksi sukses saja.
+   * Saldo dihitung setelah baris pengguna dikunci.
+   */
+    $saldo = $this->db->query(
+      "SELECT
+       (
+         COALESCE((
+           SELECT SUM(nominal)
+           FROM tb_transaksi
+           WHERE idNasabah = ?
+             AND jenis = 'Masuk'
+             AND status_konfirmasi = 'Sukses'
+         ), 0)
+         +
+         COALESCE((
+           SELECT SUM(CAST(nominal AS UNSIGNED))
+           FROM tb_transfer
+           WHERE idPenerima = ?
+             AND status_transfer = 'Sukses'
+         ), 0)
+         -
+         COALESCE((
+           SELECT SUM(nominal)
+           FROM tb_transaksi
+           WHERE idNasabah = ?
+             AND jenis = 'Keluar'
+             AND status_konfirmasi = 'Sukses'
+         ), 0)
+         -
+         COALESCE((
+           SELECT SUM(CAST(nominal AS UNSIGNED))
+           FROM tb_transfer
+           WHERE idPengirim = ?
+             AND status_transfer = 'Sukses'
+         ), 0)
+       ) AS saldo_aktif",
+      [
+        $id_pembeli,
+        $id_pembeli,
+        $id_pembeli,
+        $id_pembeli
+      ]
+    )->row();
+
+    if (!$saldo) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gagal menghitung saldo tabungan.'
+      ], 500);
+      return;
+    }
+
+    $saldo_sebelum = (int) $saldo->saldo_aktif;
+
+    if ($saldo_sebelum < $grand_total) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Saldo tabungan tidak mencukupi. Total belanja dan ongkir adalah Rp ' .
+          number_format($grand_total, 0, ',', '.'),
+        'data'    => [
+          'saldo_aktif'  => $saldo_sebelum,
+          'total_tagihan' => $grand_total,
+          'kekurangan'   => $grand_total - $saldo_sebelum
+        ]
+      ], 422);
+      return;
+    }
+
+    $waktu_pembayaran = date('Y-m-d H:i:s');
+
+    /*
+   * Catat pengurangan saldo dengan referensi unik ke pesanan.
+   */
+    $transaksi_disimpan = $this->db->insert(
+      'tb_transaksi',
+      [
+        'cabang_id'          => (int) $user->cabang_id,
+        'idAdmin'            => 0,
+        'idNasabah'          => $id_pembeli,
+        'idPotongan'         => 0,
+        'tanggal'            => date('Y-m-d'),
+        'nominal'            => $grand_total,
+        'gram_emas'          => null,
+        'jenis'              => 'Keluar',
+        'keterangan'         =>
+        'Bayar Pesanan: ' . $pesanan->invoice_pesanan,
+        'status_konfirmasi'  => 'Sukses',
+        'bukti_transfer'     => null,
+        'referensi_tipe'     => 'PembayaranPesanan',
+        'referensi_id'       => $id_pesanan,
+        'terdaftar'          => $waktu_pembayaran
+      ]
+    );
+
+    if (!$transaksi_disimpan) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gagal mencatat transaksi pembayaran.'
+      ], 500);
+      return;
+    }
+
+    $id_transaksi = (int) $this->db->insert_id();
+
+    /*
+   * Update hanya apabila status masih Menunggu Pembayaran.
+   */
+    $this->db
+      ->where('id_pesanan', $id_pesanan)
+      ->where('id_pembeli', $id_pembeli)
+      ->where('status_pesanan', 'Menunggu Pembayaran')
+      ->where('id_transaksi_pembayaran IS NULL', null, false)
+      ->update('tb_pesanan', [
+        'status_pesanan'          => 'Diproses',
+        'id_transaksi_pembayaran' => $id_transaksi,
+        'nominal_dibayar'         => $grand_total,
+        'pembayaran_oleh'         => $id_pembeli,
+        'dibayar_pada'            => $waktu_pembayaran
       ]);
 
-      // Kirim Push Notification Pop-up
-      if (!empty($user->expo_token)) {
-        $this->send_expo_push_notification($user->expo_token, "💸 Pembayaran Berhasil!", $pesan_pembeli);
-      }
+    if ($this->db->affected_rows() !== 1) {
+      $this->db->trans_rollback();
 
-
-      // ==========================================
-      // 🔥 2. NOTIFIKASI UNTUK PENJUAL (TOKO)
-      // ==========================================
-      $this->db->select('tb_user.id, tb_user.expo_token'); // Tambahan: Ambil ID user penjual
-      $this->db->from('tb_toko');
-      $this->db->join('tb_user', 'tb_toko.id_user = tb_user.id');
-      $this->db->where('tb_toko.id_toko', $pesanan->id_toko);
-      $penjual = $this->db->get()->row();
-
-      if ($penjual) {
-        $pesan_penjual = "Pembeli sudah melunasi tagihan (Pesanan: " . $pesanan->invoice_pesanan . "). Segera siapkan barang.";
-
-        // Simpan ke menu Lonceng Aplikasi
-        $this->db->insert('tb_notifikasi', [
-          'id_user' => $penjual->id,
-          'judul'   => "💸 Pesanan Telah Dibayar!",
-          'pesan'   => $pesan_penjual,
-          'tanggal' => date('Y-m-d H:i:s')
-        ]);
-
-        // Kirim Push Notification Pop-up
-        if (!empty($penjual->expo_token)) {
-          $this->send_expo_push_notification($penjual->expo_token, "💸 Pesanan Telah Dibayar!", $pesan_penjual);
-        }
-      }
-
-      echo json_encode(['status' => true, 'message' => 'Alhamdulillah, pembayaran berhasil! Pesanan sedang diproses penjual.']);
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Status pesanan telah berubah. Pembayaran dibatalkan.'
+      ], 409);
+      return;
     }
+
+    $judul_pembeli = "\u{1F4B8} Pembayaran Berhasil!";
+    $pesan_pembeli =
+      'Pembayaran sebesar Rp ' .
+      number_format($grand_total, 0, ',', '.') .
+      ' untuk pesanan ' .
+      $pesanan->invoice_pesanan .
+      ' berhasil dipotong dari saldo Anda.';
+
+    $judul_penjual = "\u{1F4B8} Pesanan Telah Dibayar!";
+    $pesan_penjual =
+      'Pembeli sudah melunasi tagihan pesanan ' .
+      $pesanan->invoice_pesanan .
+      '. Segera siapkan barang.';
+
+    /*
+   * Notifikasi lonceng disimpan dalam transaksi pembayaran
+   * agar tidak muncul apabila pembayaran gagal.
+   */
+    $this->db->insert('tb_notifikasi', [
+      'id_user' => $id_pembeli,
+      'judul'   => $judul_pembeli,
+      'pesan'   => $pesan_pembeli,
+      'tanggal' => $waktu_pembayaran
+    ]);
+
+    $this->db->insert('tb_notifikasi', [
+      'id_user' => (int) $pesanan->id_penjual,
+      'judul'   => $judul_penjual,
+      'pesan'   => $pesan_penjual,
+      'tanggal' => $waktu_pembayaran
+    ]);
+
+    if ($this->db->trans_status() === false) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gagal memproses pembayaran. Transaksi dibatalkan.'
+      ], 500);
+      return;
+    }
+
+    $this->db->trans_commit();
+
+    /*
+   * Push dikirim setelah commit agar kegagalan layanan Expo
+   * tidak membatalkan pembayaran yang sudah berhasil.
+   */
+    try {
+      if (!empty($user->expo_token)) {
+        $this->send_expo_push_notification(
+          $user->expo_token,
+          $judul_pembeli,
+          $pesan_pembeli
+        );
+      }
+    } catch (Throwable $e) {
+      log_message(
+        'error',
+        'Push pembayaran pembeli gagal: ' . $e->getMessage()
+      );
+    }
+
+    try {
+      if (!empty($pesanan->expo_token_penjual)) {
+        $this->send_expo_push_notification(
+          $pesanan->expo_token_penjual,
+          $judul_penjual,
+          $pesan_penjual
+        );
+      }
+    } catch (Throwable $e) {
+      log_message(
+        'error',
+        'Push pembayaran penjual gagal: ' . $e->getMessage()
+      );
+    }
+
+    $this->api_response([
+      'status'  => true,
+      'message' => 'Alhamdulillah, pembayaran berhasil! Pesanan sedang diproses penjual.',
+      'data'    => [
+        'id_pesanan'              => $id_pesanan,
+        'invoice_pesanan'         =>
+        $pesanan->invoice_pesanan,
+        'id_transaksi_pembayaran' => $id_transaksi,
+        'total_harga'             => $total_harga,
+        'ongkir'                  => $ongkir,
+        'total_tagihan'           => $grand_total,
+        'saldo_sebelum'           => $saldo_sebelum,
+        'saldo_setelah'           =>
+        $saldo_sebelum - $grand_total,
+        'status_pesanan'          => 'Diproses',
+        'dibayar_pada'            => $waktu_pembayaran,
+        'idempotent'              => false
+      ]
+    ]);
   }
 
   // ==========================================
