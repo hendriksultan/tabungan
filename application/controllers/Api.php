@@ -15239,57 +15239,479 @@ class Api extends CI_Controller
   // 12. Endpoint Simpan Ulasan Pembeli
   public function simpan_ulasan()
   {
-    $request = json_decode($this->input->raw_input_stream, true);
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
 
-    $id_pesanan = $request['id_pesanan'] ?? '';
-    $id_pembeli = $request['id_pembeli'] ?? '';
-    $bintang = $request['bintang'] ?? 5;
-    $komentar = $request['komentar'] ?? '';
-
-    if (empty($id_pesanan) || empty($id_pembeli)) {
-      echo json_encode(['status' => false, 'message' => 'Data tidak valid.']);
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
       return;
     }
 
-    $this->db->trans_start();
+    $auth = $this->authenticate_api();
 
-    // 1. Tandai pesanan ini sudah dinilai
-    $this->db->where('id_pesanan', $id_pesanan);
-    $this->db->update('tb_pesanan', ['is_dinilai' => 1]);
+    if (!$auth) {
+      return;
+    }
 
-    // 2. Ambil semua barang yang ada di dalam pesanan ini
-    $items = $this->db->get_where('tb_pesanan_detail', ['id_pesanan' => $id_pesanan])->result_array();
+    if ($auth->level !== 'Nasabah') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Ulasan hanya dapat diberikan oleh pembeli.'
+      ], 403);
+      return;
+    }
 
-    foreach ($items as $item) {
-      // Masukkan ulasan ke tabel
-      $this->db->insert('tb_ulasan', [
-        'id_pesanan' => $id_pesanan,
-        'id_produk'  => $item['id_produk'],
-        'id_pembeli' => $id_pembeli,
-        'bintang'    => $bintang,
-        'komentar'   => $komentar,
-        'tanggal'    => date('Y-m-d H:i:s')
+    $content_length = (int) $this->input->server(
+      'CONTENT_LENGTH'
+    );
+
+    if ($content_length > 65536) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Ukuran request terlalu besar.'
+      ], 413);
+      return;
+    }
+
+    $request = json_decode(
+      $this->input->raw_input_stream,
+      true
+    );
+
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format JSON tidak valid.'
+      ], 400);
+      return;
+    }
+
+    $id_pesanan = filter_var(
+      $request['id_pesanan'] ?? null,
+      FILTER_VALIDATE_INT,
+      [
+        'options' => [
+          'min_range' => 1
+        ]
+      ]
+    );
+
+    if ($id_pesanan === false) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'ID pesanan tidak valid.'
+      ], 422);
+      return;
+    }
+
+    $bintang = filter_var(
+      $request['bintang'] ?? null,
+      FILTER_VALIDATE_INT,
+      [
+        'options' => [
+          'min_range' => 1,
+          'max_range' => 5
+        ]
+      ]
+    );
+
+    if ($bintang === false) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Bintang harus berupa angka bulat dari 1 sampai 5.'
+      ], 422);
+      return;
+    }
+
+    /*
+   * Hapus tag HTML untuk mencegah stored XSS ketika
+   * komentar ditampilkan pada panel web.
+   */
+    $komentar = trim(
+      strip_tags(
+        (string) ($request['komentar'] ?? '')
+      )
+    );
+
+    /*
+   * Rapikan spasi tanpa menghilangkan karakter Unicode.
+   */
+    $komentar_rapi = preg_replace(
+      '/\s+/u',
+      ' ',
+      $komentar
+    );
+
+    if ($komentar_rapi !== null) {
+      $komentar = $komentar_rapi;
+    }
+
+    if (mb_strlen($komentar, 'UTF-8') > 1000) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Komentar maksimal 1.000 karakter.'
+      ], 422);
+      return;
+    }
+
+    /*
+   * Identitas pembeli selalu berasal dari Bearer token.
+   * id_pembeli dan id_produk dari request diabaikan.
+   */
+    $id_pesanan = (int) $id_pesanan;
+    $id_pembeli = (int) $auth->id_user;
+    $bintang = (int) $bintang;
+
+    $this->db->trans_begin();
+
+    /*
+   * Kunci pesanan dan batasi berdasarkan pembeli pemilik token.
+   */
+    $pesanan = $this->db->query(
+      "SELECT
+        id_pesanan,
+        invoice_pesanan,
+        id_pembeli,
+        status_pesanan,
+        is_dinilai
+     FROM tb_pesanan
+     WHERE id_pesanan = ?
+       AND id_pembeli = ?
+     LIMIT 1
+     FOR UPDATE",
+      [
+        $id_pesanan,
+        $id_pembeli
+      ]
+    )->row();
+
+    if (!$pesanan) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Pesanan tidak ditemukan atau bukan milik Anda.'
+      ], 404);
+      return;
+    }
+
+    /*
+   * Ulasan hanya dapat diberikan setelah pesanan selesai
+   * dan dana telah dicairkan kepada penjual.
+   */
+    if ($pesanan->status_pesanan !== 'Selesai') {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Ulasan hanya dapat diberikan untuk pesanan yang sudah selesai.',
+        'data'    => [
+          'status_pesanan' =>
+          $pesanan->status_pesanan
+        ]
+      ], 409);
+      return;
+    }
+
+    /*
+   * Ambil seluruh produk dari detail pesanan.
+   */
+    $detail_pesanan = $this->db
+      ->select([
+        'id_produk',
+        'jumlah'
+      ])
+      ->from('tb_pesanan_detail')
+      ->where('id_pesanan', $id_pesanan)
+      ->order_by('id_produk', 'ASC')
+      ->get()
+      ->result_array();
+
+    if (empty($detail_pesanan)) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Detail barang pesanan tidak ditemukan.'
+      ], 409);
+      return;
+    }
+
+    /*
+   * Kunci ulasan yang mungkin sudah tersimpan.
+   */
+    $ulasan_lama = $this->db->query(
+      "SELECT
+        id_ulasan,
+        id_pesanan,
+        id_produk,
+        id_pembeli,
+        bintang,
+        komentar,
+        tanggal
+     FROM tb_ulasan
+     WHERE id_pesanan = ?
+     ORDER BY id_produk ASC
+     FOR UPDATE",
+      [$id_pesanan]
+    )->result_array();
+
+    /*
+   * Jika sudah dinilai, pastikan seluruh ulasan lama lengkap
+   * dan request yang diulang memiliki isi yang sama.
+   */
+    if ((int) $pesanan->is_dinilai === 1) {
+      $ulasan_per_produk = [];
+      $ulasan_valid = true;
+
+      foreach ($ulasan_lama as $ulasan) {
+        $id_produk_ulasan =
+          (int) $ulasan['id_produk'];
+
+        if (
+          (int) $ulasan['id_pembeli'] !==
+          $id_pembeli ||
+          isset($ulasan_per_produk[$id_produk_ulasan])
+        ) {
+          $ulasan_valid = false;
+          break;
+        }
+
+        $ulasan_per_produk[$id_produk_ulasan] =
+          $ulasan;
+      }
+
+      if (
+        $ulasan_valid &&
+        count($ulasan_per_produk) ===
+        count($detail_pesanan)
+      ) {
+        foreach ($detail_pesanan as $detail) {
+          $id_produk_detail =
+            (int) $detail['id_produk'];
+
+          if (
+            !isset(
+              $ulasan_per_produk[$id_produk_detail]
+            ) ||
+            (int) $ulasan_per_produk[$id_produk_detail]['bintang'] !== $bintang ||
+            trim(
+              (string) $ulasan_per_produk[$id_produk_detail]['komentar']
+            ) !== $komentar
+          ) {
+            $ulasan_valid = false;
+            break;
+          }
+        }
+      } else {
+        $ulasan_valid = false;
+      }
+
+      if (!$ulasan_valid) {
+        $this->db->trans_rollback();
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Pesanan sudah dinilai dengan data ulasan yang berbeda atau tidak konsisten.'
+        ], 409);
+        return;
+      }
+
+      if ($this->db->trans_status() === false) {
+        $this->db->trans_rollback();
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Gagal memeriksa ulasan pesanan.'
+        ], 500);
+        return;
+      }
+
+      $this->db->trans_commit();
+
+      $this->api_response([
+        'status'  => true,
+        'message' => 'Ulasan ini sudah tersimpan sebelumnya.',
+        'data'    => [
+          'id_pesanan'     => $id_pesanan,
+          'invoice_pesanan' =>
+          $pesanan->invoice_pesanan,
+          'id_pembeli'     => $id_pembeli,
+          'bintang'        => $bintang,
+          'komentar'       => $komentar,
+          'jumlah_ulasan'  =>
+          count($ulasan_per_produk),
+          'idempotent'     => true
+        ]
+      ]);
+      return;
+    }
+
+    /*
+   * Ulasan tidak boleh sudah ada jika is_dinilai masih nol.
+   * Kondisi ini menunjukkan penyimpanan lama yang tidak lengkap.
+   */
+    if (!empty($ulasan_lama)) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Ditemukan ulasan parsial pada pesanan. Hubungi administrator.'
+      ], 409);
+      return;
+    }
+
+    $waktu_sekarang = date('Y-m-d H:i:s');
+    $id_ulasan_baru = [];
+
+    /*
+   * Satu ulasan dibuat untuk setiap produk dalam pesanan.
+   */
+    foreach ($detail_pesanan as $detail) {
+      $id_produk = (int) $detail['id_produk'];
+
+      if ($id_produk <= 0) {
+        $this->db->trans_rollback();
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'ID produk pada detail pesanan tidak valid.'
+        ], 409);
+        return;
+      }
+
+      $ulasan_disimpan = $this->db->insert(
+        'tb_ulasan',
+        [
+          'id_pesanan' => $id_pesanan,
+          'id_produk'  => $id_produk,
+          'id_pembeli' => $id_pembeli,
+          'bintang'    => $bintang,
+          'komentar'   =>
+          $komentar !== ''
+            ? $komentar
+            : null,
+          'tanggal'    => $waktu_sekarang
+        ]
+      );
+
+      if (!$ulasan_disimpan) {
+        $this->db->trans_rollback();
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Gagal menyimpan ulasan produk.'
+        ], 500);
+        return;
+      }
+
+      $id_ulasan_baru[] =
+        (int) $this->db->insert_id();
+    }
+
+    /*
+   * Tandai pesanan sebagai sudah dinilai.
+   */
+    $this->db
+      ->where('id_pesanan', $id_pesanan)
+      ->where('id_pembeli', $id_pembeli)
+      ->where('status_pesanan', 'Selesai')
+      ->where('is_dinilai', 0)
+      ->update('tb_pesanan', [
+        'is_dinilai' => 1
       ]);
 
-      // 3. Hitung ulang RATA-RATA bintang untuk produk ini
-      $this->db->select_avg('bintang', 'rata_rata');
-      $this->db->where('id_produk', $item['id_produk']);
-      $avg_query = $this->db->get('tb_ulasan')->row();
+    if ($this->db->affected_rows() !== 1) {
+      $this->db->trans_rollback();
 
-      $rata_rata_baru = round($avg_query->rata_rata, 1); // Dibulatkan 1 angka di belakang koma (misal: 4.8)
-
-      // 4. Update rating di tabel produk
-      $this->db->where('id_produk', $item['id_produk']);
-      $this->db->update('tb_produk', ['rating' => $rata_rata_baru]);
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Status penilaian pesanan telah berubah.'
+      ], 409);
+      return;
     }
 
-    $this->db->trans_complete();
+    /*
+   * Hitung ulang rating setiap produk dari sumber ulasan.
+   */
+    foreach ($detail_pesanan as $detail) {
+      $id_produk = (int) $detail['id_produk'];
 
-    if ($this->db->trans_status() === FALSE) {
-      echo json_encode(['status' => false, 'message' => 'Gagal menyimpan ulasan.']);
-    } else {
-      echo json_encode(['status' => true, 'message' => 'Terima kasih! Ulasan Anda sangat membantu penjual.']);
+      $hasil_rating = $this->db
+        ->select_avg('bintang', 'rata_rata')
+        ->from('tb_ulasan')
+        ->where('id_produk', $id_produk)
+        ->get()
+        ->row();
+
+      if (
+        !$hasil_rating ||
+        $hasil_rating->rata_rata === null
+      ) {
+        $this->db->trans_rollback();
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Gagal menghitung rating produk.'
+        ], 500);
+        return;
+      }
+
+      $rata_rata_baru = round(
+        (float) $hasil_rating->rata_rata,
+        1
+      );
+
+      $rating_diperbarui = $this->db
+        ->where('id_produk', $id_produk)
+        ->update('tb_produk', [
+          'rating' => $rata_rata_baru
+        ]);
+
+      if (!$rating_diperbarui) {
+        $this->db->trans_rollback();
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Gagal memperbarui rating produk.'
+        ], 500);
+        return;
+      }
     }
+
+    if ($this->db->trans_status() === false) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gagal menyimpan ulasan.'
+      ], 500);
+      return;
+    }
+
+    $this->db->trans_commit();
+
+    $this->api_response([
+      'status'  => true,
+      'message' => 'Terima kasih! Ulasan Anda sangat membantu penjual.',
+      'data'    => [
+        'id_pesanan'      => $id_pesanan,
+        'invoice_pesanan' =>
+        $pesanan->invoice_pesanan,
+        'id_pembeli'      => $id_pembeli,
+        'bintang'         => $bintang,
+        'komentar'        => $komentar,
+        'jumlah_ulasan'   =>
+        count($id_ulasan_baru),
+        'id_ulasan'       =>
+        $id_ulasan_baru,
+        'idempotent'      => false
+      ]
+    ], 201);
   }
   // 14. Endpoint Ambil Ulasan Produk (Untuk Detail Produk)
   public function get_ulasan_produk()
