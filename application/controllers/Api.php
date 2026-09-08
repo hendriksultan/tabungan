@@ -10932,57 +10932,373 @@ class Api extends CI_Controller
   // FASE 2: Penjual Input Ongkir (Status: Menunggu Pembayaran)
   public function input_ongkir_penjual()
   {
-    $request = json_decode($this->input->raw_input_stream, true);
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
 
-    $id_pesanan = $request['id_pesanan'] ?? '';
-    $ongkir = str_replace('.', '', $request['ongkir'] ?? '0');
-    $kurir = $request['kurir'] ?? 'Kurir Toko / Lokal';
-
-    if (empty($id_pesanan)) {
-      echo json_encode(['status' => false, 'message' => 'ID Pesanan tidak valid.']);
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
       return;
     }
 
-    $data = [
-      'ongkir' => $ongkir,
-      'kurir' => $kurir,
-      'status_pesanan' => 'Menunggu Pembayaran'
-    ];
+    $auth = $this->authenticate_api();
 
-    $this->db->where('id_pesanan', $id_pesanan);
-    $update = $this->db->update('tb_pesanan', $data);
-
-    if ($update) {
-      // Beritahu Pembeli Tagihan Sudah Siap
-      // 🔥 PERBAIKAN: Tambahkan tb_user.id pada SELECT
-      $this->db->select('tb_user.id, tb_user.expo_token, tb_pesanan.invoice_pesanan');
-      $this->db->from('tb_pesanan');
-      $this->db->join('tb_user', 'tb_pesanan.id_pembeli = tb_user.id');
-      $this->db->where('tb_pesanan.id_pesanan', $id_pesanan);
-      $info = $this->db->get()->row();
-
-      // 🔥 PERBAIKAN: Pisahkan simpan ke DB dan kirim push
-      if ($info) {
-        $judul_notif = "💳 Tagihan Siap Dibayar!";
-        $pesan_notif = "Penjual telah menetapkan ongkir untuk pesanan " . $info->invoice_pesanan . ". Silakan bayar sekarang.";
-
-        // 1. SIMPAN KE DB NOTIFIKASI
-        $this->db->insert('tb_notifikasi', [
-          'id_user' => $info->id,
-          'judul'   => $judul_notif,
-          'pesan'   => $pesan_notif,
-          'tanggal' => date('Y-m-d H:i:s')
-        ]);
-
-        // 2. KIRIM PUSH NOTIFICATION
-        if (!empty($info->expo_token)) {
-          $this->send_expo_push_notification($info->expo_token, $judul_notif, $pesan_notif);
-        }
-      }
-      echo json_encode(['status' => true, 'message' => 'Ongkir berhasil ditetapkan. Menunggu pembeli melakukan pembayaran.']);
-    } else {
-      echo json_encode(['status' => false, 'message' => 'Gagal menyimpan ongkir.']);
+    if (!$auth) {
+      return;
     }
+
+    if ($auth->level !== 'Nasabah') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Ongkir hanya dapat ditentukan oleh pemilik toko.'
+      ], 403);
+      return;
+    }
+
+    $request = json_decode(
+      $this->input->raw_input_stream,
+      true
+    );
+
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format JSON tidak valid.'
+      ], 400);
+      return;
+    }
+
+    $id_pesanan_raw = $request['id_pesanan'] ?? null;
+    $ongkir_raw = $request['ongkir'] ?? null;
+    $kurir_raw = $request['kurir'] ?? 'Kurir Toko / Lokal';
+
+    if (
+      (!is_int($id_pesanan_raw) &&
+        !is_string($id_pesanan_raw)) ||
+      (!is_int($ongkir_raw) &&
+        !is_string($ongkir_raw)) ||
+      !is_string($kurir_raw)
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format data ongkir tidak valid.'
+      ], 422);
+      return;
+    }
+
+    $id_pesanan_text = trim(
+      (string) $id_pesanan_raw
+    );
+
+    $ongkir_text = preg_replace(
+      '/[.\s]/',
+      '',
+      trim((string) $ongkir_raw)
+    );
+
+    $kurir = trim($kurir_raw);
+
+    if (
+      $id_pesanan_text === '' ||
+      !ctype_digit($id_pesanan_text) ||
+      (int) $id_pesanan_text < 1
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'ID Pesanan tidak valid.'
+      ], 422);
+      return;
+    }
+
+    if (
+      $ongkir_text === '' ||
+      !ctype_digit($ongkir_text)
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Ongkir harus berupa angka bulat.'
+      ], 422);
+      return;
+    }
+
+    $id_pesanan = (int) $id_pesanan_text;
+    $ongkir = (int) $ongkir_text;
+
+    if ($ongkir < 0 || $ongkir > 100000000) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Nominal ongkir tidak valid.'
+      ], 422);
+      return;
+    }
+
+    if (
+      strlen($kurir) < 2 ||
+      strlen($kurir) > 50
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Nama kurir harus terdiri dari 2 sampai 50 karakter.'
+      ], 422);
+      return;
+    }
+
+    if (
+      !preg_match(
+        '/^[\p{L}\p{N}\s&\/().,+_-]+$/u',
+        $kurir
+      )
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Nama kurir mengandung karakter yang tidak diizinkan.'
+      ], 422);
+      return;
+    }
+
+    $id_penjual = (int) $auth->id_user;
+
+    $this->db->trans_begin();
+
+    /*
+   * Pesanan hanya ditemukan jika toko memang dimiliki
+   * oleh pemegang Bearer token.
+   */
+    $pesanan = $this->db->query(
+      "SELECT
+        p.id_pesanan,
+        p.invoice_pesanan,
+        p.id_pembeli,
+        p.id_toko,
+        p.cabang_pembeli_id,
+        p.cabang_toko_id,
+        p.total_harga,
+        p.ongkir,
+        p.kurir,
+        p.status_pesanan,
+        p.stok_dikembalikan,
+        p.ongkir_ditetapkan_oleh,
+        p.ongkir_ditetapkan_pada,
+        t.id_user AS id_penjual,
+        t.nama_toko,
+        pembeli.nama AS nama_pembeli,
+        pembeli.expo_token AS expo_token_pembeli
+     FROM tb_pesanan AS p
+     INNER JOIN tb_toko AS t
+        ON t.id_toko = p.id_toko
+     INNER JOIN tb_user AS pembeli
+        ON pembeli.id = p.id_pembeli
+     WHERE p.id_pesanan = ?
+       AND t.id_user = ?
+     LIMIT 1
+     FOR UPDATE",
+      [
+        $id_pesanan,
+        $id_penjual
+      ]
+    )->row();
+
+    if (!$pesanan) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Pesanan tidak ditemukan atau bukan milik toko Anda.'
+      ], 404);
+      return;
+    }
+
+    /*
+   * Request sama yang diulang tidak menggandakan
+   * perubahan maupun notifikasi.
+   */
+    if (
+      $pesanan->status_pesanan ===
+      'Menunggu Pembayaran'
+    ) {
+      if (
+        (int) $pesanan->ongkir === $ongkir &&
+        trim((string) $pesanan->kurir) === $kurir
+      ) {
+        $this->db->trans_commit();
+
+        $this->api_response([
+          'status'  => true,
+          'message' => 'Ongkir yang sama sudah tersimpan.',
+          'data'    => [
+            'id_pesanan'      => (int) $pesanan->id_pesanan,
+            'invoice_pesanan' => $pesanan->invoice_pesanan,
+            'id_toko'         => (int) $pesanan->id_toko,
+            'id_penjual'      => $id_penjual,
+            'ongkir'          => (int) $pesanan->ongkir,
+            'kurir'           => $pesanan->kurir,
+            'total_harga'     => (int) $pesanan->total_harga,
+            'total_tagihan'   => (
+              (int) $pesanan->total_harga +
+              (int) $pesanan->ongkir
+            ),
+            'status_pesanan'  => $pesanan->status_pesanan,
+            'idempotent'      => true
+          ]
+        ]);
+        return;
+      }
+
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Ongkir pesanan sudah ditetapkan dan tidak dapat diubah melalui request ini.'
+      ], 409);
+      return;
+    }
+
+    if (
+      $pesanan->status_pesanan !==
+      'Menunggu Ongkir'
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Status pesanan tidak dapat menerima penetapan ongkir.'
+      ], 409);
+      return;
+    }
+
+    if ((int) $pesanan->stok_dikembalikan === 1) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Pesanan telah dibatalkan.'
+      ], 409);
+      return;
+    }
+
+    $total_harga = (int) $pesanan->total_harga;
+    $total_tagihan = $total_harga + $ongkir;
+
+    if ($total_tagihan > 2000000000) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Total tagihan melebihi batas yang diizinkan.'
+      ], 422);
+      return;
+    }
+
+    $waktu_sekarang = date('Y-m-d H:i:s');
+
+    $this->db->where(
+      'id_pesanan',
+      (int) $pesanan->id_pesanan
+    );
+
+    $this->db->where(
+      'status_pesanan',
+      'Menunggu Ongkir'
+    );
+
+    $update = $this->db->update(
+      'tb_pesanan',
+      [
+        'ongkir' => $ongkir,
+        'kurir' => $kurir,
+        'ongkir_ditetapkan_oleh' =>
+        $id_penjual,
+        'ongkir_ditetapkan_pada' =>
+        $waktu_sekarang,
+        'status_pesanan' =>
+        'Menunggu Pembayaran'
+      ]
+    );
+
+    if (
+      !$update ||
+      $this->db->affected_rows() !== 1 ||
+      $this->db->trans_status() === false
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gagal menyimpan ongkir.'
+      ], 500);
+      return;
+    }
+
+    $this->db->trans_commit();
+
+    /*
+   * Notifikasi dibuat setelah transaksi utama sukses.
+   */
+    $judul_notif =
+      "\u{1F4B3} Tagihan Siap Dibayar";
+
+    $pesan_notif =
+      'Penjual telah menetapkan ongkir untuk pesanan ' .
+      $pesanan->invoice_pesanan .
+      '. Silakan lakukan pembayaran.';
+
+    $simpan_notifikasi = $this->db->insert(
+      'tb_notifikasi',
+      [
+        'id_user' => (int) $pesanan->id_pembeli,
+        'judul'   => $judul_notif,
+        'pesan'   => $pesan_notif,
+        'tanggal' => $waktu_sekarang
+      ]
+    );
+
+    if (!$simpan_notifikasi) {
+      log_message(
+        'error',
+        'Notifikasi ongkir gagal disimpan untuk pesanan ID ' .
+          $id_pesanan
+      );
+    }
+
+    if (!empty($pesanan->expo_token_pembeli)) {
+      try {
+        $this->send_expo_push_notification(
+          $pesanan->expo_token_pembeli,
+          $judul_notif,
+          $pesan_notif
+        );
+      } catch (Throwable $e) {
+        log_message(
+          'error',
+          'Push ongkir gagal: ' .
+            $e->getMessage()
+        );
+      }
+    }
+
+    $this->api_response([
+      'status'  => true,
+      'message' => 'Ongkir berhasil ditetapkan. Menunggu pembayaran pembeli.',
+      'data'    => [
+        'id_pesanan'       => (int) $pesanan->id_pesanan,
+        'invoice_pesanan'  => $pesanan->invoice_pesanan,
+        'id_pembeli'       => (int) $pesanan->id_pembeli,
+        'nama_pembeli'     => $pesanan->nama_pembeli,
+        'id_toko'          => (int) $pesanan->id_toko,
+        'nama_toko'        => $pesanan->nama_toko,
+        'id_penjual'       => $id_penjual,
+        'total_harga'      => $total_harga,
+        'ongkir'           => $ongkir,
+        'total_tagihan'    => $total_tagihan,
+        'kurir'            => $kurir,
+        'status_pesanan'   => 'Menunggu Pembayaran',
+        'ditetapkan_pada'  => $waktu_sekarang,
+        'idempotent'       => false
+      ]
+    ]);
   }
 
   // FASE 3: Pembeli Membayar Pesanan (Status: Diproses) - Menggunakan PIN & Potong Saldo
