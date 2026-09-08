@@ -12832,93 +12832,541 @@ class Api extends CI_Controller
   // 9. Endpoint Selesaikan Pesanan & CAIRKAN DANA KE PENJUAL (Oleh Pembeli)
   public function terima_pesanan()
   {
-    if (ob_get_length()) ob_clean(); // 🔥 Mencegah error PHP merusak format JSON di aplikasi
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
 
-    $request = json_decode($this->input->raw_input_stream, true);
-    $id_pesanan = $request['id_pesanan'] ?? '';
-
-    if (empty($id_pesanan)) {
-      echo json_encode(['status' => false, 'message' => 'ID Pesanan tidak valid.']);
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
       return;
     }
 
-    // A. Ambil Data Pesanan dan Toko
-    $this->db->select('tb_pesanan.*, tb_toko.id_user as id_pemilik_toko');
-    $this->db->from('tb_pesanan');
-    $this->db->join('tb_toko', 'tb_pesanan.id_toko = tb_toko.id_toko');
-    $this->db->where('tb_pesanan.id_pesanan', $id_pesanan);
-    $pesanan = $this->db->get()->row();
+    $auth = $this->authenticate_api();
+
+    if (!$auth) {
+      return;
+    }
+
+    if ($auth->level !== 'Nasabah') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Penerimaan pesanan hanya dapat dilakukan oleh pembeli.'
+      ], 403);
+      return;
+    }
+
+    $request = json_decode(
+      $this->input->raw_input_stream,
+      true
+    );
+
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format JSON tidak valid.'
+      ], 400);
+      return;
+    }
+
+    $id_pesanan = filter_var(
+      $request['id_pesanan'] ?? null,
+      FILTER_VALIDATE_INT,
+      [
+        'options' => [
+          'min_range' => 1
+        ]
+      ]
+    );
+
+    if ($id_pesanan === false) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'ID pesanan tidak valid.'
+      ], 422);
+      return;
+    }
+
+    /*
+   * Identitas pembeli selalu berasal dari Bearer token.
+   * id_pembeli dari request diabaikan.
+   */
+    $id_pesanan = (int) $id_pesanan;
+    $id_pembeli = (int) $auth->id_user;
+
+    $this->db->trans_begin();
+
+    /*
+   * Kunci pesanan dan batasi berdasarkan pembeli pemilik token.
+   */
+    $pesanan = $this->db->query(
+      "SELECT
+        p.id_pesanan,
+        p.invoice_pesanan,
+        p.id_pembeli,
+        p.id_toko,
+        p.total_harga,
+        p.ongkir,
+        p.status_pesanan,
+        p.stok_dikembalikan,
+        p.id_transaksi_pembayaran,
+        p.nominal_dibayar,
+        p.pembayaran_oleh,
+        p.dibayar_pada,
+        t.id_user AS id_penjual,
+        t.nama_toko,
+        penjual.cabang_id AS cabang_penjual_id,
+        penjual.expo_token AS expo_token_penjual
+     FROM tb_pesanan p
+     INNER JOIN tb_toko t
+       ON t.id_toko = p.id_toko
+     INNER JOIN tb_user penjual
+       ON penjual.id = t.id_user
+     WHERE p.id_pesanan = ?
+       AND p.id_pembeli = ?
+     LIMIT 1
+     FOR UPDATE",
+      [
+        $id_pesanan,
+        $id_pembeli
+      ]
+    )->row();
 
     if (!$pesanan) {
-      echo json_encode(['status' => false, 'message' => 'Pesanan tidak ditemukan.']);
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Pesanan tidak ditemukan atau bukan milik Anda.'
+      ], 404);
       return;
     }
 
+    if ((int) $pesanan->stok_dikembalikan !== 0) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Pesanan telah dibatalkan dan tidak dapat diselesaikan.'
+      ], 409);
+      return;
+    }
+
+    $total_harga = (int) $pesanan->total_harga;
+    $ongkir = (int) $pesanan->ongkir;
+    $total_pencairan = $total_harga + $ongkir;
+
+    if (
+      $total_harga <= 0 ||
+      $ongkir < 0 ||
+      $total_pencairan <= 0 ||
+      $total_pencairan > 2147483647
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Nilai pencairan pesanan tidak valid.'
+      ], 422);
+      return;
+    }
+
+    /*
+   * Cari pencairan yang mungkin sudah tercatat.
+   * Kombinasi referensi_tipe dan referensi_id bersifat unik.
+   */
+    $pencairan_lama = $this->db->query(
+      "SELECT
+        id,
+        cabang_id,
+        idNasabah,
+        nominal,
+        jenis,
+        status_konfirmasi,
+        referensi_tipe,
+        referensi_id,
+        terdaftar
+     FROM tb_transaksi
+     WHERE referensi_tipe = ?
+       AND referensi_id = ?
+     LIMIT 1
+     FOR UPDATE",
+      [
+        'PencairanPesanan',
+        $id_pesanan
+      ]
+    )->row();
+
+    /*
+   * Idempotensi:
+   * pesanan yang sudah selesai harus memiliki transaksi
+   * pencairan yang sah.
+   */
     if ($pesanan->status_pesanan === 'Selesai') {
-      echo json_encode(['status' => false, 'message' => 'Pesanan ini sudah diselesaikan sebelumnya.']);
-      return;
-    }
+      $pencairan_valid =
+        $pencairan_lama &&
+        (int) $pencairan_lama->idNasabah ===
+        (int) $pesanan->id_penjual &&
+        (int) $pencairan_lama->nominal ===
+        $total_pencairan &&
+        (string) $pencairan_lama->jenis === 'Masuk' &&
+        (string) $pencairan_lama->status_konfirmasi ===
+        'Sukses' &&
+        (string) $pencairan_lama->referensi_tipe ===
+        'PencairanPesanan' &&
+        (int) $pencairan_lama->referensi_id ===
+        $id_pesanan;
 
-    // B. 🔥 MULAI TRANSAKSI PENCAIRAN DANA 🔥
-    $this->db->trans_start();
+      if (!$pencairan_valid) {
+        $this->db->trans_rollback();
 
-    // 1. Ubah status pesanan menjadi Selesai
-    $this->db->where('id_pesanan', $id_pesanan);
-    $this->db->update('tb_pesanan', ['status_pesanan' => 'Selesai']);
-
-    // 2. Tambahkan Saldo ke Pemilik Toko (Insert ke tb_transaksi)
-    $this->db->insert('tb_transaksi', [
-      'idAdmin' => 0, // Sistem otomatis
-      'idNasabah' => $pesanan->id_pemilik_toko, // Uang masuk ke ID Nasabah si Pemilik Toko
-      'idPotongan' => 0,
-      'tanggal' => date('Y-m-d'),
-      'nominal' => $pesanan->total_harga,
-      'jenis' => 'Masuk',
-      'keterangan' => 'Pencairan Dana Penjualan: ' . $pesanan->invoice_pesanan,
-      'status_konfirmasi' => 'Sukses',
-      'terdaftar' => date('Y-m-d H:i:s')
-    ]);
-
-    // 3. Tambah Angka "Terjual" di Produk
-    $detail_pesanan = $this->db->get_where('tb_pesanan_detail', ['id_pesanan' => $id_pesanan])->result_array();
-    foreach ($detail_pesanan as $item) {
-      $this->db->set('terjual', 'terjual + ' . (int)$item['jumlah'], FALSE);
-      $this->db->where('id_produk', $item['id_produk']);
-      $this->db->update('tb_produk');
-    }
-
-    // C. Selesaikan Transaksi
-    $this->db->trans_complete();
-
-    if ($this->db->trans_status() === FALSE) {
-      echo json_encode(['status' => false, 'message' => 'Gagal memproses pencairan dana. Hubungi Admin.']);
-    } else {
-      // 🔥 NOTIFIKASI KE PENJUAL BAHWA DANA CAIR (DIPERBAIKI)
-      $this->db->select('expo_token, id');
-      $this->db->where('id', $pesanan->id_pemilik_toko);
-      $penjual = $this->db->get('tb_user')->row();
-
-      if ($penjual) {
-        $nominal_rp = 'Rp ' . number_format($pesanan->total_harga, 0, ',', '.');
-        $judul_notif = "✅ Alhamdulillah, Dana Cair!";
-        $pesan_notif = "Pesanan " . $pesanan->invoice_pesanan . " telah diterima pembeli. Dana " . $nominal_rp . " berhasil masuk ke tabungan Anda.";
-
-        // Simpan ke Lonceng Notifikasi Penjual
-        $this->db->insert('tb_notifikasi', [
-          'id_user' => $penjual->id,
-          'judul'   => $judul_notif,
-          'pesan'   => $pesan_notif,
-          'is_read' => 0,
-          'tanggal' => date('Y-m-d H:i:s')
-        ]);
-
-        if (!empty($penjual->expo_token)) {
-          $this->send_expo_push_notification($penjual->expo_token, $judul_notif, $pesan_notif);
-        }
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Pesanan selesai tetapi data pencairannya tidak konsisten. Hubungi administrator.'
+        ], 409);
+        return;
       }
 
-      echo json_encode(['status' => true, 'message' => 'Pesanan selesai! Dana telah diteruskan ke saldo tabungan Penjual.']);
+      if ($this->db->trans_status() === false) {
+        $this->db->trans_rollback();
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Gagal memeriksa pencairan pesanan.'
+        ], 500);
+        return;
+      }
+
+      $this->db->trans_commit();
+
+      $this->api_response([
+        'status'  => true,
+        'message' => 'Pesanan ini sudah diselesaikan sebelumnya.',
+        'data'    => [
+          'id_pesanan'           => $id_pesanan,
+          'invoice_pesanan'      =>
+          $pesanan->invoice_pesanan,
+          'status_pesanan'       => 'Selesai',
+          'id_transaksi_pencairan' =>
+          (int) $pencairan_lama->id,
+          'id_penjual'           =>
+          (int) $pesanan->id_penjual,
+          'total_harga'          => $total_harga,
+          'ongkir'               => $ongkir,
+          'total_dicairkan'      => $total_pencairan,
+          'dicairkan_pada'       =>
+          $pencairan_lama->terdaftar,
+          'idempotent'           => true
+        ]
+      ]);
+      return;
     }
+
+    /*
+   * Jika ledger pencairan sudah ada tetapi status belum selesai,
+   * hentikan proses untuk mencegah data ganda.
+   */
+    if ($pencairan_lama) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Pencairan sudah tercatat tetapi status pesanan belum konsisten. Hubungi administrator.',
+        'data'    => [
+          'id_transaksi_pencairan' =>
+          (int) $pencairan_lama->id
+        ]
+      ], 409);
+      return;
+    }
+
+    /*
+   * Pembeli hanya boleh menyelesaikan pesanan
+   * yang sudah dikirim oleh penjual.
+   */
+    if ($pesanan->status_pesanan !== 'Dikirim') {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Pesanan belum dikirim atau belum dapat diselesaikan.',
+        'data'    => [
+          'status_pesanan' =>
+          $pesanan->status_pesanan
+        ]
+      ], 409);
+      return;
+    }
+
+    /*
+   * Pastikan transaksi pembayaran pembeli benar-benar sah.
+   */
+    if (
+      empty($pesanan->id_transaksi_pembayaran) ||
+      (int) $pesanan->nominal_dibayar !==
+      $total_pencairan ||
+      (int) $pesanan->pembayaran_oleh !==
+      $id_pembeli
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Data pembayaran pesanan tidak lengkap atau tidak sesuai.'
+      ], 409);
+      return;
+    }
+
+    $transaksi_pembayaran = $this->db->query(
+      "SELECT
+        id,
+        idNasabah,
+        nominal,
+        jenis,
+        status_konfirmasi,
+        referensi_tipe,
+        referensi_id
+     FROM tb_transaksi
+     WHERE id = ?
+     LIMIT 1
+     FOR UPDATE",
+      [(int) $pesanan->id_transaksi_pembayaran]
+    )->row();
+
+    $pembayaran_valid =
+      $transaksi_pembayaran &&
+      (int) $transaksi_pembayaran->idNasabah ===
+      $id_pembeli &&
+      (int) $transaksi_pembayaran->nominal ===
+      $total_pencairan &&
+      (string) $transaksi_pembayaran->jenis ===
+      'Keluar' &&
+      (string) $transaksi_pembayaran->status_konfirmasi ===
+      'Sukses' &&
+      (string) $transaksi_pembayaran->referensi_tipe ===
+      'PembayaranPesanan' &&
+      (int) $transaksi_pembayaran->referensi_id ===
+      $id_pesanan;
+
+    if (!$pembayaran_valid) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Transaksi pembayaran pesanan tidak valid.'
+      ], 409);
+      return;
+    }
+
+    /*
+   * Detail diperlukan untuk memperbarui jumlah terjual.
+   */
+    $detail_pesanan = $this->db
+      ->select([
+        'id_produk',
+        'jumlah'
+      ])
+      ->from('tb_pesanan_detail')
+      ->where('id_pesanan', $id_pesanan)
+      ->order_by('id_produk', 'ASC')
+      ->get()
+      ->result_array();
+
+    if (empty($detail_pesanan)) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Detail barang pesanan tidak ditemukan.'
+      ], 409);
+      return;
+    }
+
+    $waktu_pencairan = date('Y-m-d H:i:s');
+
+    /*
+   * Cairkan seluruh dana yang dibayar pembeli:
+   * harga produk + ongkir.
+   */
+    $pencairan_disimpan = $this->db->insert(
+      'tb_transaksi',
+      [
+        'cabang_id'         =>
+        !empty($pesanan->cabang_penjual_id)
+          ? (int) $pesanan->cabang_penjual_id
+          : null,
+        'idAdmin'           => 0,
+        'idNasabah'         =>
+        (int) $pesanan->id_penjual,
+        'idPotongan'        => 0,
+        'tanggal'           => date('Y-m-d'),
+        'nominal'           => $total_pencairan,
+        'gram_emas'         => null,
+        'jenis'             => 'Masuk',
+        'keterangan'        =>
+        'Pencairan Dana Penjualan: ' .
+          $pesanan->invoice_pesanan,
+        'status_konfirmasi' => 'Sukses',
+        'bukti_transfer'    => null,
+        'referensi_tipe'    => 'PencairanPesanan',
+        'referensi_id'      => $id_pesanan,
+        'terdaftar'         => $waktu_pencairan
+      ]
+    );
+
+    if (!$pencairan_disimpan) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gagal mencatat transaksi pencairan.'
+      ], 500);
+      return;
+    }
+
+    $id_transaksi_pencairan =
+      (int) $this->db->insert_id();
+
+    /*
+   * Status hanya diperbarui apabila masih Dikirim.
+   */
+    $this->db
+      ->where('id_pesanan', $id_pesanan)
+      ->where('id_pembeli', $id_pembeli)
+      ->where('status_pesanan', 'Dikirim')
+      ->update('tb_pesanan', [
+        'status_pesanan' => 'Selesai'
+      ]);
+
+    if ($this->db->affected_rows() !== 1) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Status pesanan telah berubah. Pencairan dibatalkan.'
+      ], 409);
+      return;
+    }
+
+    /*
+   * Tambahkan jumlah terjual secara atomik.
+   */
+    foreach ($detail_pesanan as $item) {
+      $jumlah = (int) $item['jumlah'];
+      $id_produk = (int) $item['id_produk'];
+
+      if ($jumlah <= 0 || $id_produk <= 0) {
+        $this->db->trans_rollback();
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Detail jumlah barang pesanan tidak valid.'
+        ], 409);
+        return;
+      }
+
+      $this->db
+        ->set(
+          'terjual',
+          'COALESCE(terjual, 0) + ' . $jumlah,
+          false
+        )
+        ->where('id_produk', $id_produk)
+        ->update('tb_produk');
+
+      if ($this->db->affected_rows() !== 1) {
+        $this->db->trans_rollback();
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Gagal memperbarui jumlah produk terjual.'
+        ], 500);
+        return;
+      }
+    }
+
+    $judul_notif =
+      "\u{2705} Alhamdulillah, Dana Cair!";
+
+    $pesan_notif =
+      'Pesanan ' .
+      $pesanan->invoice_pesanan .
+      ' telah diterima pembeli. Dana Rp ' .
+      number_format(
+        $total_pencairan,
+        0,
+        ',',
+        '.'
+      ) .
+      ' termasuk ongkir berhasil masuk ke tabungan Anda.';
+
+    /*
+   * Notifikasi lonceng disimpan dalam transaksi yang sama.
+   */
+    $this->db->insert('tb_notifikasi', [
+      'id_user' =>
+      (int) $pesanan->id_penjual,
+      'judul'   => $judul_notif,
+      'pesan'   => $pesan_notif,
+      'is_read' => 0,
+      'tanggal' => $waktu_pencairan
+    ]);
+
+    if ($this->db->trans_status() === false) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gagal memproses pencairan dana.'
+      ], 500);
+      return;
+    }
+
+    $this->db->trans_commit();
+
+    /*
+   * Push dikirim setelah commit agar gangguan Expo
+   * tidak membatalkan pencairan.
+   */
+    try {
+      if (!empty($pesanan->expo_token_penjual)) {
+        $this->send_expo_push_notification(
+          $pesanan->expo_token_penjual,
+          $judul_notif,
+          $pesan_notif
+        );
+      }
+    } catch (Throwable $e) {
+      log_message(
+        'error',
+        'Push pencairan penjual gagal: ' .
+          $e->getMessage()
+      );
+    }
+
+    $this->api_response([
+      'status'  => true,
+      'message' => 'Pesanan selesai! Dana telah diteruskan ke saldo tabungan penjual.',
+      'data'    => [
+        'id_pesanan'             => $id_pesanan,
+        'invoice_pesanan'        =>
+        $pesanan->invoice_pesanan,
+        'status_pesanan'         => 'Selesai',
+        'id_penjual'             =>
+        (int) $pesanan->id_penjual,
+        'nama_toko'              =>
+        $pesanan->nama_toko,
+        'id_transaksi_pencairan' =>
+        $id_transaksi_pencairan,
+        'total_harga'            => $total_harga,
+        'ongkir'                 => $ongkir,
+        'total_dicairkan'        => $total_pencairan,
+        'dicairkan_pada'         => $waktu_pencairan,
+        'idempotent'             => false
+      ]
+    ]);
   }
 
   // 10. Endpoint Batalkan Pesanan (Sistem Nego Ongkir)
