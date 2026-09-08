@@ -12450,51 +12450,383 @@ class Api extends CI_Controller
   // 8. Endpoint Update Status Pesanan (Oleh Penjual)
   public function update_status_pesanan()
   {
-    $request = json_decode($this->input->raw_input_stream, true);
-    $id_pesanan = $request['id_pesanan'] ?? '';
-    $status_baru = $request['status'] ?? ''; // 'Diproses' atau 'Dikirim'
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
 
-    if (empty($id_pesanan) || empty($status_baru)) {
-      echo json_encode(['status' => false, 'message' => 'Data tidak lengkap.']);
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
       return;
     }
 
-    $this->db->where('id_pesanan', $id_pesanan);
-    $update = $this->db->update('tb_pesanan', ['status_pesanan' => $status_baru]);
+    $auth = $this->authenticate_api();
 
-    if ($update) {
-      // 🔥 NOTIFIKASI KE PEMBELI
-      // 🔥 PERBAIKAN: Tambahkan tb_user.id pada SELECT
-      $this->db->select('tb_user.id, tb_user.expo_token, tb_pesanan.invoice_pesanan');
-      $this->db->from('tb_pesanan');
-      $this->db->join('tb_user', 'tb_pesanan.id_pembeli = tb_user.id');
-      $this->db->where('tb_pesanan.id_pesanan', $id_pesanan);
-      $info = $this->db->get()->row();
+    if (!$auth) {
+      return;
+    }
 
-      // 🔥 PERBAIKAN: Pisahkan simpan ke DB dan kirim push
-      if ($info) {
-        $teks_status = ($status_baru === 'Diproses') ? "sedang diproses oleh penjual." : "sudah dalam perjalanan (Dikirim).";
-        $judul_notif = "📦 Status Pesanan: " . $status_baru;
-        $pesan_notif = "Pesanan " . $info->invoice_pesanan . " Anda " . $teks_status;
+    if ($auth->level !== 'Nasabah') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Status pesanan hanya dapat diperbarui oleh penjual.'
+      ], 403);
+      return;
+    }
 
-        // 1. SIMPAN KE DB NOTIFIKASI
-        $this->db->insert('tb_notifikasi', [
-          'id_user' => $info->id,
-          'judul'   => $judul_notif,
-          'pesan'   => $pesan_notif,
-          'tanggal' => date('Y-m-d H:i:s')
-        ]);
+    $request = json_decode(
+      $this->input->raw_input_stream,
+      true
+    );
 
-        // 2. KIRIM PUSH NOTIFICATION
-        if (!empty($info->expo_token)) {
-          $this->send_expo_push_notification($info->expo_token, $judul_notif, $pesan_notif);
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format JSON tidak valid.'
+      ], 400);
+      return;
+    }
+
+    $id_pesanan = filter_var(
+      $request['id_pesanan'] ?? null,
+      FILTER_VALIDATE_INT,
+      [
+        'options' => [
+          'min_range' => 1
+        ]
+      ]
+    );
+
+    $status_baru = trim(
+      (string) ($request['status'] ?? '')
+    );
+
+    $resi = trim(
+      (string) ($request['resi'] ?? '')
+    );
+
+    if ($id_pesanan === false) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'ID pesanan tidak valid.'
+      ], 422);
+      return;
+    }
+
+    /*
+   * Untuk alur yang baru, pembayaran sudah otomatis
+   * mengubah status menjadi Diproses.
+   *
+   * Status Diproses tetap diterima sebagai request idempoten
+   * demi kompatibilitas aplikasi lama.
+   */
+    if (!in_array(
+      $status_baru,
+      ['Diproses', 'Dikirim'],
+      true
+    )) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Status hanya dapat diubah menjadi Diproses atau Dikirim.'
+      ], 422);
+      return;
+    }
+
+    if (strlen($resi) > 100) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Nomor resi maksimal 100 karakter.'
+      ], 422);
+      return;
+    }
+
+    $id_pesanan = (int) $id_pesanan;
+    $id_penjual = (int) $auth->id_user;
+
+    $this->db->trans_begin();
+
+    /*
+   * Pesanan dikunci dan langsung dibatasi berdasarkan
+   * pemilik toko dari Bearer token.
+   */
+    $pesanan = $this->db->query(
+      "SELECT
+        p.id_pesanan,
+        p.invoice_pesanan,
+        p.id_pembeli,
+        p.id_toko,
+        p.total_harga,
+        p.ongkir,
+        p.kurir,
+        p.resi,
+        p.status_pesanan,
+        p.id_transaksi_pembayaran,
+        p.nominal_dibayar,
+        t.id_user AS id_penjual,
+        pembeli.expo_token AS expo_token_pembeli
+     FROM tb_pesanan p
+     INNER JOIN tb_toko t
+       ON t.id_toko = p.id_toko
+     INNER JOIN tb_user pembeli
+       ON pembeli.id = p.id_pembeli
+     WHERE p.id_pesanan = ?
+       AND t.id_user = ?
+     LIMIT 1
+     FOR UPDATE",
+      [
+        $id_pesanan,
+        $id_penjual
+      ]
+    )->row();
+
+    if (!$pesanan) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Pesanan tidak ditemukan atau bukan milik toko Anda.'
+      ], 404);
+      return;
+    }
+
+    /*
+   * Request Diproses dari aplikasi lama tidak mengubah data.
+   * Pesanan hanya dianggap Diproses apabila pembayaran
+   * benar-benar sudah terhubung.
+   */
+    if ($status_baru === 'Diproses') {
+      if (
+        $pesanan->status_pesanan === 'Diproses' &&
+        !empty($pesanan->id_transaksi_pembayaran) &&
+        (int) $pesanan->nominal_dibayar > 0
+      ) {
+        if ($this->db->trans_status() === false) {
+          $this->db->trans_rollback();
+
+          $this->api_response([
+            'status'  => false,
+            'message' => 'Gagal memeriksa status pesanan.'
+          ], 500);
+          return;
         }
+
+        $this->db->trans_commit();
+
+        $this->api_response([
+          'status'  => true,
+          'message' => 'Pesanan sudah berstatus Diproses.',
+          'data'    => [
+            'id_pesanan'      => $id_pesanan,
+            'invoice_pesanan' =>
+            $pesanan->invoice_pesanan,
+            'status_pesanan'  => 'Diproses',
+            'idempotent'      => true
+          ]
+        ]);
+        return;
       }
 
-      echo json_encode(['status' => true, 'message' => 'Status pesanan berhasil diperbarui menjadi ' . $status_baru]);
-    } else {
-      echo json_encode(['status' => false, 'message' => 'Gagal memperbarui status.']);
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Status Diproses hanya dapat berasal dari pembayaran yang berhasil.'
+      ], 409);
+      return;
     }
+
+    /*
+   * Idempotensi pengiriman.
+   */
+    if ($pesanan->status_pesanan === 'Dikirim') {
+      $resi_tersimpan = trim(
+        (string) $pesanan->resi
+      );
+
+      /*
+     * Jika request tidak membawa resi, pertahankan resi lama.
+     * Jika membawa resi berbeda, tolak agar tidak tertimpa.
+     */
+      if (
+        $resi !== '' &&
+        $resi_tersimpan !== '' &&
+        !hash_equals($resi_tersimpan, $resi)
+      ) {
+        $this->db->trans_rollback();
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Pesanan sudah dikirim dengan nomor resi yang berbeda.'
+        ], 409);
+        return;
+      }
+
+      if ($this->db->trans_status() === false) {
+        $this->db->trans_rollback();
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Gagal memeriksa status pengiriman.'
+        ], 500);
+        return;
+      }
+
+      $this->db->trans_commit();
+
+      $this->api_response([
+        'status'  => true,
+        'message' => 'Pesanan ini sudah dikirim sebelumnya.',
+        'data'    => [
+          'id_pesanan'      => $id_pesanan,
+          'invoice_pesanan' =>
+          $pesanan->invoice_pesanan,
+          'status_pesanan'  => 'Dikirim',
+          'kurir'            => $pesanan->kurir,
+          'resi'             => $resi_tersimpan,
+          'idempotent'       => true
+        ]
+      ]);
+      return;
+    }
+
+    /*
+   * Hanya pesanan yang sudah dibayar dan berstatus Diproses
+   * yang dapat dikirim.
+   */
+    if (
+      $pesanan->status_pesanan !== 'Diproses' ||
+      empty($pesanan->id_transaksi_pembayaran) ||
+      (int) $pesanan->nominal_dibayar <= 0
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Pesanan belum dibayar atau belum siap dikirim.',
+        'data'    => [
+          'status_pesanan' =>
+          $pesanan->status_pesanan
+        ]
+      ], 409);
+      return;
+    }
+
+    /*
+   * Kurir manual, lokal, atau COD tidak wajib memiliki resi.
+   * Kurir ekspedisi lainnya wajib memiliki nomor resi.
+   */
+    $nama_kurir = strtolower(
+      trim((string) $pesanan->kurir)
+    );
+
+    $kurir_tanpa_resi =
+      strpos($nama_kurir, 'manual') !== false ||
+      strpos($nama_kurir, 'lokal') !== false ||
+      strpos($nama_kurir, 'cod') !== false ||
+      strpos($nama_kurir, 'toko') !== false;
+
+    if (!$kurir_tanpa_resi && $resi === '') {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Nomor resi wajib diisi untuk kurir ekspedisi.'
+      ], 422);
+      return;
+    }
+
+    $data_update = [
+      'status_pesanan' => 'Dikirim'
+    ];
+
+    if ($resi !== '') {
+      $data_update['resi'] = $resi;
+    }
+
+    $this->db
+      ->where('id_pesanan', $id_pesanan)
+      ->where('status_pesanan', 'Diproses')
+      ->update('tb_pesanan', $data_update);
+
+    if ($this->db->affected_rows() !== 1) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Status pesanan telah berubah. Silakan muat ulang data.'
+      ], 409);
+      return;
+    }
+
+    $judul_notif = "\u{1F4E6} Pesanan Sedang Dikirim";
+
+    $pesan_notif =
+      'Pesanan ' .
+      $pesanan->invoice_pesanan .
+      ' sudah dikirim menggunakan ' .
+      $pesanan->kurir .
+      ($resi !== ''
+        ? ' dengan nomor resi ' . $resi . '.'
+        : '.');
+
+    /*
+   * Notifikasi lonceng menjadi bagian dari transaksi.
+   */
+    $this->db->insert('tb_notifikasi', [
+      'id_user' => (int) $pesanan->id_pembeli,
+      'judul'   => $judul_notif,
+      'pesan'   => $pesan_notif,
+      'tanggal' => date('Y-m-d H:i:s')
+    ]);
+
+    if ($this->db->trans_status() === false) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gagal memperbarui status pengiriman.'
+      ], 500);
+      return;
+    }
+
+    $this->db->trans_commit();
+
+    /*
+   * Push dikirim setelah perubahan database berhasil.
+   */
+    try {
+      if (!empty($pesanan->expo_token_pembeli)) {
+        $this->send_expo_push_notification(
+          $pesanan->expo_token_pembeli,
+          $judul_notif,
+          $pesan_notif
+        );
+      }
+    } catch (Throwable $e) {
+      log_message(
+        'error',
+        'Push status pengiriman gagal: ' .
+          $e->getMessage()
+      );
+    }
+
+    $this->api_response([
+      'status'  => true,
+      'message' => 'Status pesanan berhasil diperbarui menjadi Dikirim.',
+      'data'    => [
+        'id_pesanan'      => $id_pesanan,
+        'invoice_pesanan' =>
+        $pesanan->invoice_pesanan,
+        'status_pesanan'  => 'Dikirim',
+        'kurir'            => $pesanan->kurir,
+        'resi'             => $resi !== ''
+          ? $resi
+          : $pesanan->resi,
+        'idempotent'       => false
+      ]
+    ]);
   }
 
   // 9. Endpoint Selesaikan Pesanan & CAIRKAN DANA KE PENJUAL (Oleh Pembeli)
