@@ -15716,22 +15716,267 @@ class Api extends CI_Controller
   // 14. Endpoint Ambil Ulasan Produk (Untuk Detail Produk)
   public function get_ulasan_produk()
   {
-    $request = json_decode($this->input->raw_input_stream, true);
-    $id_produk = $request['id_produk'] ?? '';
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
 
-    if (empty($id_produk)) {
-      echo json_encode(['status' => false, 'message' => 'ID Produk tidak valid.']);
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
       return;
     }
 
-    $this->db->select('tb_ulasan.*, tb_user.nama as nama_pembeli');
-    $this->db->from('tb_ulasan');
-    $this->db->join('tb_user', 'tb_ulasan.id_pembeli = tb_user.id');
-    $this->db->where('tb_ulasan.id_produk', $id_produk);
-    $this->db->order_by('tb_ulasan.id_ulasan', 'DESC'); // Ulasan terbaru di atas
-    $ulasan = $this->db->get()->result_array();
+    $content_length = (int) $this->input->server(
+      'CONTENT_LENGTH'
+    );
 
-    echo json_encode(['status' => true, 'data' => $ulasan]);
+    if ($content_length > 65536) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Ukuran request terlalu besar.'
+      ], 413);
+      return;
+    }
+
+    $request = json_decode(
+      $this->input->raw_input_stream,
+      true
+    );
+
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format JSON tidak valid.'
+      ], 400);
+      return;
+    }
+
+    $id_produk = filter_var(
+      $request['id_produk'] ?? null,
+      FILTER_VALIDATE_INT,
+      [
+        'options' => [
+          'min_range' => 1
+        ]
+      ]
+    );
+
+    if ($id_produk === false) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'ID produk tidak valid.'
+      ], 422);
+      return;
+    }
+
+    $page = isset($request['page'])
+      ? (int) $request['page']
+      : 1;
+
+    $limit = isset($request['limit'])
+      ? (int) $request['limit']
+      : 20;
+
+    if ($page < 1) {
+      $page = 1;
+    }
+
+    if ($limit < 1) {
+      $limit = 20;
+    }
+
+    if ($limit > 50) {
+      $limit = 50;
+    }
+
+    $id_produk = (int) $id_produk;
+    $offset = ($page - 1) * $limit;
+
+    /*
+   * Pastikan produk benar-benar tersedia di database.
+   * Produk arsip tetap dapat memiliki riwayat ulasan,
+   * tetapi tidak akan tampil di etalase marketplace.
+   */
+    $produk = $this->db
+      ->select([
+        'p.id_produk',
+        'p.nama_produk',
+        'p.id_toko',
+        'p.rating',
+        'p.status_produk',
+        't.nama_toko',
+        't.status_toko'
+      ])
+      ->from('tb_produk p')
+      ->join(
+        'tb_toko t',
+        't.id_toko = p.id_toko'
+      )
+      ->where('p.id_produk', $id_produk)
+      ->limit(1)
+      ->get()
+      ->row();
+
+    if (!$produk) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Produk tidak ditemukan.'
+      ], 404);
+      return;
+    }
+
+    /*
+   * Ringkasan dihitung langsung dari sumber ulasan.
+   */
+    $ringkasan = $this->db
+      ->select(
+        "
+        COUNT(*) AS jumlah_ulasan,
+        COALESCE(ROUND(AVG(bintang), 1), 0)
+          AS rata_rata,
+        COALESCE(SUM(bintang = 5), 0)
+          AS bintang_5,
+        COALESCE(SUM(bintang = 4), 0)
+          AS bintang_4,
+        COALESCE(SUM(bintang = 3), 0)
+          AS bintang_3,
+        COALESCE(SUM(bintang = 2), 0)
+          AS bintang_2,
+        COALESCE(SUM(bintang = 1), 0)
+          AS bintang_1
+      ",
+        false
+      )
+      ->from('tb_ulasan')
+      ->where('id_produk', $id_produk)
+      ->get()
+      ->row();
+
+    if (!$ringkasan) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gagal menghitung ringkasan ulasan.'
+      ], 500);
+      return;
+    }
+
+    $total_data = (int) $ringkasan->jumlah_ulasan;
+
+    /*
+   * Hanya data yang diperlukan untuk tampilan publik
+   * yang dikirimkan.
+   */
+    $query = $this->db
+      ->select([
+        'u.id_ulasan',
+        'u.id_pesanan',
+        'u.id_produk',
+        'u.bintang',
+        'u.komentar',
+        'u.tanggal',
+        'pembeli.nama AS nama_pembeli'
+      ])
+      ->from('tb_ulasan u')
+      ->join(
+        'tb_user pembeli',
+        'pembeli.id = u.id_pembeli'
+      )
+      ->where('u.id_produk', $id_produk)
+      ->order_by('u.id_ulasan', 'DESC')
+      ->limit($limit, $offset)
+      ->get();
+
+    if (!$query) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gagal mengambil ulasan produk.'
+      ], 500);
+      return;
+    }
+
+    $hasil = $query->result_array();
+    $data_ulasan = [];
+
+    foreach ($hasil as $row) {
+      $data_ulasan[] = [
+        'id_ulasan' =>
+        (int) $row['id_ulasan'],
+
+        'id_pesanan' =>
+        (int) $row['id_pesanan'],
+
+        'id_produk' =>
+        (int) $row['id_produk'],
+
+        'nama_pembeli' =>
+        $row['nama_pembeli'],
+
+        'bintang' =>
+        (int) $row['bintang'],
+
+        'komentar' =>
+        $row['komentar'],
+
+        'tanggal' =>
+        $row['tanggal']
+      ];
+    }
+
+    $this->api_response([
+      'status'  => true,
+      'message' => $total_data > 0
+        ? 'Ulasan produk berhasil diambil.'
+        : 'Produk belum memiliki ulasan.',
+
+      'produk' => [
+        'id_produk' =>
+        (int) $produk->id_produk,
+
+        'nama_produk' =>
+        $produk->nama_produk,
+
+        'id_toko' =>
+        (int) $produk->id_toko,
+
+        'nama_toko' =>
+        $produk->nama_toko,
+
+        'status_produk' =>
+        $produk->status_produk,
+
+        'status_toko' =>
+        $produk->status_toko
+      ],
+
+      'ringkasan' => [
+        'jumlah_ulasan' =>
+        $total_data,
+
+        'rata_rata' =>
+        (float) $ringkasan->rata_rata,
+
+        'distribusi' => [
+          '5' => (int) $ringkasan->bintang_5,
+          '4' => (int) $ringkasan->bintang_4,
+          '3' => (int) $ringkasan->bintang_3,
+          '2' => (int) $ringkasan->bintang_2,
+          '1' => (int) $ringkasan->bintang_1
+        ]
+      ],
+
+      'data' => $data_ulasan,
+
+      'pagination' => [
+        'page'       => $page,
+        'limit'      => $limit,
+        'total_data' => $total_data,
+        'total_page' => $total_data > 0
+          ? (int) ceil($total_data / $limit)
+          : 0
+      ]
+    ]);
   }
 
   // 15. Endpoint Cek Status Wishlist di Detail Produk
