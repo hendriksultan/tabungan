@@ -17740,406 +17740,3103 @@ class Api extends CI_Controller
     ]);
   }
 
-  public function simpan_emas()
+
+  // ==========================================
+  // ADMIN ATUR DURASI KUNCI TABUNGAN EMAS
+  // ==========================================
+  public function admin_atur_kunci_emas()
   {
-    $request = json_decode($this->input->raw_input_stream, true);
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
 
-    if ($_SERVER['REQUEST_METHOD'] !== 'POST' || empty($request)) {
-      echo json_encode(['status' => false, 'message' => 'Permintaan tidak valid.']);
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
       return;
     }
 
-    $id_nasabah = $request['id_nasabah'] ?? 0;
-    $nominal_rupiah = str_replace('.', '', $request['nominal'] ?? '0');
-    $idAdmin = 0;
+    $auth = $this->authenticate_api();
 
-    if (empty($id_nasabah) || empty($nominal_rupiah)) {
-      echo json_encode(['status' => false, 'message' => 'Data tidak lengkap!']);
+    if (!$auth) {
       return;
     }
 
-    $today = date('Y-m-d');
-
-    // 🔥 REVISI: Selalu ambil harga acuan terbaru (baris terakhir) yang diinput Admin
-    $this->db->order_by('id', 'DESC');
-    $this->db->limit(1);
-    $harga_emas = $this->db->get('tb_harga_emas')->row();
-
-    if (!$harga_emas) {
-      echo json_encode(['status' => false, 'message' => 'Harga emas acuan belum diatur oleh Admin.']);
+    if (
+      !in_array(
+        $auth->level,
+        ['Administrator', 'Super Admin'],
+        true
+      )
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Akses ditolak. Khusus Administrator.'
+      ], 403);
       return;
     }
 
-    $gram_didapat = $nominal_rupiah / $harga_emas->harga_beli;
-    $gram_bulat = round($gram_didapat, 4);
+    if (
+      $auth->level === 'Administrator' &&
+      (int) $auth->cabang_id <= 0
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Administrator belum terhubung dengan cabang yang valid.'
+      ], 403);
+      return;
+    }
 
-    $file_name = null;
-    // ... (Proses upload bukti transfer jika ada biarkan seperti aslinya)
+    $request = json_decode(
+      $this->input->raw_input_stream,
+      true
+    );
 
-    // 4. Siapkan Data Transaksi
-    $data = [
-      'idAdmin'           => $idAdmin,
-      'idNasabah'         => $id_nasabah,
-      'idPotongan'        => 0,
-      'tanggal'           => $today,
-      'nominal'           => $nominal_rupiah,
-      'jenis'             => 'Keluar',
-      'keterangan'        => 'Nabung Emas ' . $gram_bulat . ' Gram',
-      'status_konfirmasi' => 'Sukses',
-      'bukti_transfer'    => $file_name,
-      'gram_emas'         => $gram_bulat,
-      'terdaftar'         => date('Y-m-d H:i:s')
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format JSON tidak valid.'
+      ], 400);
+      return;
+    }
+
+    $id_nasabah_valid = filter_var(
+      $request['id_nasabah'] ?? null,
+      FILTER_VALIDATE_INT,
+      [
+        'options' => [
+          'min_range' => 1
+        ]
+      ]
+    );
+
+    if ($id_nasabah_valid === false) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'ID Nasabah tidak valid.'
+      ], 422);
+      return;
+    }
+
+    $durasi_valid = filter_var(
+      $request['durasi_bulan'] ?? null,
+      FILTER_VALIDATE_INT,
+      [
+        'options' => [
+          'min_range' => 6,
+          'max_range' => 120
+        ]
+      ]
+    );
+
+    if ($durasi_valid === false) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Durasi kunci harus antara 6 sampai 120 bulan.'
+      ], 422);
+      return;
+    }
+
+    $id_nasabah = (int) $id_nasabah_valid;
+    $durasi_bulan = (int) $durasi_valid;
+    $waktu_sekarang = date('Y-m-d H:i:s');
+
+    $this->db->trans_begin();
+
+    /*
+     * Kunci akun Nasabah agar pengaturan tidak berubah
+     * bersamaan dengan transaksi pembelian atau pencairan.
+     */
+    $nasabah = $this->db->query(
+      "SELECT
+          u.id,
+          u.nama,
+          u.level,
+          u.login,
+          u.cabang_id,
+          c.kode AS kode_cabang,
+          c.nama AS nama_cabang,
+          c.status AS status_cabang
+       FROM tb_user AS u
+       LEFT JOIN tb_cabang AS c
+         ON c.id = u.cabang_id
+       WHERE u.id = ?
+       LIMIT 1
+       FOR UPDATE",
+      [$id_nasabah]
+    )->row();
+
+    if (
+      !$nasabah ||
+      $nasabah->level !== 'Nasabah'
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Nasabah tidak ditemukan.'
+      ], 404);
+      return;
+    }
+
+    if (
+      $nasabah->login !== 'Ya' ||
+      $nasabah->status_cabang !== 'Aktif'
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Akun atau cabang Nasabah sedang tidak aktif.'
+      ], 409);
+      return;
+    }
+
+    if (
+      $auth->level === 'Administrator' &&
+      (int) $nasabah->cabang_id !==
+      (int) $auth->cabang_id
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Anda hanya dapat mengatur Nasabah pada cabang sendiri.'
+      ], 403);
+      return;
+    }
+
+    $kunci_lama = $this->db->query(
+      "SELECT
+          id_kunci,
+          durasi_bulan,
+          terkunci_sampai,
+          ditetapkan_oleh,
+          ditetapkan_pada
+       FROM tb_kunci_emas
+       WHERE id_nasabah = ?
+       LIMIT 1
+       FOR UPDATE",
+      [$id_nasabah]
+    )->row();
+
+    /*
+     * Hitung saldo dan pembelian emas terakhir.
+     */
+    $ringkasan_emas = $this->db->query(
+      "SELECT
+          COALESCE(SUM(gram_emas), 0)
+            AS saldo_emas,
+
+          MAX(
+            CASE
+              WHEN gram_emas > 0
+              THEN terdaftar
+              ELSE NULL
+            END
+          ) AS pembelian_terakhir
+       FROM tb_transaksi
+       WHERE idNasabah = ?
+         AND status_konfirmasi = 'Sukses'
+         AND gram_emas <> 0",
+      [$id_nasabah]
+    )->row();
+
+    $saldo_emas = round(
+      (float) ($ringkasan_emas->saldo_emas ?? 0),
+      4
+    );
+
+    $pembelian_terakhir =
+      $ringkasan_emas->pembelian_terakhir ?? null;
+
+    $calon_terkunci_sampai = null;
+
+    if (
+      $saldo_emas > 0 &&
+      $pembelian_terakhir !== null
+    ) {
+      try {
+        $tanggal_kunci = new DateTime(
+          $pembelian_terakhir
+        );
+
+        $tanggal_kunci->modify(
+          '+' . $durasi_bulan . ' months'
+        );
+
+        $calon_terkunci_sampai =
+          $tanggal_kunci->format('Y-m-d H:i:s');
+      } catch (Exception $e) {
+        $this->db->trans_rollback();
+
+        log_message(
+          'error',
+          'Gagal menghitung jatuh tempo emas: ' .
+            $e->getMessage()
+        );
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Tanggal jatuh tempo emas gagal dihitung.'
+        ], 500);
+        return;
+      }
+    }
+
+    /*
+     * Durasi baru tidak boleh memperpendek masa kunci
+     * yang masih tersimpan.
+     */
+    $terkunci_sampai = null;
+
+    if ($saldo_emas > 0) {
+      $terkunci_sampai =
+        $kunci_lama->terkunci_sampai ?? null;
+
+      if (
+        $calon_terkunci_sampai !== null &&
+        (
+          $terkunci_sampai === null ||
+          strtotime($calon_terkunci_sampai) >
+          strtotime($terkunci_sampai)
+        )
+      ) {
+        $terkunci_sampai =
+          $calon_terkunci_sampai;
+      }
+    }
+
+    $data_kunci = [
+      'durasi_bulan'    => $durasi_bulan,
+      'terkunci_sampai' => $terkunci_sampai,
+      'ditetapkan_oleh' => (int) $auth->id_user,
+      'ditetapkan_pada' => $waktu_sekarang,
+      'diperbarui_pada' => $waktu_sekarang
     ];
 
-    $insert = $this->db->insert('tb_transaksi', $data);
+    if ($kunci_lama) {
+      $proses = $this->db
+        ->where(
+          'id_kunci',
+          (int) $kunci_lama->id_kunci
+        )
+        ->where('id_nasabah', $id_nasabah)
+        ->update(
+          'tb_kunci_emas',
+          $data_kunci
+        );
 
-    if ($insert) {
-      $this->db->where('id', $id_nasabah);
-      $nasabah = $this->db->get('tb_user')->row();
-      $nama_nasabah = $nasabah ? $nasabah->nama : 'Nasabah';
+      $id_kunci =
+        (int) $kunci_lama->id_kunci;
+    } else {
+      $data_kunci['id_nasabah'] =
+        $id_nasabah;
 
-      // NOTIFIKASI WA ADMIN
-      $pesan_wa = "✨ *PEMBELIAN EMAS BARU*\n\n";
-      $pesan_wa .= "Halo Admin, nasabah telah membeli emas (Selesai Otomatis):\n";
-      $pesan_wa .= "👤 *Nama:* " . $nama_nasabah . "\n";
-      $pesan_wa .= "💰 *Nominal:* Rp " . number_format($nominal_rupiah, 0, ',', '.') . "\n";
-      $pesan_wa .= "⚖️ *Emas:* " . $gram_bulat . " Gram\n";
+      $proses = $this->db->insert(
+        'tb_kunci_emas',
+        $data_kunci
+      );
 
-      $nomor_admin = '081234567890';
-      $this->send_whatsapp($nomor_admin, $pesan_wa);
+      $id_kunci =
+        (int) $this->db->insert_id();
+    }
 
-      // 1. SIMPAN RIWAYAT & PUSH NOTIFIKASI KE NASABAH
-      $pesan_nasabah = "Selamat! Tabungan emas Anda bertambah " . $gram_bulat . " Gram. Saldo utama telah dipotong Rp " . number_format($nominal_rupiah, 0, ',', '.');
+    if (
+      !$proses ||
+      $this->db->trans_status() === false
+    ) {
+      $database_error = $this->db->error();
 
-      $this->db->insert('tb_notifikasi', [
-        'id_user' => $id_nasabah,
-        'judul'   => '✨ Beli Emas Berhasil!',
-        'pesan'   => $pesan_nasabah,
-        'is_read' => 0,
-        'tanggal' => date('Y-m-d H:i:s')
+      $this->db->trans_rollback();
+
+      log_message(
+        'error',
+        'Gagal mengatur kunci emas: ' .
+          json_encode($database_error)
+      );
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Pengaturan kunci emas gagal disimpan.'
+      ], 500);
+      return;
+    }
+
+    $this->db->trans_commit();
+
+    $status_terkunci = (
+      $saldo_emas > 0 &&
+      $terkunci_sampai !== null &&
+      strtotime($terkunci_sampai) >
+      strtotime($waktu_sekarang)
+    );
+
+    $sisa_hari = 0;
+
+    if ($status_terkunci) {
+      $selisih_detik =
+        strtotime($terkunci_sampai) -
+        strtotime($waktu_sekarang);
+
+      $sisa_hari = (int) ceil(
+        $selisih_detik / 86400
+      );
+    }
+
+    $this->api_response([
+      'status'  => true,
+      'message' => 'Pengaturan kunci emas berhasil disimpan.',
+      'data'    => [
+        'id_kunci' =>
+        $id_kunci,
+
+        'id_nasabah' =>
+        $id_nasabah,
+
+        'nama_nasabah' =>
+        $nasabah->nama,
+
+        'cabang_id' =>
+        (int) $nasabah->cabang_id,
+
+        'kode_cabang' =>
+        $nasabah->kode_cabang,
+
+        'nama_cabang' =>
+        $nasabah->nama_cabang,
+
+        'saldo_emas' =>
+        number_format(
+          $saldo_emas,
+          4,
+          '.',
+          ''
+        ),
+
+        'durasi_bulan' =>
+        $durasi_bulan,
+
+        'pembelian_terakhir' =>
+        $pembelian_terakhir,
+
+        'terkunci_sampai' =>
+        $terkunci_sampai,
+
+        'status_terkunci' =>
+        $status_terkunci,
+
+        'sisa_hari' =>
+        $sisa_hari,
+
+        'ditetapkan_oleh' =>
+        (int) $auth->id_user,
+
+        'nama_admin' =>
+        $auth->nama
+      ]
+    ]);
+  }
+
+  // ==========================================
+  // PEMBELIAN EMAS NASABAH TERPROTEKSI
+  // ==========================================
+  public function simpan_emas()
+  {
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
+
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
+      return;
+    }
+
+    $auth = $this->authenticate_api();
+
+    if (!$auth) {
+      return;
+    }
+
+    if ($auth->level !== 'Nasabah') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Akses ditolak. Endpoint ini khusus Nasabah.'
+      ], 403);
+      return;
+    }
+
+    $request = json_decode(
+      $this->input->raw_input_stream,
+      true
+    );
+
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format JSON tidak valid.'
+      ], 400);
+      return;
+    }
+
+    /*
+     * Identitas Nasabah berasal dari Bearer token.
+     * id_nasabah dari request diabaikan.
+     */
+    $id_nasabah = (int) $auth->id_user;
+
+    $pin = trim(
+      (string) ($request['pin'] ?? '')
+    );
+
+    if (!preg_match('/^\d{6}$/', $pin)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'PIN harus terdiri dari 6 digit.'
+      ], 422);
+      return;
+    }
+
+    /*
+     * request_key harus dibuat satu kali oleh aplikasi
+     * untuk satu percobaan pembelian dan digunakan kembali
+     * ketika request yang sama diulang.
+     */
+    $request_key = trim(
+      (string) ($request['request_key'] ?? '')
+    );
+
+    if (
+      !preg_match(
+        '/^[A-Za-z0-9_-]{16,64}$/',
+        $request_key
+      )
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'request_key tidak valid.'
+      ], 422);
+      return;
+    }
+
+    /*
+     * Mendukung nominal angka murni maupun format
+     * ribuan Indonesia seperti 100.000.
+     */
+    $nominal_input = trim(
+      (string) ($request['nominal'] ?? '')
+    );
+
+    if (preg_match('/^\d+$/', $nominal_input)) {
+      $nominal_rupiah = (int) $nominal_input;
+    } elseif (
+      preg_match(
+        '/^\d{1,3}(\.\d{3})+$/',
+        $nominal_input
+      )
+    ) {
+      $nominal_rupiah = (int) str_replace(
+        '.',
+        '',
+        $nominal_input
+      );
+    } else {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Nominal pembelian emas tidak valid.'
+      ], 422);
+      return;
+    }
+
+    if (
+      $nominal_rupiah <= 0 ||
+      $nominal_rupiah > 2000000000
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Nominal pembelian emas di luar batas yang diizinkan.'
+      ], 422);
+      return;
+    }
+
+    /*
+     * Pemeriksaan idempotensi awal.
+     */
+    $transaksi_lama = $this->db
+      ->select([
+        'id',
+        'idNasabah',
+        'nominal',
+        'gram_emas',
+        'harga_emas_acuan',
+        'durasi_kunci_bulan',
+        'emas_terkunci_sampai',
+        'referensi_tipe',
+        'status_konfirmasi'
+      ])
+      ->where('request_key', $request_key)
+      ->limit(1)
+      ->get('tb_transaksi')
+      ->row();
+
+    if ($transaksi_lama) {
+      if (
+        (int) $transaksi_lama->idNasabah !==
+        $id_nasabah ||
+        $transaksi_lama->referensi_tipe !==
+        'PembelianEmas'
+      ) {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'request_key sudah digunakan untuk transaksi lain.'
+        ], 409);
+        return;
+      }
+
+      if (
+        $transaksi_lama->status_konfirmasi !==
+        'Sukses'
+      ) {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Transaksi dengan request_key ini belum berhasil.'
+        ], 409);
+        return;
+      }
+
+      $gram_lama = number_format(
+        (float) $transaksi_lama->gram_emas,
+        4,
+        '.',
+        ''
+      );
+
+      $this->api_response([
+        'status'        => true,
+        'message'       => 'Pembelian emas sebelumnya sudah berhasil.',
+        'idempotent'    => true,
+        'gram_didapat'  => $gram_lama,
+        'data'          => [
+          'id_transaksi' =>
+          (int) $transaksi_lama->id,
+
+          'nominal' =>
+          (int) $transaksi_lama->nominal,
+
+          'gram_didapat' =>
+          $gram_lama,
+
+          'harga_emas_acuan' =>
+          (int) $transaksi_lama->harga_emas_acuan,
+
+          'durasi_kunci_bulan' =>
+          (int) $transaksi_lama->durasi_kunci_bulan,
+
+          'terkunci_sampai' =>
+          $transaksi_lama->emas_terkunci_sampai
+        ]
       ]);
+      return;
+    }
 
-      if (!empty($nasabah->expo_token)) {
+    $this->db->trans_begin();
+
+    /*
+     * Kunci akun agar dua transaksi bersamaan tidak
+     * dapat memakai saldo rupiah yang sama.
+     */
+    $user = $this->db->query(
+      "SELECT
+          u.id,
+          u.nama,
+          u.level,
+          u.login,
+          u.pin,
+          u.pin_gagal,
+          u.pin_terkunci_sampai,
+          u.expo_token,
+          u.cabang_id,
+          c.status AS status_cabang
+       FROM tb_user AS u
+       LEFT JOIN tb_cabang AS c
+         ON c.id = u.cabang_id
+       WHERE u.id = ?
+       LIMIT 1
+       FOR UPDATE",
+      [$id_nasabah]
+    )->row();
+
+    if (
+      !$user ||
+      $user->level !== 'Nasabah' ||
+      $user->login !== 'Ya' ||
+      $user->status_cabang !== 'Aktif'
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Akun Nasabah atau cabang tidak aktif.'
+      ], 403);
+      return;
+    }
+
+    /*
+     * Verifikasi PIN berada dalam transaksi yang sama.
+     */
+    $hasil_pin =
+      $this->verifikasi_pin_user_dalam_transaksi(
+        $user,
+        $pin
+      );
+
+    if (!$hasil_pin['status']) {
+      if (
+        !empty($hasil_pin['simpan_perubahan']) &&
+        $this->db->trans_status() !== false
+      ) {
+        $this->db->trans_commit();
+      } else {
+        $this->db->trans_rollback();
+      }
+
+      $response_pin = [
+        'status'  => false,
+        'message' => $hasil_pin['message']
+      ];
+
+      if (!empty($hasil_pin['data'])) {
+        $response_pin['data'] =
+          $hasil_pin['data'];
+      }
+
+      $this->api_response(
+        $response_pin,
+        (int) $hasil_pin['http_code']
+      );
+      return;
+    }
+
+    /*
+     * Periksa kembali request_key setelah akun terkunci.
+     */
+    $transaksi_bersamaan = $this->db->query(
+      "SELECT
+          id,
+          idNasabah,
+          referensi_tipe,
+          status_konfirmasi
+       FROM tb_transaksi
+       WHERE request_key = ?
+       LIMIT 1
+       FOR UPDATE",
+      [$request_key]
+    )->row();
+
+    if ($transaksi_bersamaan) {
+      $this->db->trans_rollback();
+
+      if (
+        (int) $transaksi_bersamaan->idNasabah ===
+        $id_nasabah &&
+        $transaksi_bersamaan->referensi_tipe ===
+        'PembelianEmas' &&
+        $transaksi_bersamaan->status_konfirmasi ===
+        'Sukses'
+      ) {
+        $this->api_response([
+          'status'     => true,
+          'message'    => 'Pembelian emas sebelumnya sudah berhasil.',
+          'idempotent' => true,
+          'data'       => [
+            'id_transaksi' =>
+            (int) $transaksi_bersamaan->id
+          ]
+        ]);
+        return;
+      }
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'request_key sudah digunakan untuk transaksi lain.'
+      ], 409);
+      return;
+    }
+
+    /*
+     * Durasi wajib sudah ditentukan Administrator.
+     */
+    $pengaturan_kunci = $this->db->query(
+      "SELECT
+          id_kunci,
+          durasi_bulan,
+          terkunci_sampai,
+          ditetapkan_oleh
+       FROM tb_kunci_emas
+       WHERE id_nasabah = ?
+       LIMIT 1
+       FOR UPDATE",
+      [$id_nasabah]
+    )->row();
+
+    if (!$pengaturan_kunci) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Durasi kunci emas belum ditentukan Administrator.'
+      ], 422);
+      return;
+    }
+
+    $durasi_bulan =
+      (int) $pengaturan_kunci->durasi_bulan;
+
+    if (
+      $durasi_bulan < 6 ||
+      $durasi_bulan > 120
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Konfigurasi durasi kunci emas tidak valid.'
+      ], 500);
+      return;
+    }
+
+    /*
+     * Harga terbaru dikunci agar tidak berubah ketika
+     * transaksi sedang dihitung.
+     */
+    $harga_emas = $this->db->query(
+      "SELECT
+          id,
+          harga_beli,
+          harga_jual,
+          tanggal
+       FROM tb_harga_emas
+       ORDER BY id DESC
+       LIMIT 1
+       FOR UPDATE"
+    )->row();
+
+    if (
+      !$harga_emas ||
+      (int) $harga_emas->harga_beli <= 0
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Harga emas acuan belum tersedia.'
+      ], 422);
+      return;
+    }
+
+    $harga_beli =
+      (int) $harga_emas->harga_beli;
+
+    $gram_didapat = round(
+      $nominal_rupiah / $harga_beli,
+      4
+    );
+
+    if ($gram_didapat <= 0) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Nominal terlalu kecil untuk menghasilkan saldo emas.'
+      ], 422);
+      return;
+    }
+
+    /*
+     * Hitung saldo rupiah setelah akun dikunci.
+     */
+    $saldo = $this->db->query(
+      "SELECT
+        (
+          COALESCE((
+            SELECT SUM(nominal)
+            FROM tb_transaksi
+            WHERE idNasabah = ?
+              AND jenis = 'Masuk'
+              AND status_konfirmasi = 'Sukses'
+          ), 0)
+          +
+          COALESCE((
+            SELECT SUM(CAST(nominal AS UNSIGNED))
+            FROM tb_transfer
+            WHERE idPenerima = ?
+              AND status_transfer = 'Sukses'
+          ), 0)
+          -
+          COALESCE((
+            SELECT SUM(nominal)
+            FROM tb_transaksi
+            WHERE idNasabah = ?
+              AND jenis = 'Keluar'
+              AND status_konfirmasi = 'Sukses'
+          ), 0)
+          -
+          COALESCE((
+            SELECT SUM(CAST(nominal AS UNSIGNED))
+            FROM tb_transfer
+            WHERE idPengirim = ?
+              AND status_transfer = 'Sukses'
+          ), 0)
+        ) AS saldo_aktif",
+      [
+        $id_nasabah,
+        $id_nasabah,
+        $id_nasabah,
+        $id_nasabah
+      ]
+    )->row();
+
+    if (!$saldo) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Saldo tabungan gagal dihitung.'
+      ], 500);
+      return;
+    }
+
+    $saldo_sebelum =
+      (int) $saldo->saldo_aktif;
+
+    if ($saldo_sebelum < $nominal_rupiah) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Saldo tabungan tidak mencukupi untuk membeli emas.',
+        'data'    => [
+          'saldo_aktif' =>
+          $saldo_sebelum,
+
+          'nominal_pembelian' =>
+          $nominal_rupiah,
+
+          'kekurangan' =>
+          $nominal_rupiah -
+            $saldo_sebelum
+        ]
+      ], 422);
+      return;
+    }
+
+    $waktu_pembelian =
+      date('Y-m-d H:i:s');
+
+    try {
+      $jatuh_tempo = new DateTime(
+        $waktu_pembelian
+      );
+
+      $jatuh_tempo->modify(
+        '+' . $durasi_bulan . ' months'
+      );
+
+      $calon_terkunci_sampai =
+        $jatuh_tempo->format('Y-m-d H:i:s');
+    } catch (Exception $e) {
+      $this->db->trans_rollback();
+
+      log_message(
+        'error',
+        'Gagal menghitung kunci pembelian emas: ' .
+          $e->getMessage()
+      );
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Jatuh tempo pembelian emas gagal dihitung.'
+      ], 500);
+      return;
+    }
+
+    /*
+     * Pembelian baru tidak boleh memperpendek masa kunci
+     * yang sebelumnya sudah lebih panjang.
+     */
+    $terkunci_sampai =
+      $pengaturan_kunci->terkunci_sampai;
+
+    if (
+      empty($terkunci_sampai) ||
+      strtotime($calon_terkunci_sampai) >
+      strtotime($terkunci_sampai)
+    ) {
+      $terkunci_sampai =
+        $calon_terkunci_sampai;
+    }
+
+    $transaksi_disimpan = $this->db->insert(
+      'tb_transaksi',
+      [
+        'cabang_id' =>
+        (int) $user->cabang_id,
+
+        'idAdmin' =>
+        0,
+
+        'idNasabah' =>
+        $id_nasabah,
+
+        'idPotongan' =>
+        0,
+
+        'tanggal' =>
+        date('Y-m-d'),
+
+        'nominal' =>
+        $nominal_rupiah,
+
+        'gram_emas' =>
+        $gram_didapat,
+
+        'harga_emas_acuan' =>
+        $harga_beli,
+
+        'durasi_kunci_bulan' =>
+        $durasi_bulan,
+
+        'emas_terkunci_sampai' =>
+        $terkunci_sampai,
+
+        'jenis' =>
+        'Keluar',
+
+        'keterangan' =>
+        'Nabung Emas ' .
+          number_format(
+            $gram_didapat,
+            4,
+            '.',
+            ''
+          ) .
+          ' Gram',
+
+        'referensi_tipe' =>
+        'PembelianEmas',
+
+        'referensi_id' =>
+        null,
+
+        'request_key' =>
+        $request_key,
+
+        'status_konfirmasi' =>
+        'Sukses',
+
+        'bukti_transfer' =>
+        null,
+
+        'terdaftar' =>
+        $waktu_pembelian
+      ]
+    );
+
+    if (!$transaksi_disimpan) {
+      $database_error = $this->db->error();
+
+      $this->db->trans_rollback();
+
+      if (
+        (int) ($database_error['code'] ?? 0) ===
+        1062
+      ) {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'request_key sudah digunakan. Periksa kembali riwayat transaksi.'
+        ], 409);
+        return;
+      }
+
+      log_message(
+        'error',
+        'Gagal menyimpan pembelian emas: ' .
+          json_encode($database_error)
+      );
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Pembelian emas gagal dicatat.'
+      ], 500);
+      return;
+    }
+
+    $id_transaksi =
+      (int) $this->db->insert_id();
+
+    $update_kunci = $this->db
+      ->where(
+        'id_kunci',
+        (int) $pengaturan_kunci->id_kunci
+      )
+      ->where('id_nasabah', $id_nasabah)
+      ->update(
+        'tb_kunci_emas',
+        [
+          'terkunci_sampai' =>
+          $terkunci_sampai,
+
+          'diperbarui_pada' =>
+          $waktu_pembelian
+        ]
+      );
+
+    if (!$update_kunci) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Masa kunci emas gagal diperbarui.'
+      ], 500);
+      return;
+    }
+
+    /*
+     * Administrator cabang terkait dan seluruh Super Admin
+     * menerima notifikasi.
+     */
+    $query_admin = $this->db->query(
+      "SELECT
+          id,
+          expo_token
+       FROM tb_user
+       WHERE login = 'Ya'
+         AND (
+           level = 'Super Admin'
+           OR (
+             level = 'Administrator'
+             AND cabang_id = ?
+           )
+         )",
+      [(int) $user->cabang_id]
+    );
+
+    if (!$query_admin) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Penerima notifikasi admin gagal diambil.'
+      ], 500);
+      return;
+    }
+
+    $admins = $query_admin->result();
+
+    $gram_format = number_format(
+      $gram_didapat,
+      4,
+      '.',
+      ''
+    );
+
+    $judul_nasabah =
+      'Pembelian Emas Berhasil';
+
+    $pesan_nasabah =
+      'Tabungan emas Anda bertambah ' .
+      $gram_format .
+      ' gram. Saldo utama dipotong Rp ' .
+      number_format(
+        $nominal_rupiah,
+        0,
+        ',',
+        '.'
+      ) .
+      '. Seluruh saldo emas terkunci sampai ' .
+      $terkunci_sampai .
+      '.';
+
+    $judul_admin =
+      'Pembelian Emas Baru';
+
+    $pesan_admin =
+      'Nasabah ' .
+      $user->nama .
+      ' membeli ' .
+      $gram_format .
+      ' gram emas senilai Rp ' .
+      number_format(
+        $nominal_rupiah,
+        0,
+        ',',
+        '.'
+      ) .
+      '.';
+
+    $this->db->insert(
+      'tb_notifikasi',
+      [
+        'id_user' =>
+        $id_nasabah,
+
+        'judul' =>
+        $judul_nasabah,
+
+        'pesan' =>
+        $pesan_nasabah,
+
+        'is_read' =>
+        0,
+
+        'tanggal' =>
+        $waktu_pembelian
+      ]
+    );
+
+    foreach ($admins as $admin) {
+      $this->db->insert(
+        'tb_notifikasi',
+        [
+          'id_user' =>
+          (int) $admin->id,
+
+          'judul' =>
+          $judul_admin,
+
+          'pesan' =>
+          $pesan_admin,
+
+          'is_read' =>
+          0,
+
+          'tanggal' =>
+          $waktu_pembelian
+        ]
+      );
+    }
+
+    if ($this->db->trans_status() === false) {
+      $database_error = $this->db->error();
+
+      $this->db->trans_rollback();
+
+      log_message(
+        'error',
+        'Pembelian emas dibatalkan: ' .
+          json_encode($database_error)
+      );
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Pembelian emas gagal diproses. Transaksi dibatalkan.'
+      ], 500);
+      return;
+    }
+
+    $this->db->trans_commit();
+
+    /*
+     * Push dikirim setelah commit agar gangguan layanan
+     * notifikasi tidak membatalkan transaksi keuangan.
+     */
+    try {
+      if (!empty($user->expo_token)) {
         $this->send_expo_push_notification(
-          $nasabah->expo_token,
-          "✨ Beli Emas Berhasil!",
+          $user->expo_token,
+          $judul_nasabah,
           $pesan_nasabah
         );
       }
 
-      // 2. SIMPAN RIWAYAT & PUSH NOTIFIKASI KE SEMUA ADMIN
-      $pesan_admin = "Nasabah " . $nama_nasabah . " telah membeli " . $gram_bulat . " Gram emas seharga Rp " . number_format($nominal_rupiah, 0, ',', '.');
-
-      $admins = $this->db->where_in('level', ['Administrator', 'Super Admin'])->get('tb_user')->result();
       foreach ($admins as $admin) {
-
-        $this->db->insert('tb_notifikasi', [
-          'id_user' => $admin->id,
-          'judul'   => '✨ Pembelian Emas Baru',
-          'pesan'   => $pesan_admin,
-          'is_read' => 0,
-          'tanggal' => date('Y-m-d H:i:s')
-        ]);
-
         if (!empty($admin->expo_token)) {
           $this->send_expo_push_notification(
             $admin->expo_token,
-            "✨ Pembelian Emas Baru",
+            $judul_admin,
             $pesan_admin
           );
         }
       }
-
-      echo json_encode([
-        'status' => true,
-        'message' => 'Pembelian Emas berhasil! Saldo utama Anda telah dipotong.',
-        'gram_didapat' => $gram_bulat
-      ]);
-    } else {
-      echo json_encode(['status' => false, 'message' => 'Gagal memproses transaksi emas.']);
+    } catch (Throwable $e) {
+      log_message(
+        'error',
+        'Push pembelian emas gagal: ' .
+          $e->getMessage()
+      );
     }
+
+    $saldo_sesudah =
+      $saldo_sebelum -
+      $nominal_rupiah;
+
+    $this->api_response([
+      'status'        => true,
+      'message'       => 'Pembelian emas berhasil. Saldo utama telah dipotong.',
+      'idempotent'    => false,
+      'gram_didapat'  => $gram_format,
+      'data'          => [
+        'id_transaksi' =>
+        $id_transaksi,
+
+        'id_nasabah' =>
+        $id_nasabah,
+
+        'nominal' =>
+        $nominal_rupiah,
+
+        'harga_emas_acuan' =>
+        $harga_beli,
+
+        'gram_didapat' =>
+        $gram_format,
+
+        'saldo_sebelum' =>
+        $saldo_sebelum,
+
+        'saldo_sesudah' =>
+        $saldo_sesudah,
+
+        'durasi_kunci_bulan' =>
+        $durasi_bulan,
+
+        'terkunci_sampai' =>
+        $terkunci_sampai
+      ]
+    ], 201);
   }
 
   // ==========================================
   // API UNTUK MENGHITUNG TOTAL GRAM EMAS NASABAH
   // ==========================================
+  // ==========================================
+  // SALDO EMAS NASABAH TERPROTEKSI
+  // ==========================================
   public function get_saldo_emas()
   {
-    $request = json_decode($this->input->raw_input_stream, true);
-    $id_nasabah = $request['id_nasabah'] ?? 0;
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
 
-    if (empty($id_nasabah)) {
-      echo json_encode(['status' => false, 'total_gram' => '0.0000']);
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'     => false,
+        'message'    => 'Metode request tidak diizinkan.',
+        'total_gram' => '0.0000'
+      ], 405);
       return;
     }
 
-    // Hitung total gram dari semua transaksi emas (Beli yang positif, dan Jual yang negatif)
-    $this->db->select_sum('gram_emas');
-    $this->db->where('idNasabah', $id_nasabah);
+    $auth = $this->authenticate_api();
 
-    // 🔥 UBAH DI SINI: Gunakan != 0 agar angka minus (transaksi Buyback) ikut dijumlahkan
-    $this->db->where('gram_emas !=', 0);
+    if (!$auth) {
+      return;
+    }
 
-    $this->db->where('status_konfirmasi', 'Sukses');
-    $query = $this->db->get('tb_transaksi')->row();
+    if ($auth->level !== 'Nasabah') {
+      $this->api_response([
+        'status'     => false,
+        'message'    => 'Akses ditolak. Endpoint ini khusus Nasabah.',
+        'total_gram' => '0.0000'
+      ], 403);
+      return;
+    }
 
-    // Pastikan mengembalikan 4 angka di belakang koma (contoh: 0.5000)
-    $total_gram = $query->gram_emas ? number_format($query->gram_emas, 4, '.', '') : '0.0000';
+    $request = json_decode(
+      $this->input->raw_input_stream,
+      true
+    );
 
-    echo json_encode(['status' => true, 'total_gram' => $total_gram]);
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'     => false,
+        'message'    => 'Format JSON tidak valid.',
+        'total_gram' => '0.0000'
+      ], 400);
+      return;
+    }
+
+    /*
+     * id_nasabah dari request diabaikan.
+     * Identitas selalu berasal dari Bearer token.
+     */
+    $id_nasabah = (int) $auth->id_user;
+
+    $ringkasan = $this->db->query(
+      "SELECT
+          COALESCE(SUM(gram_emas), 0)
+            AS total_gram,
+
+          COALESCE(SUM(
+            CASE
+              WHEN gram_emas > 0
+              THEN gram_emas
+              ELSE 0
+            END
+          ), 0) AS total_pembelian,
+
+          COALESCE(ABS(SUM(
+            CASE
+              WHEN gram_emas < 0
+              THEN gram_emas
+              ELSE 0
+            END
+          )), 0) AS total_dicairkan,
+
+          MAX(
+            CASE
+              WHEN gram_emas > 0
+              THEN terdaftar
+              ELSE NULL
+            END
+          ) AS pembelian_terakhir
+       FROM tb_transaksi
+       WHERE idNasabah = ?
+         AND status_konfirmasi = 'Sukses'
+         AND gram_emas <> 0",
+      [$id_nasabah]
+    )->row();
+
+    if (!$ringkasan) {
+      $this->api_response([
+        'status'     => false,
+        'message'    => 'Saldo emas gagal dihitung.',
+        'total_gram' => '0.0000'
+      ], 500);
+      return;
+    }
+
+    $kunci = $this->db
+      ->select([
+        'id_kunci',
+        'durasi_bulan',
+        'terkunci_sampai',
+        'ditetapkan_oleh',
+        'ditetapkan_pada',
+        'diperbarui_pada'
+      ])
+      ->where('id_nasabah', $id_nasabah)
+      ->limit(1)
+      ->get('tb_kunci_emas')
+      ->row();
+
+    $total_gram = max(
+      0,
+      round(
+        (float) $ringkasan->total_gram,
+        4
+      )
+    );
+
+    $total_pembelian = round(
+      (float) $ringkasan->total_pembelian,
+      4
+    );
+
+    $total_dicairkan = round(
+      (float) $ringkasan->total_dicairkan,
+      4
+    );
+
+    $waktu_sekarang = date('Y-m-d H:i:s');
+
+    $terkunci_sampai = $kunci
+      ? $kunci->terkunci_sampai
+      : null;
+
+    $status_terkunci = (
+      $total_gram > 0 &&
+      $terkunci_sampai !== null &&
+      strtotime($terkunci_sampai) >
+      strtotime($waktu_sekarang)
+    );
+
+    $saldo_terkunci = $status_terkunci
+      ? $total_gram
+      : 0;
+
+    $saldo_bisa_dicairkan = $status_terkunci
+      ? 0
+      : $total_gram;
+
+    $sisa_hari = 0;
+
+    if ($status_terkunci) {
+      $selisih_detik =
+        strtotime($terkunci_sampai) -
+        strtotime($waktu_sekarang);
+
+      $sisa_hari = (int) ceil(
+        $selisih_detik / 86400
+      );
+    }
+
+    /*
+     * total_gram dipertahankan pada level teratas
+     * agar kompatibel dengan aplikasi lama.
+     */
+    $total_gram_format = number_format(
+      $total_gram,
+      4,
+      '.',
+      ''
+    );
+
+    $this->api_response([
+      'status'     => true,
+      'message'    => 'Saldo emas berhasil diambil.',
+      'total_gram' => $total_gram_format,
+      'data'       => [
+        'id_nasabah' =>
+        $id_nasabah,
+
+        'nama_nasabah' =>
+        $auth->nama,
+
+        'total_gram' =>
+        $total_gram_format,
+
+        'total_pembelian' =>
+        number_format(
+          $total_pembelian,
+          4,
+          '.',
+          ''
+        ),
+
+        'total_dicairkan' =>
+        number_format(
+          $total_dicairkan,
+          4,
+          '.',
+          ''
+        ),
+
+        'saldo_terkunci' =>
+        number_format(
+          $saldo_terkunci,
+          4,
+          '.',
+          ''
+        ),
+
+        'saldo_bisa_dicairkan' =>
+        number_format(
+          $saldo_bisa_dicairkan,
+          4,
+          '.',
+          ''
+        ),
+
+        'dapat_dicairkan' => (
+          $total_gram > 0 &&
+          !$status_terkunci
+        ),
+
+        'pengaturan_kunci_tersedia' =>
+        $kunci !== null,
+
+        'durasi_kunci_bulan' =>
+        $kunci
+          ? (int) $kunci->durasi_bulan
+          : null,
+
+        'terkunci_sampai' =>
+        $terkunci_sampai,
+
+        'status_terkunci' =>
+        $status_terkunci,
+
+        'sisa_hari' =>
+        $sisa_hari,
+
+        'pembelian_terakhir' =>
+        $ringkasan->pembelian_terakhir,
+
+        'waktu_server' =>
+        $waktu_sekarang
+      ]
+    ]);
   }
 
+  // ==========================================
+  // PENCAIRAN EMAS NASABAH TERPROTEKSI
+  // ==========================================
   public function tarik_emas()
   {
-    $request = json_decode($this->input->raw_input_stream, true);
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
 
-    if ($_SERVER['REQUEST_METHOD'] !== 'POST' || empty($request)) {
-      echo json_encode(['status' => false, 'message' => 'Permintaan tidak valid.']);
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
       return;
     }
 
-    $id_nasabah = $request['id_nasabah'] ?? 0;
-    $gram_dijual = (float)($request['gram_ditarik'] ?? 0);
+    $auth = $this->authenticate_api();
 
-    if (empty($id_nasabah) || empty($gram_dijual) || $gram_dijual <= 0) {
-      echo json_encode(['status' => false, 'message' => 'Jumlah gram tidak valid!']);
+    if (!$auth) {
       return;
     }
 
-    $today = date('Y-m-d');
-
-    // 🔥 REVISI: Selalu ambil harga acuan terbaru
-    $this->db->order_by('id', 'DESC');
-    $this->db->limit(1);
-    $harga_emas = $this->db->get('tb_harga_emas')->row();
-
-    if (!$harga_emas) {
-      echo json_encode(['status' => false, 'message' => 'Harga emas acuan belum tersedia di sistem.']);
+    if ($auth->level !== 'Nasabah') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Akses ditolak. Endpoint ini khusus Nasabah.'
+      ], 403);
       return;
     }
 
-    // CEK SALDO EMAS NASABAH
-    $this->db->select_sum('gram_emas');
-    $this->db->where('idNasabah', $id_nasabah);
-    $this->db->where('gram_emas !=', 0);
-    $this->db->where('status_konfirmasi', 'Sukses');
-    $total_emas_sekarang = (float)($this->db->get('tb_transaksi')->row()->gram_emas ?? 0);
+    $request = json_decode(
+      $this->input->raw_input_stream,
+      true
+    );
 
-    if (round($gram_dijual, 4) > round($total_emas_sekarang, 4)) {
-      echo json_encode(['status' => false, 'message' => 'Saldo Tamas Anda tidak mencukupi! Sisa: ' . $total_emas_sekarang . ' Gram']);
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format JSON tidak valid.'
+      ], 400);
       return;
     }
 
-    // 🔥 REVISI: Hapus simulasi spread 3%. Langsung gunakan harga_jual murni dari database!
-    $harga_jual_asli = (int)$harga_emas->harga_jual;
-    $nominal_rupiah = round($gram_dijual * $harga_jual_asli);
+    /*
+     * Identitas Nasabah selalu berasal dari Bearer token.
+     */
+    $id_nasabah = (int) $auth->id_user;
 
-    // 4. Siapkan Data Transaksi Ledger
-    $data = [
-      'idAdmin'           => 0,
-      'idNasabah'         => $id_nasabah,
-      'idPotongan'        => 0,
-      'tanggal'           => $today,
-      'nominal'           => $nominal_rupiah,
-      'jenis'             => 'Masuk', // Menambah Saldo Utama
-      'keterangan'        => 'Jual Emas ' . $gram_dijual . ' Gram',
-      'status_konfirmasi' => 'Sukses',
-      'gram_emas'         => -$gram_dijual, // Minus agar saldo gram berkurang
-      'terdaftar'         => date('Y-m-d H:i:s')
-    ];
+    $pin = trim(
+      (string) ($request['pin'] ?? '')
+    );
 
-    $insert = $this->db->insert('tb_transaksi', $data);
+    if (!preg_match('/^\d{6}$/', $pin)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'PIN harus terdiri dari 6 digit.'
+      ], 422);
+      return;
+    }
 
-    if ($insert) {
-      $this->db->where('id', $id_nasabah);
-      $nasabah = $this->db->get('tb_user')->row();
-      $nama_nasabah = $nasabah ? $nasabah->nama : 'Nasabah';
+    $request_key = trim(
+      (string) ($request['request_key'] ?? '')
+    );
 
-      $pesan_wa = "💰 *PENCAIRAN / JUAL EMAS (BUYBACK)*\n\n";
-      $pesan_wa .= "Nasabah telah mencairkan emas menjadi Rupiah:\n";
-      $pesan_wa .= "👤 *Nama:* " . $nama_nasabah . "\n";
-      $pesan_wa .= "⚖️ *Emas Dijual:* " . $gram_dijual . " Gram\n";
-      $pesan_wa .= "💵 *Uang Diterima:* Rp " . number_format($nominal_rupiah, 0, ',', '.') . "\n";
-      $pesan_wa .= "Status: Selesai Otomatis & Saldo Utama bertambah.";
+    if (
+      !preg_match(
+        '/^[A-Za-z0-9_-]{16,64}$/',
+        $request_key
+      )
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'request_key tidak valid.'
+      ], 422);
+      return;
+    }
 
-      $nomor_admin = '081234567890';
-      $this->send_whatsapp($nomor_admin, $pesan_wa);
+    $gram_input = trim(
+      (string) ($request['gram_ditarik'] ?? '')
+    );
 
-      // SIMPAN RIWAYAT & PUSH NOTIFIKASI KE NASABAH
-      $pesan_nasabah = "Pencairan " . $gram_dijual . " Gram emas berhasil. Uang tunai Rp " . number_format($nominal_rupiah, 0, ',', '.') . " telah masuk ke Saldo Utama Anda.";
+    /*
+     * Maksimal empat angka desimal karena gram_emas
+     * menggunakan DECIMAL(10,4).
+     */
+    if (
+      !preg_match(
+        '/^\d{1,6}([.,]\d{1,4})?$/',
+        $gram_input
+      )
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Jumlah gram emas tidak valid.'
+      ], 422);
+      return;
+    }
 
-      $this->db->insert('tb_notifikasi', [
-        'id_user' => $id_nasabah,
-        'judul'   => '💰 Pencairan Emas Berhasil!',
-        'pesan'   => $pesan_nasabah,
-        'is_read' => 0,
-        'tanggal' => date('Y-m-d H:i:s')
+    $gram_dijual = round(
+      (float) str_replace(
+        ',',
+        '.',
+        $gram_input
+      ),
+      4
+    );
+
+    if ($gram_dijual <= 0) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Jumlah gram emas harus lebih besar dari nol.'
+      ], 422);
+      return;
+    }
+
+    /*
+     * Pemeriksaan idempotensi awal.
+     */
+    $transaksi_lama = $this->db
+      ->select([
+        'id',
+        'idNasabah',
+        'nominal',
+        'gram_emas',
+        'harga_emas_acuan',
+        'referensi_tipe',
+        'status_konfirmasi',
+        'terdaftar'
+      ])
+      ->where('request_key', $request_key)
+      ->limit(1)
+      ->get('tb_transaksi')
+      ->row();
+
+    if ($transaksi_lama) {
+      if (
+        (int) $transaksi_lama->idNasabah !==
+        $id_nasabah ||
+        $transaksi_lama->referensi_tipe !==
+        'PencairanEmas'
+      ) {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'request_key sudah digunakan untuk transaksi lain.'
+        ], 409);
+        return;
+      }
+
+      if (
+        $transaksi_lama->status_konfirmasi !==
+        'Sukses'
+      ) {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Transaksi dengan request_key ini belum berhasil.'
+        ], 409);
+        return;
+      }
+
+      $gram_lama = number_format(
+        abs((float) $transaksi_lama->gram_emas),
+        4,
+        '.',
+        ''
+      );
+
+      $this->api_response([
+        'status'     => true,
+        'message'    => 'Pencairan emas sebelumnya sudah berhasil.',
+        'idempotent' => true,
+        'data'       => [
+          'id_transaksi' =>
+          (int) $transaksi_lama->id,
+
+          'gram_dicairkan' =>
+          $gram_lama,
+
+          'harga_emas_acuan' =>
+          (int) $transaksi_lama->harga_emas_acuan,
+
+          'nominal_diterima' =>
+          (int) $transaksi_lama->nominal,
+
+          'dicairkan_pada' =>
+          $transaksi_lama->terdaftar
+        ]
       ]);
+      return;
+    }
 
-      if (!empty($nasabah->expo_token)) {
+    $this->db->trans_begin();
+
+    /*
+     * Kunci akun agar pembelian dan pencairan emas
+     * tidak berjalan bersamaan.
+     */
+    $user = $this->db->query(
+      "SELECT
+          u.id,
+          u.nama,
+          u.level,
+          u.login,
+          u.pin,
+          u.pin_gagal,
+          u.pin_terkunci_sampai,
+          u.expo_token,
+          u.cabang_id,
+          c.status AS status_cabang
+       FROM tb_user AS u
+       LEFT JOIN tb_cabang AS c
+         ON c.id = u.cabang_id
+       WHERE u.id = ?
+       LIMIT 1
+       FOR UPDATE",
+      [$id_nasabah]
+    )->row();
+
+    if (
+      !$user ||
+      $user->level !== 'Nasabah' ||
+      $user->login !== 'Ya' ||
+      $user->status_cabang !== 'Aktif'
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Akun Nasabah atau cabang tidak aktif.'
+      ], 403);
+      return;
+    }
+
+    $hasil_pin =
+      $this->verifikasi_pin_user_dalam_transaksi(
+        $user,
+        $pin
+      );
+
+    if (!$hasil_pin['status']) {
+      if (
+        !empty($hasil_pin['simpan_perubahan']) &&
+        $this->db->trans_status() !== false
+      ) {
+        $this->db->trans_commit();
+      } else {
+        $this->db->trans_rollback();
+      }
+
+      $response_pin = [
+        'status'  => false,
+        'message' => $hasil_pin['message']
+      ];
+
+      if (!empty($hasil_pin['data'])) {
+        $response_pin['data'] =
+          $hasil_pin['data'];
+      }
+
+      $this->api_response(
+        $response_pin,
+        (int) $hasil_pin['http_code']
+      );
+      return;
+    }
+
+    /*
+     * Periksa request_key kembali di dalam transaksi.
+     */
+    $transaksi_bersamaan = $this->db->query(
+      "SELECT
+          id,
+          idNasabah,
+          referensi_tipe,
+          status_konfirmasi
+       FROM tb_transaksi
+       WHERE request_key = ?
+       LIMIT 1
+       FOR UPDATE",
+      [$request_key]
+    )->row();
+
+    if ($transaksi_bersamaan) {
+      $this->db->trans_rollback();
+
+      if (
+        (int) $transaksi_bersamaan->idNasabah ===
+        $id_nasabah &&
+        $transaksi_bersamaan->referensi_tipe ===
+        'PencairanEmas' &&
+        $transaksi_bersamaan->status_konfirmasi ===
+        'Sukses'
+      ) {
+        $this->api_response([
+          'status'     => true,
+          'message'    => 'Pencairan emas sebelumnya sudah berhasil.',
+          'idempotent' => true,
+          'data'       => [
+            'id_transaksi' =>
+            (int) $transaksi_bersamaan->id
+          ]
+        ]);
+        return;
+      }
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'request_key sudah digunakan untuk transaksi lain.'
+      ], 409);
+      return;
+    }
+
+    /*
+     * Kunci konfigurasi emas dan periksa jatuh tempo.
+     */
+    $pengaturan_kunci = $this->db->query(
+      "SELECT
+          id_kunci,
+          durasi_bulan,
+          terkunci_sampai
+       FROM tb_kunci_emas
+       WHERE id_nasabah = ?
+       LIMIT 1
+       FOR UPDATE",
+      [$id_nasabah]
+    )->row();
+
+    if (!$pengaturan_kunci) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Pengaturan kunci emas belum tersedia.'
+      ], 422);
+      return;
+    }
+
+    $waktu_sekarang = date('Y-m-d H:i:s');
+
+    if (
+      !empty($pengaturan_kunci->terkunci_sampai) &&
+      strtotime(
+        $pengaturan_kunci->terkunci_sampai
+      ) > strtotime($waktu_sekarang)
+    ) {
+      $selisih_detik =
+        strtotime(
+          $pengaturan_kunci->terkunci_sampai
+        ) -
+        strtotime($waktu_sekarang);
+
+      $sisa_hari = (int) ceil(
+        $selisih_detik / 86400
+      );
+
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Saldo emas masih dalam masa kunci dan belum dapat dicairkan.',
+        'data'    => [
+          'terkunci_sampai' =>
+          $pengaturan_kunci->terkunci_sampai,
+
+          'sisa_hari' =>
+          $sisa_hari,
+
+          'dapat_dicairkan' =>
+          false
+        ]
+      ], 409);
+      return;
+    }
+
+    /*
+     * Hitung saldo emas setelah akun dan konfigurasi dikunci.
+     */
+    $ringkasan_emas = $this->db->query(
+      "SELECT
+          COALESCE(SUM(gram_emas), 0)
+            AS saldo_emas
+       FROM tb_transaksi
+       WHERE idNasabah = ?
+         AND status_konfirmasi = 'Sukses'
+         AND gram_emas <> 0",
+      [$id_nasabah]
+    )->row();
+
+    if (!$ringkasan_emas) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Saldo emas gagal dihitung.'
+      ], 500);
+      return;
+    }
+
+    $saldo_emas_sebelum = max(
+      0,
+      round(
+        (float) $ringkasan_emas->saldo_emas,
+        4
+      )
+    );
+
+    if (
+      round($gram_dijual, 4) >
+      round($saldo_emas_sebelum, 4)
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Saldo emas tidak mencukupi.',
+        'data'    => [
+          'saldo_emas' =>
+          number_format(
+            $saldo_emas_sebelum,
+            4,
+            '.',
+            ''
+          ),
+
+          'gram_diminta' =>
+          number_format(
+            $gram_dijual,
+            4,
+            '.',
+            ''
+          ),
+
+          'kekurangan' =>
+          number_format(
+            $gram_dijual -
+              $saldo_emas_sebelum,
+            4,
+            '.',
+            ''
+          )
+        ]
+      ], 422);
+      return;
+    }
+
+    /*
+     * Ambil dan kunci harga buyback terbaru.
+     */
+    $harga_emas = $this->db->query(
+      "SELECT
+          id,
+          harga_beli,
+          harga_jual,
+          tanggal
+       FROM tb_harga_emas
+       ORDER BY id DESC
+       LIMIT 1
+       FOR UPDATE"
+    )->row();
+
+    if (
+      !$harga_emas ||
+      (int) $harga_emas->harga_jual <= 0
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Harga jual emas belum tersedia.'
+      ], 422);
+      return;
+    }
+
+    $harga_jual =
+      (int) $harga_emas->harga_jual;
+
+    $nominal_rupiah = (int) round(
+      $gram_dijual * $harga_jual
+    );
+
+    if ($nominal_rupiah <= 0) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Nilai pencairan emas terlalu kecil.'
+      ], 422);
+      return;
+    }
+
+    /*
+     * Hitung saldo rupiah sebelum pencairan.
+     */
+    $saldo_rupiah = $this->db->query(
+      "SELECT
+        (
+          COALESCE((
+            SELECT SUM(nominal)
+            FROM tb_transaksi
+            WHERE idNasabah = ?
+              AND jenis = 'Masuk'
+              AND status_konfirmasi = 'Sukses'
+          ), 0)
+          +
+          COALESCE((
+            SELECT SUM(CAST(nominal AS UNSIGNED))
+            FROM tb_transfer
+            WHERE idPenerima = ?
+              AND status_transfer = 'Sukses'
+          ), 0)
+          -
+          COALESCE((
+            SELECT SUM(nominal)
+            FROM tb_transaksi
+            WHERE idNasabah = ?
+              AND jenis = 'Keluar'
+              AND status_konfirmasi = 'Sukses'
+          ), 0)
+          -
+          COALESCE((
+            SELECT SUM(CAST(nominal AS UNSIGNED))
+            FROM tb_transfer
+            WHERE idPengirim = ?
+              AND status_transfer = 'Sukses'
+          ), 0)
+        ) AS saldo_aktif",
+      [
+        $id_nasabah,
+        $id_nasabah,
+        $id_nasabah,
+        $id_nasabah
+      ]
+    )->row();
+
+    if (!$saldo_rupiah) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Saldo rupiah gagal dihitung.'
+      ], 500);
+      return;
+    }
+
+    $saldo_rupiah_sebelum =
+      (int) $saldo_rupiah->saldo_aktif;
+
+    $waktu_pencairan =
+      date('Y-m-d H:i:s');
+
+    $transaksi_disimpan = $this->db->insert(
+      'tb_transaksi',
+      [
+        'cabang_id' =>
+        (int) $user->cabang_id,
+
+        'idAdmin' =>
+        0,
+
+        'idNasabah' =>
+        $id_nasabah,
+
+        'idPotongan' =>
+        0,
+
+        'tanggal' =>
+        date('Y-m-d'),
+
+        'nominal' =>
+        $nominal_rupiah,
+
+        'gram_emas' =>
+        -$gram_dijual,
+
+        'harga_emas_acuan' =>
+        $harga_jual,
+
+        'durasi_kunci_bulan' =>
+        null,
+
+        'emas_terkunci_sampai' =>
+        null,
+
+        'jenis' =>
+        'Masuk',
+
+        'keterangan' =>
+        'Jual Emas ' .
+          number_format(
+            $gram_dijual,
+            4,
+            '.',
+            ''
+          ) .
+          ' Gram',
+
+        'referensi_tipe' =>
+        'PencairanEmas',
+
+        'referensi_id' =>
+        null,
+
+        'request_key' =>
+        $request_key,
+
+        'status_konfirmasi' =>
+        'Sukses',
+
+        'bukti_transfer' =>
+        null,
+
+        'terdaftar' =>
+        $waktu_pencairan
+      ]
+    );
+
+    if (!$transaksi_disimpan) {
+      $database_error = $this->db->error();
+
+      $this->db->trans_rollback();
+
+      if (
+        (int) ($database_error['code'] ?? 0) ===
+        1062
+      ) {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'request_key sudah digunakan. Periksa kembali riwayat transaksi.'
+        ], 409);
+        return;
+      }
+
+      log_message(
+        'error',
+        'Gagal mencatat pencairan emas: ' .
+          json_encode($database_error)
+      );
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Pencairan emas gagal dicatat.'
+      ], 500);
+      return;
+    }
+
+    $id_transaksi =
+      (int) $this->db->insert_id();
+
+    /*
+     * Masa kunci yang sudah berakhir dibersihkan.
+     * Durasi kebijakan tetap dipertahankan.
+     */
+    $update_kunci = $this->db
+      ->where(
+        'id_kunci',
+        (int) $pengaturan_kunci->id_kunci
+      )
+      ->where('id_nasabah', $id_nasabah)
+      ->update(
+        'tb_kunci_emas',
+        [
+          'terkunci_sampai' =>
+          null,
+
+          'diperbarui_pada' =>
+          $waktu_pencairan
+        ]
+      );
+
+    if (!$update_kunci) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Status kunci emas gagal diperbarui.'
+      ], 500);
+      return;
+    }
+
+    $query_admin = $this->db->query(
+      "SELECT
+          id,
+          expo_token
+       FROM tb_user
+       WHERE login = 'Ya'
+         AND (
+           level = 'Super Admin'
+           OR (
+             level = 'Administrator'
+             AND cabang_id = ?
+           )
+         )",
+      [(int) $user->cabang_id]
+    );
+
+    if (!$query_admin) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Penerima notifikasi admin gagal diambil.'
+      ], 500);
+      return;
+    }
+
+    $admins = $query_admin->result();
+
+    $gram_format = number_format(
+      $gram_dijual,
+      4,
+      '.',
+      ''
+    );
+
+    $saldo_emas_sesudah = max(
+      0,
+      round(
+        $saldo_emas_sebelum -
+          $gram_dijual,
+        4
+      )
+    );
+
+    $judul_nasabah =
+      'Pencairan Emas Berhasil';
+
+    $pesan_nasabah =
+      'Pencairan ' .
+      $gram_format .
+      ' gram emas berhasil. Saldo utama bertambah Rp ' .
+      number_format(
+        $nominal_rupiah,
+        0,
+        ',',
+        '.'
+      ) .
+      '.';
+
+    $judul_admin =
+      'Pencairan Emas Baru';
+
+    $pesan_admin =
+      'Nasabah ' .
+      $user->nama .
+      ' mencairkan ' .
+      $gram_format .
+      ' gram emas senilai Rp ' .
+      number_format(
+        $nominal_rupiah,
+        0,
+        ',',
+        '.'
+      ) .
+      '.';
+
+    $this->db->insert(
+      'tb_notifikasi',
+      [
+        'id_user' =>
+        $id_nasabah,
+
+        'judul' =>
+        $judul_nasabah,
+
+        'pesan' =>
+        $pesan_nasabah,
+
+        'is_read' =>
+        0,
+
+        'tanggal' =>
+        $waktu_pencairan
+      ]
+    );
+
+    foreach ($admins as $admin) {
+      $this->db->insert(
+        'tb_notifikasi',
+        [
+          'id_user' =>
+          (int) $admin->id,
+
+          'judul' =>
+          $judul_admin,
+
+          'pesan' =>
+          $pesan_admin,
+
+          'is_read' =>
+          0,
+
+          'tanggal' =>
+          $waktu_pencairan
+        ]
+      );
+    }
+
+    if ($this->db->trans_status() === false) {
+      $database_error = $this->db->error();
+
+      $this->db->trans_rollback();
+
+      log_message(
+        'error',
+        'Pencairan emas dibatalkan: ' .
+          json_encode($database_error)
+      );
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Pencairan emas gagal diproses. Transaksi dibatalkan.'
+      ], 500);
+      return;
+    }
+
+    $this->db->trans_commit();
+
+    try {
+      if (!empty($user->expo_token)) {
         $this->send_expo_push_notification(
-          $nasabah->expo_token,
-          "💰 Pencairan Emas Berhasil!",
+          $user->expo_token,
+          $judul_nasabah,
           $pesan_nasabah
         );
       }
 
-      // SIMPAN RIWAYAT & PUSH NOTIFIKASI KE SEMUA ADMIN
-      $pesan_admin = "Nasabah " . $nama_nasabah . " telah mencairkan " . $gram_dijual . " Gram emas. Saldo utama nasabah bertambah Rp " . number_format($nominal_rupiah, 0, ',', '.');
-
-      $admins = $this->db->where_in('level', ['Administrator', 'Super Admin'])->get('tb_user')->result();
       foreach ($admins as $admin) {
-
-        $this->db->insert('tb_notifikasi', [
-          'id_user' => $admin->id,
-          'judul'   => '💰 Pencairan Emas (Buyback)',
-          'pesan'   => $pesan_admin,
-          'is_read' => 0,
-          'tanggal' => date('Y-m-d H:i:s')
-        ]);
-
         if (!empty($admin->expo_token)) {
           $this->send_expo_push_notification(
             $admin->expo_token,
-            "💰 Pencairan Emas (Buyback)",
+            $judul_admin,
             $pesan_admin
           );
         }
       }
-
-      echo json_encode([
-        'status' => true,
-        'message' => 'Pencairan emas berhasil! Rp ' . number_format($nominal_rupiah, 0, ',', '.') . ' telah masuk ke saldo utama.'
-      ]);
-    } else {
-      echo json_encode(['status' => false, 'message' => 'Gagal memproses penjualan emas.']);
+    } catch (Throwable $e) {
+      log_message(
+        'error',
+        'Push pencairan emas gagal: ' .
+          $e->getMessage()
+      );
     }
+
+    $saldo_rupiah_sesudah =
+      $saldo_rupiah_sebelum +
+      $nominal_rupiah;
+
+    $this->api_response([
+      'status'     => true,
+      'message'    =>
+      'Pencairan emas berhasil. Rp ' .
+        number_format(
+          $nominal_rupiah,
+          0,
+          ',',
+          '.'
+        ) .
+        ' telah masuk ke saldo utama.',
+      'idempotent' => false,
+      'data'       => [
+        'id_transaksi' =>
+        $id_transaksi,
+
+        'id_nasabah' =>
+        $id_nasabah,
+
+        'gram_dicairkan' =>
+        $gram_format,
+
+        'harga_emas_acuan' =>
+        $harga_jual,
+
+        'nominal_diterima' =>
+        $nominal_rupiah,
+
+        'saldo_emas_sebelum' =>
+        number_format(
+          $saldo_emas_sebelum,
+          4,
+          '.',
+          ''
+        ),
+
+        'saldo_emas_sesudah' =>
+        number_format(
+          $saldo_emas_sesudah,
+          4,
+          '.',
+          ''
+        ),
+
+        'saldo_rupiah_sebelum' =>
+        $saldo_rupiah_sebelum,
+
+        'saldo_rupiah_sesudah' =>
+        $saldo_rupiah_sesudah,
+
+        'dicairkan_pada' =>
+        $waktu_pencairan
+      ]
+    ], 201);
   }
+
 
   public function get_harga_emas_hari_ini()
   {
-    // 🔥 REVISI: Ambil langsung baris terbaru dari tabel tanpa perlu melihat tanggal hari ini
-    $this->db->order_by('id', 'DESC');
-    $this->db->limit(1);
-    $harga_emas = $this->db->get('tb_harga_emas')->row();
-
-    if ($harga_emas) {
-      echo json_encode([
-        'status' => true,
-        'harga_beli' => (int)$harga_emas->harga_beli,
-        'harga_jual' => (int)$harga_emas->harga_jual, // 🔥 Langsung dilempar dari tabel
-        'tanggal_update' => $harga_emas->tanggal
-      ]);
-    } else {
-      echo json_encode(['status' => false, 'harga_beli' => 0, 'harga_jual' => 0, 'message' => 'Harga emas belum tersedia.']);
+    if (ob_get_length()) {
+      ob_clean();
     }
+
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: GET, POST');
+    header(
+      'Cache-Control: no-store, no-cache, must-revalidate, max-age=0'
+    );
+
+    $method = $this->input->method(TRUE);
+
+    /*
+   * GET dan POST tetap diterima agar kompatibel
+   * dengan aplikasi versi lama.
+   */
+    if (!in_array($method, ['GET', 'POST'], true)) {
+      $this->api_response([
+        'status'     => false,
+        'harga_beli' => 0,
+        'harga_jual' => 0,
+        'message'    => 'Metode request tidak diizinkan.'
+      ], 405);
+      return;
+    }
+
+    /*
+   * Harga emas merupakan informasi publik.
+   * Tidak memerlukan Bearer token.
+   */
+    $harga_emas = $this->db
+      ->select([
+        'id',
+        'harga_beli',
+        'harga_jual',
+        'tanggal'
+      ])
+      ->from('tb_harga_emas')
+      ->order_by('id', 'DESC')
+      ->limit(1)
+      ->get()
+      ->row();
+
+    if (!$harga_emas) {
+      $this->api_response([
+        'status'         => false,
+        'harga_beli'     => 0,
+        'harga_jual'     => 0,
+        'tanggal_update' => null,
+        'message'        => 'Harga emas belum tersedia.'
+      ], 404);
+      return;
+    }
+
+    $harga_beli = (int) $harga_emas->harga_beli;
+    $harga_jual = (int) $harga_emas->harga_jual;
+
+    /*
+   * Lindungi aplikasi dari data harga yang rusak
+   * atau tidak masuk akal.
+   */
+    if (
+      $harga_beli <= 0 ||
+      $harga_jual <= 0
+    ) {
+      log_message(
+        'error',
+        'Harga emas terbaru tidak valid. ID harga: ' .
+          (int) $harga_emas->id
+      );
+
+      $this->api_response([
+        'status'         => false,
+        'harga_beli'     => 0,
+        'harga_jual'     => 0,
+        'tanggal_update' => null,
+        'message'        => 'Data harga emas tidak valid.'
+      ], 500);
+      return;
+    }
+
+    /*
+   * Field lama tetap dipertahankan agar aplikasi
+   * tidak memerlukan perubahan format respons.
+   */
+    $this->api_response([
+      'status'         => true,
+      'harga_beli'     => $harga_beli,
+      'harga_jual'     => $harga_jual,
+      'tanggal_update' => $harga_emas->tanggal,
+      'data'           => [
+        'id_harga'       => (int) $harga_emas->id,
+        'harga_beli'     => $harga_beli,
+        'harga_jual'     => $harga_jual,
+        'tanggal_update' => $harga_emas->tanggal
+      ]
+    ]);
   }
 
 
   public function update_harga_emas()
   {
-    $request = json_decode($this->input->raw_input_stream, true);
+    if (ob_get_length()) {
+      ob_clean();
+    }
 
-    if ($_SERVER['REQUEST_METHOD'] !== 'POST' || empty($request)) {
-      echo json_encode(['status' => false, 'message' => 'Permintaan tidak valid.']);
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
+    header(
+      'Cache-Control: no-store, no-cache, must-revalidate, max-age=0'
+    );
+
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
       return;
     }
 
-    if (!empty($request['id_admin']) && !empty($request['harga_beli']) && !empty($request['harga_jual'])) {
+    $auth = $this->authenticate_api();
 
-      $today = date('Y-m-d');
-
-      // 1. Cek apakah hari ini sudah ada harga yang diinput
-      $cek_hari_ini = $this->db->get_where('tb_harga_emas', ['tanggal' => $today])->row();
-
-      // 2. 🔥 MATIKAN SIFAT NGAMBEK CODEIGNITER (Supaya tidak membuang HTML saat error DB)
-      $this->db->db_debug = FALSE;
-
-      if ($cek_hari_ini) {
-        // Jika hari ini sudah ada, kita UPDATE saja baris tersebut (Lebih aman)
-        $this->db->where('id', $cek_hari_ini->id);
-        $proses = $this->db->update('tb_harga_emas', [
-          'harga_beli' => $request['harga_beli'],
-          'harga_jual' => $request['harga_jual']
-        ]);
-      } else {
-        // Jika belum ada baris untuk hari ini, baru kita INSERT
-        $proses = $this->db->insert('tb_harga_emas', [
-          'harga_beli' => $request['harga_beli'],
-          'harga_jual' => $request['harga_jual'],
-          'tanggal'    => $today
-        ]);
-      }
-
-      // 3. Nyalakan lagi fitur debug-nya
-      $this->db->db_debug = TRUE;
-
-      // 4. Evaluasi hasil query
-      if ($proses) {
-        echo json_encode([
-          'status' => true,
-          'message' => "Harga acuan emas berhasil diperbarui."
-        ]);
-      } else {
-        // 🔥 Jika masih error di database, tangkap pesan aslinya dan kirim sebagai teks biasa (JSON)
-        $db_error = $this->db->error();
-        echo json_encode([
-          'status' => false,
-          'message' => 'Gagal menyimpan ke database. Info Error: ' . $db_error['message']
-        ]);
-      }
-    } else {
-      echo json_encode([
-        'status' => false,
-        'message' => 'Data tidak lengkap. Harga beli dan harga jual wajib diisi.'
-      ]);
+    if (!$auth) {
+      return;
     }
+
+    /*
+   * Harga emas berlaku global untuk seluruh cabang,
+   * sehingga hanya Super Admin yang dapat mengubahnya.
+   */
+    if ($auth->level !== 'Super Admin') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Akses ditolak. Khusus Super Admin.'
+      ], 403);
+      return;
+    }
+
+    $request = json_decode(
+      $this->input->raw_input_stream,
+      true
+    );
+
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format JSON tidak valid.'
+      ], 400);
+      return;
+    }
+
+    if (
+      !array_key_exists('harga_beli', $request) ||
+      !array_key_exists('harga_jual', $request)
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' =>
+        'Harga beli dan harga jual wajib diisi.'
+      ], 422);
+      return;
+    }
+
+    $harga_beli_input = $request['harga_beli'];
+    $harga_jual_input = $request['harga_jual'];
+
+    /*
+   * Hanya menerima bilangan bulat positif.
+   * Format pecahan, negatif, dan notasi ilmiah ditolak.
+   */
+    $harga_beli_valid =
+      is_int($harga_beli_input) ||
+      (
+        is_string($harga_beli_input) &&
+        preg_match(
+          '/^\d{1,10}$/',
+          trim($harga_beli_input)
+        )
+      );
+
+    $harga_jual_valid =
+      is_int($harga_jual_input) ||
+      (
+        is_string($harga_jual_input) &&
+        preg_match(
+          '/^\d{1,10}$/',
+          trim($harga_jual_input)
+        )
+      );
+
+    if (
+      !$harga_beli_valid ||
+      !$harga_jual_valid
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' =>
+        'Harga emas harus berupa bilangan bulat positif.'
+      ], 422);
+      return;
+    }
+
+    $harga_beli = (int) $harga_beli_input;
+    $harga_jual = (int) $harga_jual_input;
+
+    if (
+      $harga_beli <= 0 ||
+      $harga_jual <= 0 ||
+      $harga_beli > 1000000000 ||
+      $harga_jual > 1000000000
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' =>
+        'Nilai harga emas berada di luar batas yang diizinkan.'
+      ], 422);
+      return;
+    }
+
+    /*
+   * Harga buyback kepada Nasabah tidak boleh melebihi
+   * harga pembelian emas oleh Nasabah.
+   */
+    if ($harga_jual > $harga_beli) {
+      $this->api_response([
+        'status'  => false,
+        'message' =>
+        'Harga jual kembali tidak boleh melebihi harga beli.'
+      ], 422);
+      return;
+    }
+
+    $tanggal = date('Y-m-d');
+
+    $db_debug_sebelumnya =
+      $this->db->db_debug;
+
+    /*
+   * Mencegah CodeIgniter mengeluarkan halaman HTML
+   * jika terjadi kesalahan database.
+   */
+    $this->db->db_debug = false;
+    $this->db->trans_begin();
+
+    /*
+   * Kolom tanggal memiliki UNIQUE KEY.
+   * Jika harga hari ini sudah ada, nilainya diperbarui.
+   */
+    $proses = $this->db->query(
+      "INSERT INTO tb_harga_emas
+      (
+        harga_beli,
+        harga_jual,
+        tanggal
+      )
+     VALUES (?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+       harga_beli = VALUES(harga_beli),
+       harga_jual = VALUES(harga_jual)",
+      [
+        $harga_beli,
+        $harga_jual,
+        $tanggal
+      ]
+    );
+
+    if (
+      !$proses ||
+      $this->db->trans_status() === false
+    ) {
+      $database_error = $this->db->error();
+
+      $this->db->trans_rollback();
+      $this->db->db_debug =
+        $db_debug_sebelumnya;
+
+      log_message(
+        'error',
+        'Gagal memperbarui harga emas: ' .
+          json_encode($database_error)
+      );
+
+      $this->api_response([
+        'status'  => false,
+        'message' =>
+        'Harga acuan emas gagal diperbarui.'
+      ], 500);
+      return;
+    }
+
+    $harga_tersimpan = $this->db
+      ->select([
+        'id',
+        'harga_beli',
+        'harga_jual',
+        'tanggal'
+      ])
+      ->where('tanggal', $tanggal)
+      ->limit(1)
+      ->get('tb_harga_emas')
+      ->row();
+
+    if (
+      !$harga_tersimpan ||
+      $this->db->trans_status() === false
+    ) {
+      $database_error = $this->db->error();
+
+      $this->db->trans_rollback();
+      $this->db->db_debug =
+        $db_debug_sebelumnya;
+
+      log_message(
+        'error',
+        'Harga emas tersimpan gagal diverifikasi: ' .
+          json_encode($database_error)
+      );
+
+      $this->api_response([
+        'status'  => false,
+        'message' =>
+        'Harga acuan emas gagal diverifikasi.'
+      ], 500);
+      return;
+    }
+
+    $this->db->trans_commit();
+    $this->db->db_debug =
+      $db_debug_sebelumnya;
+
+    $this->api_response([
+      'status'  => true,
+      'message' =>
+      'Harga acuan emas berhasil diperbarui.',
+      'data'    => [
+        'id_harga' =>
+        (int) $harga_tersimpan->id,
+
+        'harga_beli' =>
+        (int) $harga_tersimpan->harga_beli,
+
+        'harga_jual' =>
+        (int) $harga_tersimpan->harga_jual,
+
+        'tanggal_update' =>
+        $harga_tersimpan->tanggal,
+
+        'diperbarui_oleh' =>
+        (int) $auth->id_user,
+
+        'nama_operator' =>
+        $auth->nama
+      ]
+    ]);
   }
+
+
   // ==========================================
   // H. Ambil Saldo Emas Seluruh Nasabah (Khusus Admin)
   // ==========================================
   public function admin_get_semua_emas()
   {
-    $request = json_decode($this->input->raw_input_stream, true);
-    $level = $request['level'] ?? '';
+    if (ob_get_length()) {
+      ob_clean();
+    }
 
-    if ($level !== 'Administrator' && $level !== 'Super Admin') {
-      echo json_encode(['status' => false, 'message' => 'Akses ditolak.']);
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
+    header(
+      'Cache-Control: no-store, no-cache, must-revalidate, max-age=0'
+    );
+
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
       return;
     }
 
-    // Ambil seluruh user dengan level Nasabah
-    $this->db->where('level', 'Nasabah');
-    $this->db->order_by('nama', 'ASC');
-    $nasabah = $this->db->get('tb_user')->result_array();
+    $auth = $this->authenticate_api();
 
-    $data_emas = [];
-    foreach ($nasabah as $row) {
-      $id_user = $row['id'];
-
-      // Kalkulasi total emas per nasabah
-      $this->db->select_sum('gram_emas');
-      $this->db->where('idNasabah', $id_user);
-      $this->db->where('gram_emas !=', 0);
-      $this->db->where('status_konfirmasi', 'Sukses');
-      $query = $this->db->get('tb_transaksi')->row();
-
-      $total_gram = $query->gram_emas ? number_format($query->gram_emas, 4, '.', '') : '0.0000';
-
-      // Opsional: Jika Bapak hanya ingin menampilkan nasabah yang PUNYA emas, 
-      // aktifkan IF di bawah ini. Jika ingin tampilkan semua (meski 0), biarkan.
-      // if (parseFloat($total_gram) > 0) {
-      $data_emas[] = [
-        'id' => $id_user,
-        'nama' => $row['nama'],
-        'username' => $row['username'],
-        'foto' => $row['foto'],
-        'total_gram' => $total_gram
-      ];
-      // }
+    if (!$auth) {
+      return;
     }
 
-    echo json_encode(['status' => true, 'data' => $data_emas]);
+    if (
+      $auth->level !== 'Administrator' &&
+      $auth->level !== 'Super Admin'
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' =>
+        'Akses ditolak. Khusus Administrator dan Super Admin.'
+      ], 403);
+      return;
+    }
+
+    /*
+   * Identitas, level, dan cabang operator selalu
+   * berasal dari Bearer token. Data dari body diabaikan.
+   *
+   * Administrator hanya melihat Nasabah di cabangnya.
+   * Super Admin dapat melihat seluruh cabang.
+   */
+    $sql = "
+    SELECT
+      u.id,
+      u.nama,
+      u.username,
+      u.foto,
+      u.login,
+      u.cabang_id,
+      c.kode AS kode_cabang,
+      c.nama AS nama_cabang,
+      c.status AS status_cabang,
+      COALESCE(e.total_gram, 0) AS total_gram,
+      k.durasi_bulan,
+      k.terkunci_sampai
+    FROM tb_user AS u
+    LEFT JOIN tb_cabang AS c
+      ON c.id = u.cabang_id
+    LEFT JOIN (
+      SELECT
+        idNasabah,
+        COALESCE(SUM(gram_emas), 0) AS total_gram
+      FROM tb_transaksi
+      WHERE status_konfirmasi = 'Sukses'
+        AND gram_emas <> 0
+      GROUP BY idNasabah
+    ) AS e
+      ON e.idNasabah = u.id
+    LEFT JOIN tb_kunci_emas AS k
+      ON k.id_nasabah = u.id
+    WHERE u.level = 'Nasabah'
+  ";
+
+    $parameter = [];
+
+    if ($auth->level === 'Administrator') {
+      $sql .= "
+      AND u.cabang_id = ?
+    ";
+
+      $parameter[] = (int) $auth->cabang_id;
+    }
+
+    $sql .= "
+    ORDER BY
+      c.nama ASC,
+      u.nama ASC,
+      u.id ASC
+  ";
+
+    $db_debug_sebelumnya =
+      $this->db->db_debug;
+
+    $this->db->db_debug = false;
+
+    $query = $this->db->query(
+      $sql,
+      $parameter
+    );
+
+    if (!$query) {
+      $database_error = $this->db->error();
+
+      $this->db->db_debug =
+        $db_debug_sebelumnya;
+
+      log_message(
+        'error',
+        'Gagal mengambil daftar saldo emas: ' .
+          json_encode($database_error)
+      );
+
+      $this->api_response([
+        'status'  => false,
+        'message' =>
+        'Daftar saldo emas gagal diambil.'
+      ], 500);
+      return;
+    }
+
+    $nasabah = $query->result();
+
+    $this->db->db_debug =
+      $db_debug_sebelumnya;
+
+    $data_emas = [];
+    $waktu_sekarang = time();
+
+    $jumlah_memiliki_emas = 0;
+    $jumlah_saldo_terkunci = 0;
+    $total_seluruh_gram = 0.0;
+
+    foreach ($nasabah as $row) {
+      $total_gram_angka = max(
+        0,
+        round(
+          (float) $row->total_gram,
+          4
+        )
+      );
+
+      $pengaturan_kunci_tersedia =
+        !empty($row->durasi_bulan);
+
+      $status_terkunci =
+        $total_gram_angka > 0 &&
+        !empty($row->terkunci_sampai) &&
+        strtotime($row->terkunci_sampai) >
+        $waktu_sekarang;
+
+      $sisa_hari = 0;
+
+      if ($status_terkunci) {
+        $selisih_detik =
+          strtotime($row->terkunci_sampai) -
+          $waktu_sekarang;
+
+        $sisa_hari = (int) ceil(
+          $selisih_detik / 86400
+        );
+      }
+
+      $saldo_terkunci =
+        $status_terkunci
+        ? $total_gram_angka
+        : 0;
+
+      $saldo_bisa_dicairkan =
+        $status_terkunci
+        ? 0
+        : $total_gram_angka;
+
+      if ($total_gram_angka > 0) {
+        $jumlah_memiliki_emas++;
+      }
+
+      if ($status_terkunci) {
+        $jumlah_saldo_terkunci++;
+      }
+
+      $total_seluruh_gram +=
+        $total_gram_angka;
+
+      /*
+     * Field id, nama, username, foto, dan total_gram
+     * dipertahankan agar kompatibel dengan aplikasi lama.
+     */
+      $data_emas[] = [
+        'id' =>
+        (int) $row->id,
+
+        'nama' =>
+        $row->nama,
+
+        'username' =>
+        $row->username,
+
+        'foto' =>
+        $row->foto,
+
+        'total_gram' =>
+        number_format(
+          $total_gram_angka,
+          4,
+          '.',
+          ''
+        ),
+
+        'cabang_id' =>
+        (int) $row->cabang_id,
+
+        'kode_cabang' =>
+        $row->kode_cabang,
+
+        'nama_cabang' =>
+        $row->nama_cabang,
+
+        'status_cabang' =>
+        $row->status_cabang,
+
+        'status_akun' =>
+        $row->login,
+
+        'pengaturan_kunci_tersedia' =>
+        $pengaturan_kunci_tersedia,
+
+        'durasi_kunci_bulan' =>
+        $pengaturan_kunci_tersedia
+          ? (int) $row->durasi_bulan
+          : null,
+
+        'terkunci_sampai' =>
+        $row->terkunci_sampai,
+
+        'status_terkunci' =>
+        $status_terkunci,
+
+        'sisa_hari' =>
+        $sisa_hari,
+
+        'saldo_terkunci' =>
+        number_format(
+          $saldo_terkunci,
+          4,
+          '.',
+          ''
+        ),
+
+        'saldo_bisa_dicairkan' =>
+        number_format(
+          $saldo_bisa_dicairkan,
+          4,
+          '.',
+          ''
+        ),
+
+        'dapat_dicairkan' =>
+        $total_gram_angka > 0 &&
+          !$status_terkunci
+      ];
+    }
+
+    $this->api_response([
+      'status'  => true,
+      'message' =>
+      'Daftar saldo emas berhasil diambil.',
+      'data'    => $data_emas,
+      'meta'    => [
+        'jumlah_nasabah' =>
+        count($data_emas),
+
+        'jumlah_memiliki_emas' =>
+        $jumlah_memiliki_emas,
+
+        'jumlah_saldo_terkunci' =>
+        $jumlah_saldo_terkunci,
+
+        'total_seluruh_gram' =>
+        number_format(
+          $total_seluruh_gram,
+          4,
+          '.',
+          ''
+        ),
+
+        'cakupan' =>
+        $auth->level === 'Super Admin'
+          ? 'Semua Cabang'
+          : 'Cabang Sendiri',
+
+        'cabang_id_operator' =>
+        (int) $auth->cabang_id,
+
+        'diakses_oleh' =>
+        (int) $auth->id_user,
+
+        'nama_operator' =>
+        $auth->nama
+      ]
+    ]);
   }
 
   // ==========================================
