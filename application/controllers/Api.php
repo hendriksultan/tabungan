@@ -21919,64 +21919,30 @@ class Api extends CI_Controller
   // ==========================================
   public function get_semua_saldo_eksternal()
   {
-    $request = json_decode($this->input->raw_input_stream, true);
-    $api_key_valid = 'RAHASIA_MAKMUR_2026!';
-
-    if (empty($request) || ($request['api_key'] ?? '') !== $api_key_valid) {
-      echo json_encode(['status' => false, 'message' => 'API Key tidak valid!']);
-      return;
+    if (ob_get_length()) {
+      ob_clean();
     }
 
-    // 1. HITUNG TOTAL KAS INSTITUSI (SUPER ADMIN / ADMIN)
-    $tbMsk = $this->db->query('SELECT SUM(nominal) AS total FROM tb_transaksi WHERE jenis="Masuk" AND status_konfirmasi="Sukses"')->row()->total ?? 0;
-    $tbKlr = $this->db->query('SELECT SUM(nominal) AS total FROM tb_transaksi WHERE jenis="Keluar" AND status_konfirmasi="Sukses"')->row()->total ?? 0;
-    $tbTarget = $this->db->query('SELECT SUM(terkumpul) AS total FROM tb_target')->row()->total ?? 0;
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
 
-    $kas_institusi = ($tbMsk - $tbKlr) + $tbTarget;
-
-    // 2. HITUNG SALDO MASING-MASING NASABAH (QUERY SUPER CEPAT)
-    $sql_nasabah = "
-          SELECT 
-              u.id, 
-              u.nama, 
-              u.username,
-              (
-                  (IFNULL((SELECT SUM(nominal) FROM tb_transaksi WHERE idNasabah = u.id AND jenis = 'Masuk' AND status_konfirmasi = 'Sukses'), 0) + 
-                   IFNULL((SELECT SUM(nominal) FROM tb_transfer WHERE idPenerima = u.id), 0)) 
-                  -
-                  (IFNULL((SELECT SUM(nominal) FROM tb_transaksi WHERE idNasabah = u.id AND jenis = 'Keluar' AND status_konfirmasi = 'Sukses'), 0) + 
-                   IFNULL((SELECT SUM(nominal) FROM tb_transfer WHERE idPengirim = u.id), 0))
-              ) AS saldo_aktif
-          FROM tb_user u
-          WHERE u.level = 'Nasabah'
-      ";
-
-    $data_nasabah = $this->db->query($sql_nasabah)->result();
-    $list_nasabah = [];
-
-    foreach ($data_nasabah as $row) {
-      $list_nasabah[] = [
-        'id_user'      => $row->id,
-        'nama'         => $row->nama,
-        'username'     => $row->username,
-        'saldo_angka'  => (int)$row->saldo_aktif,
-        'saldo_format' => 'Rp ' . number_format((int)$row->saldo_aktif, 0, ',', '.')
-      ];
-    }
-
-    // 3. KEMBALIKAN RESPONS JSON LENGKAP
-    echo json_encode([
-      'status' => true,
-      'message' => 'Berhasil menarik data institusi dan nasabah',
-      'data_institusi' => [
-        'keterangan'   => 'Total Kas Keseluruhan (Termasuk Celengan)',
-        'saldo_angka'  => $kas_institusi,
-        'saldo_format' => 'Rp ' . number_format($kas_institusi, 0, ',', '.')
-      ],
-      'total_nasabah' => count($list_nasabah),
-      'data_nasabah'  => $list_nasabah
-    ]);
+    /*
+   * Endpoint monitoring eksternal dinonaktifkan
+   * sampai mekanisme autentikasi server-to-server
+   * dan pembatasan akses selesai dibuat.
+   *
+   * Jangan mengaktifkan kembali API key lama karena
+   * sebelumnya pernah tersimpan di source code.
+   */
+    $this->api_response([
+      'status'  => false,
+      'message' =>
+      'Endpoint monitoring eksternal sedang dinonaktifkan.'
+    ], 410);
   }
+
+
   public function reset_pin_nasabah()
   {
     header("Access-Control-Allow-Origin: *");
