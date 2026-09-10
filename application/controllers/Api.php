@@ -20846,81 +20846,1072 @@ class Api extends CI_Controller
   // 1. Endpoint Cek Versi Aplikasi
   public function cek_versi_aplikasi()
   {
-    $data = $this->db->get_where('tb_aplikasi', ['id' => 1])->row();
-    if ($data) {
-      echo json_encode([
-        'status' => true,
-        'data' => [
-          'versi' => $data->versi_aplikasi ?? '1.0.1',
-          'link_apk' => $data->link_apk ?? '',
-          'tgl_update' => $data->tgl_update_apk ?? '2000-01-01 00:00:00' // 🔥 Kirim tanggal upload ke aplikasi
-        ]
-      ]);
-    } else {
-      echo json_encode(['status' => false]);
+    if (ob_get_length()) {
+      ob_clean();
     }
+
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: GET, POST');
+    header(
+      'Cache-Control: no-store, no-cache, must-revalidate, max-age=0'
+    );
+
+    $method = $this->input->method(TRUE);
+
+    if (!in_array($method, ['GET', 'POST'], true)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
+      return;
+    }
+
+    /*
+   * Informasi versi bersifat publik.
+   * Data pribadi pengunggah tidak ditampilkan.
+   */
+    $aplikasi = $this->db
+      ->select([
+        'id',
+        'versi_aplikasi',
+        'link_apk',
+        'apk_nama_file',
+        'apk_ukuran',
+        'apk_sha256',
+        'tgl_update_apk'
+      ])
+      ->where('id', 1)
+      ->limit(1)
+      ->get('tb_aplikasi')
+      ->row();
+
+    if (!$aplikasi) {
+      $this->api_response([
+        'status'  => false,
+        'message' =>
+        'Informasi versi aplikasi belum tersedia.',
+        'data'    => [
+          'versi'        => null,
+          'link_apk'     => '',
+          'nama_file'    => null,
+          'ukuran_byte'  => null,
+          'sha256'       => null,
+          'tgl_update'   => null,
+          'apk_tersedia' => false
+        ]
+      ], 404);
+      return;
+    }
+
+    $versi = trim(
+      (string) $aplikasi->versi_aplikasi
+    );
+
+    $link_apk = trim(
+      (string) $aplikasi->link_apk
+    );
+
+    $nama_file_database = trim(
+      (string) $aplikasi->apk_nama_file
+    );
+
+    $ukuran_database = $aplikasi->apk_ukuran !== null
+      ? (int) $aplikasi->apk_ukuran
+      : null;
+
+    $sha256 = strtolower(
+      trim(
+        (string) $aplikasi->apk_sha256
+      )
+    );
+
+    if (
+      $versi === '' ||
+      strlen($versi) > 20 ||
+      !preg_match(
+        '/^\d{1,4}(?:\.\d{1,4}){1,3}(?:-[A-Za-z0-9.-]+)?$/',
+        $versi
+      )
+    ) {
+      log_message(
+        'error',
+        'Format versi aplikasi tidak valid pada ID ' .
+          (int) $aplikasi->id
+      );
+
+      $this->api_response([
+        'status'  => false,
+        'message' =>
+        'Konfigurasi versi aplikasi tidak valid.'
+      ], 500);
+      return;
+    }
+
+    if (
+      $nama_file_database === '' ||
+      basename($nama_file_database) !==
+      $nama_file_database ||
+      strtolower(
+        pathinfo(
+          $nama_file_database,
+          PATHINFO_EXTENSION
+        )
+      ) !== 'apk'
+    ) {
+      log_message(
+        'error',
+        'Nama file APK pada database tidak valid.'
+      );
+
+      $this->api_response([
+        'status'  => false,
+        'message' =>
+        'Konfigurasi nama file APK tidak valid.'
+      ], 500);
+      return;
+    }
+
+    if (
+      $ukuran_database === null ||
+      $ukuran_database < 1024 ||
+      $ukuran_database > 209715200
+    ) {
+      log_message(
+        'error',
+        'Ukuran APK pada database tidak valid.'
+      );
+
+      $this->api_response([
+        'status'  => false,
+        'message' =>
+        'Konfigurasi ukuran APK tidak valid.'
+      ], 500);
+      return;
+    }
+
+    if (
+      !preg_match(
+        '/^[0-9a-f]{64}$/',
+        $sha256
+      )
+    ) {
+      log_message(
+        'error',
+        'SHA-256 APK pada database tidak valid.'
+      );
+
+      $this->api_response([
+        'status'  => false,
+        'message' =>
+        'Konfigurasi integritas APK tidak valid.'
+      ], 500);
+      return;
+    }
+
+    $scheme = strtolower(
+      (string) parse_url(
+        $link_apk,
+        PHP_URL_SCHEME
+      )
+    );
+
+    $host = strtolower(
+      (string) parse_url(
+        $link_apk,
+        PHP_URL_HOST
+      )
+    );
+
+    if (
+      !filter_var(
+        $link_apk,
+        FILTER_VALIDATE_URL
+      ) ||
+      $scheme !== 'https' ||
+      $host !== 'kelolawarga.my.id' ||
+      rawurldecode(
+        basename(
+          (string) parse_url(
+            $link_apk,
+            PHP_URL_PATH
+          )
+        )
+      ) !== $nama_file_database
+    ) {
+      log_message(
+        'error',
+        'Link APK tidak cocok dengan konfigurasi file.'
+      );
+
+      $this->api_response([
+        'status'  => false,
+        'message' =>
+        'Konfigurasi tautan APK tidak valid.'
+      ], 500);
+      return;
+    }
+
+    $file_path =
+      FCPATH .
+      'assets/apk/' .
+      $nama_file_database;
+
+    $file_tersedia =
+      is_file($file_path) &&
+      is_readable($file_path);
+
+    $ukuran_fisik = $file_tersedia
+      ? filesize($file_path)
+      : false;
+
+    $ukuran_cocok =
+      $ukuran_fisik !== false &&
+      (int) $ukuran_fisik ===
+      $ukuran_database;
+
+    if (
+      !$file_tersedia ||
+      !$ukuran_cocok
+    ) {
+      log_message(
+        'error',
+        'File APK tidak tersedia atau ukurannya berubah: ' .
+          $nama_file_database
+      );
+
+      $this->api_response([
+        'status'  => false,
+        'message' =>
+        'File APK belum tersedia atau tidak konsisten.',
+        'data'    => [
+          'versi'        => $versi,
+          'link_apk'     => '',
+          'nama_file'    => $nama_file_database,
+          'ukuran_byte'  => $ukuran_database,
+          'sha256'       => $sha256,
+          'tgl_update'   => $aplikasi->tgl_update_apk,
+          'apk_tersedia' => false
+        ]
+      ], 503);
+      return;
+    }
+
+    $this->api_response([
+      'status' => true,
+      'data'   => [
+        'versi' =>
+        $versi,
+
+        'link_apk' =>
+        $link_apk,
+
+        'nama_file' =>
+        $nama_file_database,
+
+        'ukuran_byte' =>
+        $ukuran_database,
+
+        'sha256' =>
+        $sha256,
+
+        'tgl_update' =>
+        $aplikasi->tgl_update_apk,
+
+        'apk_tersedia' =>
+        true
+      ]
+    ]);
   }
 
   // 2. Endpoint Upload Update APK Baru (Khusus Admin)
   public function upload_update_apk()
   {
-    if (ob_get_length()) ob_clean();
-    header('Content-Type: application/json');
+    if (ob_get_length()) {
+      ob_clean();
+    }
+
     header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
+    header(
+      'Access-Control-Allow-Headers: Authorization, Content-Type'
+    );
+    header(
+      'Cache-Control: no-store, no-cache, must-revalidate, max-age=0'
+    );
 
-    $id_admin = $this->input->post('id_admin');
-    $versi_baru = $this->input->post('versi_baru');
-
-    $admin = $this->db->get_where('tb_user', ['id' => $id_admin, 'level' => 'Super Admin'])->row();
-    if (!$admin) {
-      echo json_encode(['status' => false, 'message' => 'Akses ditolak! Khusus Super Admin.']);
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
       return;
     }
 
-    if (empty($_FILES['file_apk']['name'])) {
-      echo json_encode(['status' => false, 'message' => 'File APK belum dipilih.']);
+    $auth = $this->authenticate_api();
+
+    if (!$auth) {
       return;
     }
 
-    // 🔥 PENGECEKAN MANUAL EKSTENSI FILE HARUS .APK 🔥
-    $file_ext = pathinfo($_FILES['file_apk']['name'], PATHINFO_EXTENSION);
-    if (strtolower($file_ext) !== 'apk') {
-      echo json_encode(['status' => false, 'message' => 'Format file tidak diizinkan. Harus berupa .apk!']);
+    /*
+   * Rilis APK berlaku global, sehingga hanya
+   * Super Admin yang dapat mengunggahnya.
+   */
+    if ($auth->level !== 'Super Admin') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Akses ditolak. Khusus Super Admin.'
+      ], 403);
       return;
     }
 
-    $upload_dir = FCPATH . 'assets/apk/';
+    /*
+   * Batas file 200 MiB.
+   * Batas request diberi ruang tambahan untuk multipart.
+   */
+    $batas_file =
+      200 * 1024 * 1024;
+
+    $batas_request =
+      210 * 1024 * 1024;
+
+    $content_length = isset(
+      $_SERVER['CONTENT_LENGTH']
+    )
+      ? (int) $_SERVER['CONTENT_LENGTH']
+      : 0;
+
+    if (
+      $content_length > 0 &&
+      $content_length > $batas_request
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' =>
+        'Ukuran request melebihi batas 210 MB.'
+      ], 413);
+      return;
+    }
+
+    /*
+   * id_admin dari multipart tidak dipercaya.
+   * Identitas operator berasal dari Bearer token.
+   */
+    $versi_baru = trim(
+      (string) $this->input->post(
+        'versi_baru',
+        true
+      )
+    );
+
+    if (
+      $versi_baru === '' ||
+      strlen($versi_baru) > 20 ||
+      !preg_match(
+        '/^\d{1,4}(?:\.\d{1,4}){1,3}(?:-[A-Za-z0-9.-]+)?$/',
+        $versi_baru
+      )
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' =>
+        'Format versi aplikasi tidak valid.'
+      ], 422);
+      return;
+    }
+
+    /*
+   * Pastikan konfigurasi aplikasi tersedia dan
+   * versi baru lebih tinggi daripada versi aktif.
+   */
+    $aplikasi_sekarang = $this->db
+      ->select([
+        'id',
+        'versi_aplikasi',
+        'link_apk',
+        'apk_nama_file',
+        'apk_sha256'
+      ])
+      ->where('id', 1)
+      ->limit(1)
+      ->get('tb_aplikasi')
+      ->row();
+
+    if (!$aplikasi_sekarang) {
+      $this->api_response([
+        'status'  => false,
+        'message' =>
+        'Konfigurasi aplikasi tidak ditemukan.'
+      ], 404);
+      return;
+    }
+
+    $versi_sekarang = trim(
+      (string) $aplikasi_sekarang->versi_aplikasi
+    );
+
+    if (
+      $versi_sekarang !== '' &&
+      version_compare(
+        $versi_baru,
+        $versi_sekarang,
+        '<='
+      )
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' =>
+        'Versi baru harus lebih tinggi dari versi yang sedang aktif.',
+        'data'    => [
+          'versi_sekarang' =>
+          $versi_sekarang,
+
+          'versi_diajukan' =>
+          $versi_baru
+        ]
+      ], 409);
+      return;
+    }
+
+    if (
+      !isset($_FILES['file_apk']) ||
+      !is_array($_FILES['file_apk'])
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'File APK wajib dipilih.'
+      ], 422);
+      return;
+    }
+
+    $file_apk = $_FILES['file_apk'];
+
+    $upload_error = (int) (
+      $file_apk['error'] ??
+      UPLOAD_ERR_NO_FILE
+    );
+
+    if ($upload_error !== UPLOAD_ERR_OK) {
+      if (
+        $upload_error === UPLOAD_ERR_INI_SIZE ||
+        $upload_error === UPLOAD_ERR_FORM_SIZE
+      ) {
+        $this->api_response([
+          'status'  => false,
+          'message' =>
+          'Ukuran file APK melebihi batas yang diizinkan.'
+        ], 413);
+        return;
+      }
+
+      if ($upload_error === UPLOAD_ERR_PARTIAL) {
+        $this->api_response([
+          'status'  => false,
+          'message' =>
+          'File APK hanya terunggah sebagian. Silakan ulangi.'
+        ], 422);
+        return;
+      }
+
+      if ($upload_error === UPLOAD_ERR_NO_FILE) {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'File APK wajib dipilih.'
+        ], 422);
+        return;
+      }
+
+      log_message(
+        'error',
+        'Upload APK ditolak oleh PHP. Kode: ' .
+          $upload_error
+      );
+
+      $this->api_response([
+        'status'  => false,
+        'message' =>
+        'File APK gagal diterima oleh server.'
+      ], 422);
+      return;
+    }
+
+    $nama_asli = basename(
+      (string) ($file_apk['name'] ?? '')
+    );
+
+    $tmp_path = (string) (
+      $file_apk['tmp_name'] ?? ''
+    );
+
+    $ukuran_laporan = (int) (
+      $file_apk['size'] ?? 0
+    );
+
+    $ekstensi = strtolower(
+      pathinfo(
+        $nama_asli,
+        PATHINFO_EXTENSION
+      )
+    );
+
+    if (
+      $nama_asli === '' ||
+      $ekstensi !== 'apk'
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' =>
+        'Format file tidak diizinkan. File harus berekstensi .apk.'
+      ], 422);
+      return;
+    }
+
+    if (
+      $tmp_path === '' ||
+      !is_uploaded_file($tmp_path) ||
+      !is_file($tmp_path)
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' =>
+        'Sumber file upload tidak valid.'
+      ], 422);
+      return;
+    }
+
+    $ukuran_sebenarnya = filesize(
+      $tmp_path
+    );
+
+    if ($ukuran_sebenarnya === false) {
+      $this->api_response([
+        'status'  => false,
+        'message' =>
+        'Ukuran file APK gagal diperiksa.'
+      ], 422);
+      return;
+    }
+
+    $ukuran_sebenarnya =
+      (int) $ukuran_sebenarnya;
+
+    if (
+      $ukuran_sebenarnya <= 0 ||
+      $ukuran_sebenarnya > $batas_file
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' =>
+        'Ukuran file APK harus lebih dari 0 dan maksimal 200 MB.'
+      ], 413);
+      return;
+    }
+
+    if (
+      $ukuran_laporan > 0 &&
+      $ukuran_laporan !== $ukuran_sebenarnya
+    ) {
+      log_message(
+        'error',
+        'Ukuran APK multipart berbeda dengan file sementara.'
+      );
+
+      $this->api_response([
+        'status'  => false,
+        'message' =>
+        'Ukuran file APK tidak konsisten.'
+      ], 422);
+      return;
+    }
+
+    /*
+   * Periksa MIME berdasarkan isi file.
+   * Beberapa server membaca APK sebagai ZIP atau octet-stream.
+   * Struktur internal tetap diperiksa setelahnya.
+   */
+    if (!function_exists('finfo_open')) {
+      $this->api_response([
+        'status'  => false,
+        'message' =>
+        'Validasi MIME belum tersedia pada server.'
+      ], 500);
+      return;
+    }
+
+    $finfo = finfo_open(
+      FILEINFO_MIME_TYPE
+    );
+
+    if (!$finfo) {
+      $this->api_response([
+        'status'  => false,
+        'message' =>
+        'Pemeriksa MIME gagal dijalankan.'
+      ], 500);
+      return;
+    }
+
+    $mime = strtolower(
+      (string) finfo_file(
+        $finfo,
+        $tmp_path
+      )
+    );
+
+    finfo_close($finfo);
+
+    $mime_diizinkan = [
+      'application/vnd.android.package-archive',
+      'application/zip',
+      'application/x-zip',
+      'application/x-zip-compressed',
+      'application/octet-stream',
+      'application/java-archive'
+    ];
+
+    if (
+      !in_array(
+        $mime,
+        $mime_diizinkan,
+        true
+      )
+    ) {
+      log_message(
+        'error',
+        'MIME APK ditolak: ' . $mime
+      );
+
+      $this->api_response([
+        'status'  => false,
+        'message' =>
+        'Isi file tidak dikenali sebagai paket aplikasi Android.'
+      ], 422);
+      return;
+    }
+
+    /*
+   * APK adalah arsip ZIP. File wajib memiliki
+   * AndroidManifest.xml dan classes.dex.
+   */
+    if (!class_exists('ZipArchive')) {
+      $this->api_response([
+        'status'  => false,
+        'message' =>
+        'Validasi struktur APK belum tersedia pada server.'
+      ], 500);
+      return;
+    }
+
+    $zip = new ZipArchive();
+
+    $hasil_buka_zip = $zip->open(
+      $tmp_path,
+      ZipArchive::CHECKCONS
+    );
+
+    if ($hasil_buka_zip !== true) {
+      $this->api_response([
+        'status'  => false,
+        'message' =>
+        'File tidak memiliki struktur APK yang valid.'
+      ], 422);
+      return;
+    }
+
+    $jumlah_entri =
+      (int) $zip->numFiles;
+
+    $manifest_ditemukan =
+      $zip->locateName(
+        'AndroidManifest.xml',
+        ZipArchive::FL_NOCASE
+      ) !== false;
+
+    $classes_ditemukan =
+      $zip->locateName(
+        'classes.dex',
+        ZipArchive::FL_NOCASE
+      ) !== false;
+
+    $zip->close();
+
+    if (
+      $jumlah_entri <= 0 ||
+      $jumlah_entri > 100000 ||
+      !$manifest_ditemukan ||
+      !$classes_ditemukan
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' =>
+        'Struktur APK tidak valid atau tidak lengkap.'
+      ], 422);
+      return;
+    }
+
+    $sha256 = hash_file(
+      'sha256',
+      $tmp_path
+    );
+
+    if (
+      !is_string($sha256) ||
+      !preg_match(
+        '/^[0-9a-f]{64}$/',
+        $sha256
+      )
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' =>
+        'Hash integritas APK gagal dibuat.'
+      ], 500);
+      return;
+    }
+
+    $sha256_sekarang = strtolower(
+      trim(
+        (string)
+        $aplikasi_sekarang->apk_sha256
+      )
+    );
+
+    /*
+   * Cegah APK lama dirilis ulang menggunakan
+   * nomor versi baru yang berbeda.
+   */
+    if (
+      $sha256_sekarang !== '' &&
+      hash_equals(
+        $sha256_sekarang,
+        $sha256
+      )
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' =>
+        'File APK sama dengan versi yang sedang aktif.',
+        'data'    => [
+          'versi_aktif' =>
+          $versi_sekarang,
+
+          'sha256' =>
+          $sha256
+        ]
+      ], 409);
+      return;
+    }
+
+    $upload_dir =
+      FCPATH . 'assets/apk/';
+
     if (!is_dir($upload_dir)) {
-      mkdir($upload_dir, 0755, true);
+      if (
+        !mkdir(
+          $upload_dir,
+          0755,
+          true
+        ) &&
+        !is_dir($upload_dir)
+      ) {
+        $this->api_response([
+          'status'  => false,
+          'message' =>
+          'Folder penyimpanan APK gagal dibuat.'
+        ], 500);
+        return;
+      }
     }
 
-    $config['upload_path']   = $upload_dir;
-    $config['allowed_types'] = '*';      // 🔥 Ubah jadi bintang (*) agar sistem CI tidak menolak MIME type bawaan Android
-    $config['max_size']      = 150000;   // 🔥 Ubah jadi 150.000 KB (150 MB) agar APK 89 MB bisa masuk
-    $config['file_name']     = 'TabunganMakmur_v' . str_replace('.', '_', $versi_baru) . '_' . time() . '.apk'; // Tambahkan .apk di akhir
-
-    $this->load->library('upload', $config);
-    $this->upload->initialize($config);
-
-    if (!$this->upload->do_upload('file_apk')) {
-      $error = $this->upload->display_errors('', '');
-      echo json_encode(['status' => false, 'message' => 'Gagal upload APK: ' . $error]);
-    } else {
-      $upload_data = $this->upload->data();
-      $link_apk = 'https://kelolawarga.my.id/tabungan/assets/apk/' . $upload_data['file_name'];
-
-      $waktu_upload = date('Y-m-d H:i:s'); // 🔥 Ambil waktu server saat ini
-
-      $this->db->where('id', 1);
-      $this->db->update('tb_aplikasi', [
-        'versi_aplikasi' => $versi_baru,
-        'link_apk' => $link_apk,
-        'tgl_update_apk' => $waktu_upload // 🔥 Simpan waktu upload ke DB
-      ]);
-
-      echo json_encode(['status' => true, 'message' => "Aplikasi v{$versi_baru} berhasil dirilis!\nTanggal: {$waktu_upload}"]);
+    if (!is_writable($upload_dir)) {
+      $this->api_response([
+        'status'  => false,
+        'message' =>
+        'Folder penyimpanan APK tidak dapat ditulis.'
+      ], 500);
+      return;
     }
-    exit;
+
+    try {
+      $nama_acak =
+        bin2hex(random_bytes(8));
+    } catch (Exception $e) {
+      $nama_acak = str_replace(
+        '.',
+        '',
+        uniqid('', true)
+      );
+    }
+
+    $versi_file = preg_replace(
+      '/[^A-Za-z0-9]+/',
+      '_',
+      $versi_baru
+    );
+
+    $nama_file =
+      'TabunganMakmur_v' .
+      $versi_file .
+      '_' .
+      date('YmdHis') .
+      '_' .
+      $nama_acak .
+      '.apk';
+
+    $nama_file = basename(
+      $nama_file
+    );
+
+    $file_path =
+      $upload_dir . $nama_file;
+
+    if (is_file($file_path)) {
+      $this->api_response([
+        'status'  => false,
+        'message' =>
+        'Nama file APK sudah digunakan. Silakan ulangi.'
+      ], 409);
+      return;
+    }
+
+    if (
+      !move_uploaded_file(
+        $tmp_path,
+        $file_path
+      )
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' =>
+        'File APK gagal disimpan.'
+      ], 500);
+      return;
+    }
+
+    @chmod(
+      $file_path,
+      0644
+    );
+
+    /*
+   * Pastikan ukuran dan hash tidak berubah
+   * setelah file dipindahkan.
+   */
+    $ukuran_tersimpan =
+      filesize($file_path);
+
+    $sha256_tersimpan =
+      hash_file(
+        'sha256',
+        $file_path
+      );
+
+    if (
+      $ukuran_tersimpan === false ||
+      (int) $ukuran_tersimpan !==
+      $ukuran_sebenarnya ||
+      !is_string($sha256_tersimpan) ||
+      !hash_equals(
+        $sha256,
+        $sha256_tersimpan
+      )
+    ) {
+      if (is_file($file_path)) {
+        @unlink($file_path);
+      }
+
+      $this->api_response([
+        'status'  => false,
+        'message' =>
+        'Integritas file APK berubah setelah disimpan.'
+      ], 500);
+      return;
+    }
+
+    /*
+   * Gunakan alamat publik resmi dan jangan membentuk
+   * URL dari HTTP_HOST karena dapat dimanipulasi.
+   */
+    $base_url_apk =
+      'https://kelolawarga.my.id/tabungan/assets/apk/';
+
+    $link_apk =
+      $base_url_apk .
+      rawurlencode($nama_file);
+
+    $waktu_upload =
+      date('Y-m-d H:i:s');
+
+    $db_debug_sebelumnya =
+      $this->db->db_debug;
+
+    $this->db->db_debug = false;
+    $this->db->trans_begin();
+
+    /*
+   * Kunci konfigurasi untuk mencegah dua rilis
+   * berjalan bersamaan.
+   */
+    $aplikasi_terkunci = $this->db->query(
+      "SELECT
+        id,
+        versi_aplikasi,
+        link_apk,
+        apk_nama_file
+     FROM tb_aplikasi
+     WHERE id = 1
+     LIMIT 1
+     FOR UPDATE"
+    )->row();
+
+    if (!$aplikasi_terkunci) {
+      $this->db->trans_rollback();
+      $this->db->db_debug =
+        $db_debug_sebelumnya;
+
+      if (is_file($file_path)) {
+        @unlink($file_path);
+      }
+
+      $this->api_response([
+        'status'  => false,
+        'message' =>
+        'Konfigurasi aplikasi tidak ditemukan.'
+      ], 404);
+      return;
+    }
+
+    /*
+   * Periksa versi kembali setelah row database dikunci.
+   */
+    if (
+      version_compare(
+        $versi_baru,
+        trim(
+          (string)
+          $aplikasi_terkunci->versi_aplikasi
+        ),
+        '<='
+      )
+    ) {
+      $this->db->trans_rollback();
+      $this->db->db_debug =
+        $db_debug_sebelumnya;
+
+      if (is_file($file_path)) {
+        @unlink($file_path);
+      }
+
+      $this->api_response([
+        'status'  => false,
+        'message' =>
+        'Versi aplikasi telah diperbarui oleh proses lain.'
+      ], 409);
+      return;
+    }
+
+    $updated = $this->db
+      ->where('id', 1)
+      ->update(
+        'tb_aplikasi',
+        [
+          'versi_aplikasi' =>
+          $versi_baru,
+
+          'link_apk' =>
+          $link_apk,
+
+          'apk_nama_file' =>
+          $nama_file,
+
+          'apk_ukuran' =>
+          $ukuran_sebenarnya,
+
+          'apk_sha256' =>
+          $sha256,
+
+          'apk_diupload_oleh' =>
+          (int) $auth->id_user,
+
+          'tgl_update_apk' =>
+          $waktu_upload
+        ]
+      );
+
+    if (
+      !$updated ||
+      $this->db->trans_status() === false
+    ) {
+      $database_error =
+        $this->db->error();
+
+      $this->db->trans_rollback();
+      $this->db->db_debug =
+        $db_debug_sebelumnya;
+
+      if (is_file($file_path)) {
+        @unlink($file_path);
+      }
+
+      log_message(
+        'error',
+        'Rilis APK gagal disimpan: ' .
+          json_encode($database_error)
+      );
+
+      $this->api_response([
+        'status'  => false,
+        'message' =>
+        'Informasi rilis APK gagal disimpan.'
+      ], 500);
+      return;
+    }
+
+    $this->db->trans_commit();
+    $this->db->db_debug =
+      $db_debug_sebelumnya;
+
+    /*
+   * APK lama tidak langsung dihapus agar tersedia
+   * untuk rollback jika rilis baru bermasalah.
+   */
+    $this->api_response([
+      'status'  => true,
+      'message' =>
+      'Aplikasi v' .
+        $versi_baru .
+        ' berhasil dirilis.',
+      'data'    => [
+        'versi' =>
+        $versi_baru,
+
+        'link_apk' =>
+        $link_apk,
+
+        'nama_file' =>
+        $nama_file,
+
+        'ukuran_byte' =>
+        $ukuran_sebenarnya,
+
+        'sha256' =>
+        $sha256,
+
+        'tanggal_rilis' =>
+        $waktu_upload,
+
+        'diperbarui_oleh' =>
+        (int) $auth->id_user,
+
+        'nama_operator' =>
+        $auth->nama,
+
+        'apk_sebelumnya' =>
+        $aplikasi_terkunci->apk_nama_file
+      ]
+    ], 201);
   }
 
   // ==========================================
