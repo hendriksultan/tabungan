@@ -16716,71 +16716,397 @@ class Api extends CI_Controller
   // 19. Endpoint Ambil Daftar Notifikasi User
   public function get_notifikasi()
   {
-    $request = json_decode($this->input->raw_input_stream, true);
-    $id_user = $request['id_user'] ?? '';
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
 
-    if (empty($id_user)) {
-      echo json_encode(['status' => false, 'data' => []]);
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
       return;
     }
 
-    $this->db->where('id_user', $id_user);
-    $this->db->order_by('id_notifikasi', 'DESC');
-    $notifikasi = $this->db->get('tb_notifikasi')->result_array();
+    $auth = $this->authenticate_api();
 
-    echo json_encode(['status' => true, 'data' => $notifikasi]);
+    if (!$auth) {
+      return;
+    }
+
+    $request = json_decode(
+      $this->input->raw_input_stream,
+      true
+    );
+
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format JSON tidak valid.'
+      ], 400);
+      return;
+    }
+
+    $page = isset($request['page'])
+      ? (int) $request['page']
+      : 1;
+
+    $limit = isset($request['limit'])
+      ? (int) $request['limit']
+      : 20;
+
+    if ($page < 1) {
+      $page = 1;
+    }
+
+    if ($limit < 1) {
+      $limit = 20;
+    }
+
+    if ($limit > 100) {
+      $limit = 100;
+    }
+
+    $offset = ($page - 1) * $limit;
+
+    /*
+     * Identitas pengguna selalu berasal dari Bearer token.
+     * id_user dari request tidak dipercaya.
+     */
+    $id_user = (int) $auth->id_user;
+
+    $total_data = (int) $this->db
+      ->where('id_user', $id_user)
+      ->count_all_results('tb_notifikasi');
+
+    $total_belum_dibaca = (int) $this->db
+      ->where('id_user', $id_user)
+      ->where('is_read', 0)
+      ->count_all_results('tb_notifikasi');
+
+    $query = $this->db
+      ->select([
+        'id_notifikasi',
+        'judul',
+        'pesan',
+        'is_read',
+        'tanggal'
+      ])
+      ->where('id_user', $id_user)
+      ->order_by('id_notifikasi', 'DESC')
+      ->limit($limit, $offset)
+      ->get('tb_notifikasi');
+
+    if (!$query) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gagal mengambil daftar notifikasi.'
+      ], 500);
+      return;
+    }
+
+    $hasil = $query->result_array();
+    $data_notifikasi = [];
+
+    foreach ($hasil as $row) {
+      $data_notifikasi[] = [
+        'id_notifikasi' =>
+        (int) $row['id_notifikasi'],
+
+        'judul' =>
+        $row['judul'],
+
+        'pesan' =>
+        $row['pesan'],
+
+        'is_read' =>
+        (bool) ((int) $row['is_read']),
+
+        'tanggal' =>
+        $row['tanggal']
+      ];
+    }
+
+    $this->api_response([
+      'status'  => true,
+      'message' => $total_data > 0
+        ? 'Daftar notifikasi berhasil diambil.'
+        : 'Belum ada notifikasi.',
+      'data'    => $data_notifikasi,
+      'ringkasan' => [
+        'total_notifikasi'   => $total_data,
+        'belum_dibaca'       => $total_belum_dibaca,
+        'sudah_dibaca'       =>
+        $total_data - $total_belum_dibaca
+      ],
+      'pagination' => [
+        'page'       => $page,
+        'limit'      => $limit,
+        'total_data' => $total_data,
+        'total_page' => $total_data > 0
+          ? (int) ceil($total_data / $limit)
+          : 0
+      ]
+    ]);
   }
 
   // 20. Endpoint Tandai Notifikasi Telah Dibaca
   public function tandai_dibaca()
   {
-    $request = json_decode($this->input->raw_input_stream, true);
-    $id_notifikasi = $request['id_notifikasi'] ?? '';
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
 
-    if (!empty($id_notifikasi)) {
-      $this->db->where('id_notifikasi', $id_notifikasi);
-      $this->db->update('tb_notifikasi', ['is_read' => 1]);
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
+      return;
     }
-    echo json_encode(['status' => true]);
+
+    $auth = $this->authenticate_api();
+
+    if (!$auth) {
+      return;
+    }
+
+    $request = json_decode(
+      $this->input->raw_input_stream,
+      true
+    );
+
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format JSON tidak valid.'
+      ], 400);
+      return;
+    }
+
+    $id_notifikasi_valid = filter_var(
+      $request['id_notifikasi'] ?? null,
+      FILTER_VALIDATE_INT,
+      [
+        'options' => [
+          'min_range' => 1
+        ]
+      ]
+    );
+
+    if ($id_notifikasi_valid === false) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'ID notifikasi tidak valid.'
+      ], 422);
+      return;
+    }
+
+    $id_user = (int) $auth->id_user;
+    $id_notifikasi = (int) $id_notifikasi_valid;
+
+    /*
+     * Query wajib menyertakan id_user agar pengguna
+     * tidak dapat mengubah notifikasi milik akun lain.
+     */
+    $notifikasi = $this->db
+      ->select([
+        'id_notifikasi',
+        'is_read'
+      ])
+      ->where(
+        'id_notifikasi',
+        $id_notifikasi
+      )
+      ->where('id_user', $id_user)
+      ->limit(1)
+      ->get('tb_notifikasi')
+      ->row();
+
+    if (!$notifikasi) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Notifikasi tidak ditemukan.'
+      ], 404);
+      return;
+    }
+
+    $sudah_dibaca =
+      (int) $notifikasi->is_read === 1;
+
+    if (!$sudah_dibaca) {
+      $updated = $this->db
+        ->where(
+          'id_notifikasi',
+          $id_notifikasi
+        )
+        ->where('id_user', $id_user)
+        ->update(
+          'tb_notifikasi',
+          [
+            'is_read' => 1
+          ]
+        );
+
+      if (!$updated) {
+        $database_error = $this->db->error();
+
+        log_message(
+          'error',
+          'Gagal menandai notifikasi: ' .
+            json_encode($database_error)
+        );
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Notifikasi gagal ditandai sebagai dibaca.'
+        ], 500);
+        return;
+      }
+    }
+
+    $this->api_response([
+      'status'  => true,
+      'message' => $sudah_dibaca
+        ? 'Notifikasi sudah ditandai sebagai dibaca.'
+        : 'Notifikasi berhasil ditandai sebagai dibaca.',
+      'data'    => [
+        'id_notifikasi' => $id_notifikasi,
+        'is_read'       => true,
+        'sudah_dibaca_sebelumnya' =>
+        $sudah_dibaca
+      ]
+    ]);
   }
 
   // 21. Endpoint Hitung Notifikasi Belum Dibaca
   public function count_unread_notif()
   {
-    $request = json_decode($this->input->raw_input_stream, true);
-    $id_user = $request['id_user'] ?? '';
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
 
-    if (empty($id_user)) {
-      echo json_encode(['status' => false, 'count' => 0]);
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.',
+        'count'   => 0
+      ], 405);
       return;
     }
 
-    $this->db->where('id_user', $id_user);
-    $this->db->where('is_read', 0); // Hanya hitung yang belum dibaca
-    $count = $this->db->get('tb_notifikasi')->num_rows();
+    $auth = $this->authenticate_api();
 
-    echo json_encode(['status' => true, 'count' => $count]);
+    if (!$auth) {
+      return;
+    }
+
+    $request = json_decode(
+      $this->input->raw_input_stream,
+      true
+    );
+
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format JSON tidak valid.',
+        'count'   => 0
+      ], 400);
+      return;
+    }
+
+    /*
+     * id_user dari request diabaikan.
+     */
+    $id_user = (int) $auth->id_user;
+
+    $count = (int) $this->db
+      ->where('id_user', $id_user)
+      ->where('is_read', 0)
+      ->count_all_results('tb_notifikasi');
+
+    $this->api_response([
+      'status'  => true,
+      'message' => 'Jumlah notifikasi belum dibaca berhasil diambil.',
+      'count'   => $count,
+      'data'    => [
+        'count' => $count
+      ]
+    ]);
   }
 
   // 22. Endpoint Hapus Semua Notifikasi User
   public function clear_notifikasi()
   {
-    $request = json_decode($this->input->raw_input_stream, true);
-    $id_user = $request['id_user'] ?? '';
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
 
-    if (empty($id_user)) {
-      echo json_encode(['status' => false, 'message' => 'ID User tidak valid.']);
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
       return;
     }
 
-    $this->db->where('id_user', $id_user);
-    $delete = $this->db->delete('tb_notifikasi');
+    $auth = $this->authenticate_api();
 
-    if ($delete) {
-      echo json_encode(['status' => true, 'message' => 'Semua notifikasi berhasil dihapus.']);
-    } else {
-      echo json_encode(['status' => false, 'message' => 'Gagal menghapus notifikasi.']);
+    if (!$auth) {
+      return;
     }
+
+    $request = json_decode(
+      $this->input->raw_input_stream,
+      true
+    );
+
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format JSON tidak valid.'
+      ], 400);
+      return;
+    }
+
+    /*
+     * Hanya notifikasi pemilik Bearer token yang dihapus.
+     * id_user dari request tidak digunakan.
+     */
+    $id_user = (int) $auth->id_user;
+
+    $delete = $this->db
+      ->where('id_user', $id_user)
+      ->delete('tb_notifikasi');
+
+    if (!$delete) {
+      $database_error = $this->db->error();
+
+      log_message(
+        'error',
+        'Gagal menghapus seluruh notifikasi: ' .
+          json_encode($database_error)
+      );
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gagal menghapus notifikasi.'
+      ], 500);
+      return;
+    }
+
+    $jumlah_dihapus =
+      (int) $this->db->affected_rows();
+
+    $this->api_response([
+      'status'  => true,
+      'message' => $jumlah_dihapus > 0
+        ? 'Semua notifikasi berhasil dihapus.'
+        : 'Tidak ada notifikasi yang perlu dihapus.',
+      'data'    => [
+        'jumlah_dihapus' => $jumlah_dihapus
+      ]
+    ]);
   }
 
   // ==========================================
