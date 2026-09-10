@@ -15979,113 +15979,738 @@ class Api extends CI_Controller
     ]);
   }
 
-  // 15. Endpoint Cek Status Wishlist di Detail Produk
+  // 15. Endpoint Cek Status Wishlist
   public function cek_wishlist()
   {
-    $request = json_decode($this->input->raw_input_stream, true);
-    $id_pembeli = $request['id_pembeli'] ?? '';
-    $id_produk = $request['id_produk'] ?? '';
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
 
-    if (empty($id_pembeli) || empty($id_produk)) {
-      echo json_encode(['status' => false, 'is_wishlisted' => false]);
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
       return;
     }
 
-    $cek = $this->db->get_where('tb_wishlist', ['id_pembeli' => $id_pembeli, 'id_produk' => $id_produk])->row();
+    $auth = $this->authenticate_api();
 
-    if ($cek) {
-      echo json_encode(['status' => true, 'is_wishlisted' => true]);
-    } else {
-      echo json_encode(['status' => true, 'is_wishlisted' => false]);
+    if (!$auth) {
+      return;
     }
+
+    if ($auth->level !== 'Nasabah') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Akses ditolak. Endpoint ini khusus Nasabah.'
+      ], 403);
+      return;
+    }
+
+    $request = json_decode(
+      $this->input->raw_input_stream,
+      true
+    );
+
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'         => false,
+        'message'        => 'Format JSON tidak valid.',
+        'is_wishlisted'  => false
+      ], 400);
+      return;
+    }
+
+    $id_produk_valid = filter_var(
+      $request['id_produk'] ?? null,
+      FILTER_VALIDATE_INT,
+      [
+        'options' => [
+          'min_range' => 1
+        ]
+      ]
+    );
+
+    if ($id_produk_valid === false) {
+      $this->api_response([
+        'status'        => false,
+        'message'       => 'ID produk tidak valid.',
+        'is_wishlisted' => false
+      ], 422);
+      return;
+    }
+
+    $id_pembeli = (int) $auth->id_user;
+    $id_produk  = (int) $id_produk_valid;
+
+    $produk = $this->db
+      ->select([
+        'id_produk',
+        'status_produk'
+      ])
+      ->where('id_produk', $id_produk)
+      ->limit(1)
+      ->get('tb_produk')
+      ->row();
+
+    if (!$produk) {
+      $this->api_response([
+        'status'        => false,
+        'message'       => 'Produk tidak ditemukan.',
+        'is_wishlisted' => false
+      ], 404);
+      return;
+    }
+
+    /*
+     * id_pembeli selalu berasal dari Bearer token.
+     * Nilai id_pembeli dari request tidak digunakan.
+     */
+    $jumlah = (int) $this->db
+      ->where('id_pembeli', $id_pembeli)
+      ->where('id_produk', $id_produk)
+      ->count_all_results('tb_wishlist');
+
+    $this->api_response([
+      'status'        => true,
+      'message'       => 'Status wishlist berhasil diperiksa.',
+      'is_wishlisted' => $jumlah > 0,
+      'data'          => [
+        'id_produk'       => $id_produk,
+        'is_wishlisted'   => $jumlah > 0,
+        'status_produk'   => $produk->status_produk
+      ]
+    ]);
   }
 
-  // 16. Endpoint Toggle Wishlist (Tambah / Hapus)
+  // 16. Endpoint Toggle Wishlist
   public function toggle_wishlist()
   {
-    $request = json_decode($this->input->raw_input_stream, true);
-    $id_pembeli = $request['id_pembeli'] ?? '';
-    $id_produk = $request['id_produk'] ?? '';
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
 
-    if (empty($id_pembeli) || empty($id_produk)) {
-      echo json_encode(['status' => false, 'message' => 'Data tidak valid.']);
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
       return;
     }
 
-    $cek = $this->db->get_where('tb_wishlist', ['id_pembeli' => $id_pembeli, 'id_produk' => $id_produk])->row();
+    $auth = $this->authenticate_api();
 
-    if ($cek) {
-      // Jika sudah ada, hapus dari wishlist
-      $this->db->where('id_wishlist', $cek->id_wishlist);
-      $this->db->delete('tb_wishlist');
-      echo json_encode(['status' => true, 'action' => 'removed', 'message' => 'Dihapus dari favorit.']);
-    } else {
-      // Jika belum ada, tambahkan ke wishlist
-      $this->db->insert('tb_wishlist', [
-        'id_pembeli' => $id_pembeli,
-        'id_produk' => $id_produk,
-        'tanggal' => date('Y-m-d H:i:s')
-      ]);
-      echo json_encode(['status' => true, 'action' => 'added', 'message' => 'Ditambahkan ke favorit!']);
+    if (!$auth) {
+      return;
     }
+
+    if ($auth->level !== 'Nasabah') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Akses ditolak. Endpoint ini khusus Nasabah.'
+      ], 403);
+      return;
+    }
+
+    $request = json_decode(
+      $this->input->raw_input_stream,
+      true
+    );
+
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format JSON tidak valid.'
+      ], 400);
+      return;
+    }
+
+    $id_produk_valid = filter_var(
+      $request['id_produk'] ?? null,
+      FILTER_VALIDATE_INT,
+      [
+        'options' => [
+          'min_range' => 1
+        ]
+      ]
+    );
+
+    if ($id_produk_valid === false) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'ID produk tidak valid.'
+      ], 422);
+      return;
+    }
+
+    /*
+     * Identitas pembeli hanya berasal dari Bearer token.
+     */
+    $id_pembeli = (int) $auth->id_user;
+    $id_produk  = (int) $id_produk_valid;
+
+    $this->db->trans_begin();
+
+    $wishlist = $this->db->query(
+      "SELECT
+          id_wishlist
+       FROM tb_wishlist
+       WHERE id_pembeli = ?
+         AND id_produk = ?
+       LIMIT 1
+       FOR UPDATE",
+      [
+        $id_pembeli,
+        $id_produk
+      ]
+    )->row();
+
+    /*
+     * Penghapusan tetap diperbolehkan apabila produk
+     * sudah diarsipkan atau tokonya tidak aktif.
+     */
+    if ($wishlist) {
+      $dihapus = $this->db
+        ->where(
+          'id_wishlist',
+          (int) $wishlist->id_wishlist
+        )
+        ->where('id_pembeli', $id_pembeli)
+        ->delete('tb_wishlist');
+
+      if (
+        !$dihapus ||
+        $this->db->trans_status() === false
+      ) {
+        $database_error = $this->db->error();
+        $this->db->trans_rollback();
+
+        log_message(
+          'error',
+          'Gagal menghapus wishlist: ' .
+            json_encode($database_error)
+        );
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Wishlist gagal dihapus.'
+        ], 500);
+        return;
+      }
+
+      $this->db->trans_commit();
+
+      $this->api_response([
+        'status'        => true,
+        'action'        => 'removed',
+        'message'       => 'Produk dihapus dari favorit.',
+        'is_wishlisted' => false,
+        'data'          => [
+          'id_produk'     => $id_produk,
+          'is_wishlisted' => false
+        ]
+      ]);
+      return;
+    }
+
+    /*
+     * Produk hanya boleh ditambahkan jika produk, toko,
+     * dan cabang penjual masih aktif.
+     */
+    $produk = $this->db
+      ->select([
+        'p.id_produk',
+        'p.nama_produk',
+        'p.stok',
+        'p.status_produk',
+        't.id_toko',
+        't.status_toko',
+        'c.status AS status_cabang'
+      ])
+      ->from('tb_produk p')
+      ->join(
+        'tb_toko t',
+        't.id_toko = p.id_toko'
+      )
+      ->join(
+        'tb_user penjual',
+        'penjual.id = t.id_user'
+      )
+      ->join(
+        'tb_cabang c',
+        'c.id = penjual.cabang_id'
+      )
+      ->where('p.id_produk', $id_produk)
+      ->limit(1)
+      ->get()
+      ->row();
+
+    if (!$produk) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Produk tidak ditemukan.'
+      ], 404);
+      return;
+    }
+
+    if (
+      $produk->status_produk !== 'Tersedia' ||
+      (int) $produk->stok <= 0 ||
+      $produk->status_toko !== 'Aktif' ||
+      $produk->status_cabang !== 'Aktif'
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Produk sedang tidak tersedia untuk ditambahkan ke favorit.'
+      ], 409);
+      return;
+    }
+
+    $ditambahkan = $this->db->insert(
+      'tb_wishlist',
+      [
+        'id_pembeli' => $id_pembeli,
+        'id_produk'   => $id_produk,
+        'tanggal'     => date('Y-m-d H:i:s')
+      ]
+    );
+
+    if (
+      !$ditambahkan ||
+      $this->db->trans_status() === false
+    ) {
+      $database_error = $this->db->error();
+      $this->db->trans_rollback();
+
+      /*
+       * Unique index tetap melindungi dari request
+       * bersamaan yang mencoba menambahkan produk sama.
+       */
+      if ((int) ($database_error['code'] ?? 0) === 1062) {
+        $this->api_response([
+          'status'        => true,
+          'action'        => 'added',
+          'message'       => 'Produk sudah ada dalam favorit.',
+          'is_wishlisted' => true,
+          'data'          => [
+            'id_produk'     => $id_produk,
+            'is_wishlisted' => true
+          ]
+        ]);
+        return;
+      }
+
+      log_message(
+        'error',
+        'Gagal menambahkan wishlist: ' .
+          json_encode($database_error)
+      );
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Wishlist gagal ditambahkan.'
+      ], 500);
+      return;
+    }
+
+    $id_wishlist = (int) $this->db->insert_id();
+
+    $this->db->trans_commit();
+
+    $this->api_response([
+      'status'        => true,
+      'action'        => 'added',
+      'message'       => 'Produk ditambahkan ke favorit.',
+      'is_wishlisted' => true,
+      'data'          => [
+        'id_wishlist'   => $id_wishlist,
+        'id_produk'     => $id_produk,
+        'is_wishlisted' => true
+      ]
+    ], 201);
   }
 
-  // 17. Endpoint Ambil Daftar Wishlist Pembeli
+  // 17. Endpoint Daftar Wishlist Pembeli
   public function get_wishlist_pembeli()
   {
-    $request = json_decode($this->input->raw_input_stream, true);
-    $id_pembeli = $request['id_pembeli'] ?? '';
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
 
-    if (empty($id_pembeli)) {
-      echo json_encode(['status' => false, 'message' => 'ID Pembeli tidak valid.']);
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
       return;
     }
 
-    $this->db->select('tb_wishlist.id_wishlist, tb_produk.*, tb_toko.nama_toko');
-    $this->db->from('tb_wishlist');
-    $this->db->join('tb_produk', 'tb_wishlist.id_produk = tb_produk.id_produk');
-    $this->db->join('tb_toko', 'tb_produk.id_toko = tb_toko.id_toko');
+    $auth = $this->authenticate_api();
 
-    $this->db->where('tb_wishlist.id_pembeli', $id_pembeli);
-    $this->db->where('tb_produk.status_produk', 'Tersedia');
-
-    // 🔥 TAMBAHAN BARU: Sembunyikan juga dari daftar jika toko dinonaktifkan admin
-    $this->db->where('tb_toko.status_toko', 'Aktif');
-
-    $this->db->order_by('tb_wishlist.id_wishlist', 'DESC');
-
-    $wishlist = $this->db->get()->result_array();
-
-    if ($wishlist) {
-      echo json_encode(['status' => true, 'data' => $wishlist]);
-    } else {
-      echo json_encode(['status' => true, 'data' => []]);
+    if (!$auth) {
+      return;
     }
+
+    if ($auth->level !== 'Nasabah') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Akses ditolak. Endpoint ini khusus Nasabah.'
+      ], 403);
+      return;
+    }
+
+    $request = json_decode(
+      $this->input->raw_input_stream,
+      true
+    );
+
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format JSON tidak valid.'
+      ], 400);
+      return;
+    }
+
+    $page = isset($request['page'])
+      ? (int) $request['page']
+      : 1;
+
+    $limit = isset($request['limit'])
+      ? (int) $request['limit']
+      : 20;
+
+    if ($page < 1) {
+      $page = 1;
+    }
+
+    if ($limit < 1) {
+      $limit = 20;
+    }
+
+    if ($limit > 100) {
+      $limit = 100;
+    }
+
+    $offset = ($page - 1) * $limit;
+
+    /*
+     * id_pembeli dari request tidak dipercaya.
+     */
+    $id_pembeli = (int) $auth->id_user;
+
+    $this->db->from('tb_wishlist w');
+    $this->db->join(
+      'tb_produk p',
+      'p.id_produk = w.id_produk'
+    );
+    $this->db->join(
+      'tb_toko t',
+      't.id_toko = p.id_toko'
+    );
+    $this->db->join(
+      'tb_user penjual',
+      'penjual.id = t.id_user'
+    );
+    $this->db->join(
+      'tb_cabang c',
+      'c.id = penjual.cabang_id'
+    );
+
+    $this->db->where(
+      'w.id_pembeli',
+      $id_pembeli
+    );
+    $this->db->where(
+      'p.status_produk',
+      'Tersedia'
+    );
+    $this->db->where('p.stok >', 0);
+    $this->db->where(
+      't.status_toko',
+      'Aktif'
+    );
+    $this->db->where(
+      'c.status',
+      'Aktif'
+    );
+
+    $total_data = (int)
+    $this->db->count_all_results();
+
+    $this->db->select([
+      'w.id_wishlist',
+      'w.tanggal AS tanggal_wishlist',
+      'p.id_produk',
+      'p.id_toko',
+      'p.nama_produk',
+      'p.kategori',
+      'p.deskripsi_produk',
+      'p.harga',
+      'p.harga_coret',
+      'p.stok',
+      'p.berat',
+      'p.rating',
+      'p.terjual',
+      'p.foto_produk',
+      'p.foto_2',
+      'p.foto_3',
+      'p.status_produk',
+      'p.terdaftar',
+      't.nama_toko',
+      't.status_toko',
+      'penjual.cabang_id',
+      'c.kode AS kode_cabang',
+      'c.nama AS nama_cabang'
+    ]);
+
+    $this->db->from('tb_wishlist w');
+    $this->db->join(
+      'tb_produk p',
+      'p.id_produk = w.id_produk'
+    );
+    $this->db->join(
+      'tb_toko t',
+      't.id_toko = p.id_toko'
+    );
+    $this->db->join(
+      'tb_user penjual',
+      'penjual.id = t.id_user'
+    );
+    $this->db->join(
+      'tb_cabang c',
+      'c.id = penjual.cabang_id'
+    );
+
+    $this->db->where(
+      'w.id_pembeli',
+      $id_pembeli
+    );
+    $this->db->where(
+      'p.status_produk',
+      'Tersedia'
+    );
+    $this->db->where('p.stok >', 0);
+    $this->db->where(
+      't.status_toko',
+      'Aktif'
+    );
+    $this->db->where(
+      'c.status',
+      'Aktif'
+    );
+
+    $this->db->order_by(
+      'w.id_wishlist',
+      'DESC'
+    );
+    $this->db->limit($limit, $offset);
+
+    $query = $this->db->get();
+
+    if (!$query) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gagal mengambil daftar wishlist.'
+      ], 500);
+      return;
+    }
+
+    $hasil = $query->result_array();
+    $data_wishlist = [];
+
+    foreach ($hasil as $row) {
+      $data_wishlist[] = [
+        'id_wishlist' =>
+        (int) $row['id_wishlist'],
+
+        'tanggal_wishlist' =>
+        $row['tanggal_wishlist'],
+
+        'id_produk' =>
+        (int) $row['id_produk'],
+
+        'id_toko' =>
+        (int) $row['id_toko'],
+
+        'nama_produk' =>
+        $row['nama_produk'],
+
+        'kategori' =>
+        $row['kategori'],
+
+        'deskripsi_produk' =>
+        $row['deskripsi_produk'],
+
+        'harga' =>
+        (int) $row['harga'],
+
+        'harga_coret' =>
+        (int) $row['harga_coret'],
+
+        'stok' =>
+        (int) $row['stok'],
+
+        'berat' =>
+        (int) $row['berat'],
+
+        'rating' =>
+        (float) $row['rating'],
+
+        'terjual' =>
+        (int) $row['terjual'],
+
+        'foto_produk' =>
+        $row['foto_produk'],
+
+        'foto_2' =>
+        $row['foto_2'],
+
+        'foto_3' =>
+        $row['foto_3'],
+
+        'status_produk' =>
+        $row['status_produk'],
+
+        'terdaftar' =>
+        $row['terdaftar'],
+
+        'nama_toko' =>
+        $row['nama_toko'],
+
+        'status_toko' =>
+        $row['status_toko'],
+
+        'cabang_id' =>
+        (int) $row['cabang_id'],
+
+        'kode_cabang' =>
+        $row['kode_cabang'],
+
+        'nama_cabang' =>
+        $row['nama_cabang']
+      ];
+    }
+
+    $this->api_response([
+      'status'  => true,
+      'message' => $total_data > 0
+        ? 'Daftar wishlist berhasil diambil.'
+        : 'Wishlist masih kosong.',
+      'data'    => $data_wishlist,
+      'pagination' => [
+        'page'       => $page,
+        'limit'      => $limit,
+        'total_data' => $total_data,
+        'total_page' => $total_data > 0
+          ? (int) ceil($total_data / $limit)
+          : 0
+      ]
+    ]);
   }
 
-  // 18. Endpoint Hitung Jumlah Wishlist (Untuk Badge Notifikasi)
+  // 18. Endpoint Hitung Wishlist
   public function count_wishlist()
   {
-    $request = json_decode($this->input->raw_input_stream, true);
-    $id_user = $request['id_user'] ?? '';
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
 
-    if (empty($id_user)) {
-      echo json_encode(['status' => false, 'count' => 0]);
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.',
+        'count'   => 0
+      ], 405);
       return;
     }
 
-    // 🔥 PERBAIKAN: Harus join ke tabel produk dan toko untuk validasi status
-    $this->db->from('tb_wishlist');
-    $this->db->join('tb_produk', 'tb_wishlist.id_produk = tb_produk.id_produk');
-    $this->db->join('tb_toko', 'tb_produk.id_toko = tb_toko.id_toko');
+    $auth = $this->authenticate_api();
 
-    $this->db->where('tb_wishlist.id_pembeli', $id_user);
-    $this->db->where('tb_produk.status_produk', 'Tersedia'); // Jangan hitung jika diarsip
-    $this->db->where('tb_toko.status_toko', 'Aktif');        // Jangan hitung jika toko dibekukan
+    if (!$auth) {
+      return;
+    }
 
-    $count = $this->db->get()->num_rows();
+    if ($auth->level !== 'Nasabah') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Akses ditolak. Endpoint ini khusus Nasabah.',
+        'count'   => 0
+      ], 403);
+      return;
+    }
 
-    echo json_encode(['status' => true, 'count' => $count]);
+    $request = json_decode(
+      $this->input->raw_input_stream,
+      true
+    );
+
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format JSON tidak valid.',
+        'count'   => 0
+      ], 400);
+      return;
+    }
+
+    /*
+     * id_user dari request diabaikan.
+     * Pengguna ditentukan oleh Bearer token.
+     */
+    $id_pembeli = (int) $auth->id_user;
+
+    $this->db->from('tb_wishlist w');
+    $this->db->join(
+      'tb_produk p',
+      'p.id_produk = w.id_produk'
+    );
+    $this->db->join(
+      'tb_toko t',
+      't.id_toko = p.id_toko'
+    );
+    $this->db->join(
+      'tb_user penjual',
+      'penjual.id = t.id_user'
+    );
+    $this->db->join(
+      'tb_cabang c',
+      'c.id = penjual.cabang_id'
+    );
+
+    $this->db->where(
+      'w.id_pembeli',
+      $id_pembeli
+    );
+    $this->db->where(
+      'p.status_produk',
+      'Tersedia'
+    );
+    $this->db->where('p.stok >', 0);
+    $this->db->where(
+      't.status_toko',
+      'Aktif'
+    );
+    $this->db->where(
+      'c.status',
+      'Aktif'
+    );
+
+    $count = (int) $this->db->count_all_results();
+
+    $this->api_response([
+      'status'  => true,
+      'message' => 'Jumlah wishlist berhasil diambil.',
+      'count'   => $count,
+      'data'    => [
+        'count' => $count
+      ]
+    ]);
   }
 
   // 19. Endpoint Ambil Daftar Notifikasi User
