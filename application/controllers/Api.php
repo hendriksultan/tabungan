@@ -17116,95 +17116,628 @@ class Api extends CI_Controller
   // 1. Ambil Data Banner Marketplace
   public function get_banner_market()
   {
-    $this->db->order_by('id', 'DESC');
-    $data = $this->db->get('tb_banner_market')->result_array();
-    echo json_encode(['status' => true, 'data' => $data]);
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: GET, POST');
+
+    $method = $this->input->method(TRUE);
+
+    if (!in_array($method, ['GET', 'POST'], true)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
+      return;
+    }
+
+    $query = $this->db
+      ->select([
+        'id',
+        'gambar',
+        'terdaftar'
+      ])
+      ->order_by('id', 'DESC')
+      ->get('tb_banner_market');
+
+    if (!$query) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gagal mengambil banner marketplace.'
+      ], 500);
+      return;
+    }
+
+    $hasil = $query->result_array();
+    $data_banner = [];
+
+    foreach ($hasil as $row) {
+      $data_banner[] = [
+        'id'         => (int) $row['id'],
+        'gambar'     => $row['gambar'],
+        'terdaftar'  => $row['terdaftar']
+      ];
+    }
+
+    $this->api_response([
+      'status'  => true,
+      'message' => count($data_banner) > 0
+        ? 'Banner marketplace berhasil diambil.'
+        : 'Belum ada banner marketplace.',
+      'data'    => $data_banner
+    ]);
   }
 
-  // 2. Upload Banner Marketplace (Bebas Cache + Push Notif)
+  // 2. Upload Banner Marketplace
   public function upload_banner_market()
   {
-    if (ob_get_length()) ob_clean(); // Cegah error PHP merusak JSON
-    header('Content-Type: application/json');
+    if (ob_get_length()) {
+      ob_clean();
+    }
+
     header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
 
-    $config['upload_path']   = FCPATH . 'assets/';
-    $config['allowed_types'] = 'jpg|jpeg|png';
-    $config['max_size']      = 5120;
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
+      return;
+    }
 
-    $config['file_name']     = 'banner_mkt_' . time() . '_' . rand(1000, 9999);
+    $auth = $this->authenticate_api();
 
-    $this->load->library('upload', $config);
+    if (!$auth) {
+      return;
+    }
+
+    /*
+     * Banner marketplace dan broadcast notifikasi
+     * bersifat global, sehingga hanya Super Admin
+     * yang diperbolehkan mengelolanya.
+     */
+    if ($auth->level !== 'Super Admin') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Akses ditolak. Khusus Super Admin.'
+      ], 403);
+      return;
+    }
+
+    $content_length = isset($_SERVER['CONTENT_LENGTH'])
+      ? (int) $_SERVER['CONTENT_LENGTH']
+      : 0;
+
+    if ($content_length > 6 * 1024 * 1024) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Ukuran request terlalu besar.'
+      ], 413);
+      return;
+    }
+
+    if (
+      !isset($_FILES['banner_image']) ||
+      !is_array($_FILES['banner_image'])
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gambar banner wajib dipilih.'
+      ], 422);
+      return;
+    }
+
+    if (
+      (int) (
+        $_FILES['banner_image']['error']
+        ?? UPLOAD_ERR_NO_FILE
+      ) !== UPLOAD_ERR_OK
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gambar banner gagal diterima oleh server.'
+      ], 422);
+      return;
+    }
+
+    $upload_dir = FCPATH . 'assets/';
+
+    if (
+      !is_dir($upload_dir) ||
+      !is_writable($upload_dir)
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Folder penyimpanan banner tidak tersedia.'
+      ], 500);
+      return;
+    }
+
+    try {
+      $random_name = bin2hex(random_bytes(12));
+    } catch (Exception $e) {
+      $random_name = str_replace(
+        '.',
+        '',
+        uniqid('', true)
+      );
+    }
+
+    $config = [
+      'upload_path'      => $upload_dir,
+      'allowed_types'    => 'jpg|jpeg|png|webp',
+      'max_size'         => 5120,
+      'max_width'        => 10000,
+      'max_height'       => 10000,
+      'detect_mime'      => true,
+      'file_ext_tolower' => true,
+      'remove_spaces'    => true,
+      'file_name'        =>
+      'banner_mkt_' .
+        date('YmdHis') . '_' .
+        $random_name
+    ];
+
+    $this->load->library('upload');
     $this->upload->initialize($config);
 
     if (!$this->upload->do_upload('banner_image')) {
-      $error = $this->upload->display_errors('', '');
-      echo json_encode(['status' => false, 'message' => 'Gagal mengunggah: ' . $error]);
-    } else {
-      $upload_data = $this->upload->data();
+      $error = strip_tags(
+        $this->upload->display_errors('', '')
+      );
 
-      // Simpan nama file ke database
-      $this->db->insert('tb_banner_market', [
-        'gambar' => $upload_data['file_name'],
-        'terdaftar' => date('Y-m-d H:i:s')
-      ]);
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gagal mengunggah banner: ' . $error
+      ], 422);
+      return;
+    }
 
-      // ========================================================
-      // 🔥 FITUR BARU: BROADCAST PUSH NOTIFIKASI KE SEMUA NASABAH
-      // ========================================================
-      $judul_notif = "🎉 Promo Baru di Marketplace!";
-      $pesan_notif = "Admin baru saja menambahkan promo menarik. Yuk, cek sekarang di aplikasi sebelum kehabisan!";
+    $upload_data = $this->upload->data();
 
-      // Ambil semua Nasabah yang sudah memiliki expo_token
-      $this->db->where('level', 'Nasabah');
-      $nasabahs = $this->db->get('tb_user')->result();
+    $file_name = basename(
+      (string) $upload_data['file_name']
+    );
 
-      foreach ($nasabahs as $nsb) {
-        // 1. Simpan ke database agar muncul di Lonceng Notifikasi aplikasi
-        $this->db->insert('tb_notifikasi', [
-          'id_user' => $nsb->id,
-          'judul'   => $judul_notif,
-          'pesan'   => $pesan_notif,
-          'is_read' => 0,
-          'tanggal' => date('Y-m-d H:i:s')
-        ]);
+    $file_path = $upload_dir . $file_name;
 
-        // 2. Tembakkan Pop-up Layar HP (Push Notif) jika tokennya tidak kosong
-        if (!empty($nsb->expo_token)) {
+    /*
+     * Validasi ulang isi file, bukan hanya ekstensi.
+     */
+    $image_info = @getimagesize($file_path);
+    $mime = $image_info['mime'] ?? '';
+    $width = (int) ($image_info[0] ?? 0);
+    $height = (int) ($image_info[1] ?? 0);
+
+    $allowed_mimes = [
+      'image/jpeg',
+      'image/png',
+      'image/webp'
+    ];
+
+    if (
+      !$image_info ||
+      !in_array($mime, $allowed_mimes, true) ||
+      $width <= 0 ||
+      $height <= 0 ||
+      $width > 10000 ||
+      $height > 10000 ||
+      ($width * $height) > 40000000
+    ) {
+      if (is_file($file_path)) {
+        @unlink($file_path);
+      }
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Isi atau dimensi gambar banner tidak valid.'
+      ], 422);
+      return;
+    }
+
+    /*
+     * Secara default notifikasi tetap dikirim agar
+     * kompatibel dengan aplikasi lama.
+     *
+     * Super Admin dapat mengirim:
+     * kirim_notifikasi=0
+     * untuk memublikasikan banner tanpa broadcast.
+     */
+    $kirim_notifikasi_raw = $this->input->post(
+      'kirim_notifikasi',
+      true
+    );
+
+    $kirim_notifikasi = true;
+
+    if (
+      $kirim_notifikasi_raw !== null &&
+      $kirim_notifikasi_raw !== ''
+    ) {
+      $nilai_notifikasi = strtolower(
+        trim((string) $kirim_notifikasi_raw)
+      );
+
+      if (
+        in_array(
+          $nilai_notifikasi,
+          ['1', 'true', 'ya', 'yes'],
+          true
+        )
+      ) {
+        $kirim_notifikasi = true;
+      } elseif (
+        in_array(
+          $nilai_notifikasi,
+          ['0', 'false', 'tidak', 'no'],
+          true
+        )
+      ) {
+        $kirim_notifikasi = false;
+      } else {
+        if (is_file($file_path)) {
+          @unlink($file_path);
+        }
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Nilai kirim_notifikasi tidak valid.'
+        ], 422);
+        return;
+      }
+    }
+
+    $judul_notif =
+      'Promo Baru di Marketplace!';
+
+    $pesan_notif =
+      'Admin baru saja menambahkan promo menarik. ' .
+      'Yuk, cek sekarang di aplikasi sebelum kehabisan!';
+
+    /*
+     * Daftar Nasabah hanya diambil ketika broadcast
+     * benar-benar diminta.
+     */
+    $nasabah = [];
+
+    if ($kirim_notifikasi) {
+      $query_nasabah = $this->db
+        ->select([
+          'u.id',
+          'u.expo_token'
+        ])
+        ->from('tb_user u')
+        ->join(
+          'tb_cabang c',
+          'c.id = u.cabang_id'
+        )
+        ->where('u.level', 'Nasabah')
+        ->where('u.login', 'Ya')
+        ->where('c.status', 'Aktif')
+        ->get();
+
+      if (!$query_nasabah) {
+        $database_error = $this->db->error();
+
+        if (is_file($file_path)) {
+          @unlink($file_path);
+        }
+
+        log_message(
+          'error',
+          'Gagal mengambil penerima notifikasi banner: ' .
+            json_encode($database_error)
+        );
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Daftar penerima notifikasi gagal diambil.'
+        ], 500);
+        return;
+      }
+
+      $nasabah = $query_nasabah->result();
+    }
+
+    $tanggal = date('Y-m-d H:i:s');
+    $data_notifikasi = [];
+
+    foreach ($nasabah as $row) {
+      $data_notifikasi[] = [
+        'id_user' => (int) $row->id,
+        'judul'   => $judul_notif,
+        'pesan'   => $pesan_notif,
+        'is_read' => 0,
+        'tanggal' => $tanggal
+      ];
+    }
+
+    $this->db->trans_begin();
+
+    $insert_banner = $this->db->insert(
+      'tb_banner_market',
+      [
+        'gambar'    => $file_name,
+        'terdaftar' => $tanggal
+      ]
+    );
+
+    $id_banner = (int) $this->db->insert_id();
+    $insert_notifikasi = true;
+
+    if (
+      $insert_banner &&
+      count($data_notifikasi) > 0
+    ) {
+      $insert_notifikasi = $this->db->insert_batch(
+        'tb_notifikasi',
+        $data_notifikasi
+      );
+    }
+
+    if (
+      !$insert_banner ||
+      $insert_notifikasi === false ||
+      $this->db->trans_status() === false
+    ) {
+      $database_error = $this->db->error();
+
+      $this->db->trans_rollback();
+
+      if (is_file($file_path)) {
+        @unlink($file_path);
+      }
+
+      log_message(
+        'error',
+        'Gagal menyimpan banner marketplace: ' .
+          json_encode($database_error)
+      );
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Banner marketplace gagal disimpan.'
+      ], 500);
+      return;
+    }
+
+    $this->db->trans_commit();
+
+    /*
+     * Push dikirim setelah transaksi database berhasil.
+     * Kegagalan push tidak membatalkan banner.
+     */
+    $jumlah_push_berhasil = 0;
+
+    if ($kirim_notifikasi) {
+      foreach ($nasabah as $row) {
+        if (
+          !empty($row->expo_token) &&
           $this->send_expo_push_notification(
-            $nsb->expo_token,
+            $row->expo_token,
             $judul_notif,
             $pesan_notif
-          );
+          )
+        ) {
+          $jumlah_push_berhasil++;
         }
       }
-      // ========================================================
-
-      echo json_encode(['status' => true, 'message' => 'Banner berhasil dipublikasikan dan Notifikasi telah disebar ke Nasabah!']);
     }
-    exit;
+
+    $message = $kirim_notifikasi
+      ? 'Banner berhasil dipublikasikan dan notifikasi telah dibuat.'
+      : 'Banner berhasil dipublikasikan tanpa mengirim notifikasi.';
+
+    $this->api_response([
+      'status'  => true,
+      'message' => $message,
+      'data'    => [
+        'id_banner' =>
+        $id_banner,
+
+        'gambar' =>
+        $file_name,
+
+        'width' =>
+        $width,
+
+        'height' =>
+        $height,
+
+        'notifikasi_dikirim' =>
+        $kirim_notifikasi,
+
+        'jumlah_notifikasi' =>
+        count($data_notifikasi),
+
+        'jumlah_push_berhasil' =>
+        $jumlah_push_berhasil,
+
+        'dipublikasikan_oleh' =>
+        (int) $auth->id_user,
+
+        'nama_operator' =>
+        $auth->nama
+      ]
+    ], 201);
   }
 
   // 3. Hapus Banner Marketplace
   public function hapus_banner_market()
   {
-    $input = json_decode(file_get_contents('php://input'), true);
-    $id_banner = $input['id_banner'] ?? '';
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
 
-    $banner = $this->db->get_where('tb_banner_market', ['id' => $id_banner])->row();
-
-    if ($banner) {
-      $file_path = FCPATH . 'assets/' . $banner->gambar;
-      if (file_exists($file_path)) {
-        unlink($file_path);
-      } // Hapus file fisik
-
-      $this->db->where('id', $id_banner);
-      $this->db->delete('tb_banner_market'); // Hapus dari database
-      echo json_encode(['status' => true, 'message' => 'Banner berhasil dihapus!']);
-    } else {
-      echo json_encode(['status' => false, 'message' => 'Data banner tidak ditemukan.']);
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
+      return;
     }
+
+    $auth = $this->authenticate_api();
+
+    if (!$auth) {
+      return;
+    }
+
+    if ($auth->level !== 'Super Admin') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Akses ditolak. Khusus Super Admin.'
+      ], 403);
+      return;
+    }
+
+    $request = json_decode(
+      $this->input->raw_input_stream,
+      true
+    );
+
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format JSON tidak valid.'
+      ], 400);
+      return;
+    }
+
+    $id_banner_valid = filter_var(
+      $request['id_banner'] ?? null,
+      FILTER_VALIDATE_INT,
+      [
+        'options' => [
+          'min_range' => 1
+        ]
+      ]
+    );
+
+    if ($id_banner_valid === false) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'ID banner tidak valid.'
+      ], 422);
+      return;
+    }
+
+    $id_banner = (int) $id_banner_valid;
+
+    $this->db->trans_begin();
+
+    $banner = $this->db->query(
+      "SELECT
+          id,
+          gambar
+       FROM tb_banner_market
+       WHERE id = ?
+       LIMIT 1
+       FOR UPDATE",
+      [$id_banner]
+    )->row();
+
+    if (!$banner) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Banner marketplace tidak ditemukan.'
+      ], 404);
+      return;
+    }
+
+    $gambar_asli = (string) $banner->gambar;
+    $file_name = basename($gambar_asli);
+
+    /*
+     * Tolak nama file yang mengandung path atau karakter
+     * di luar pola banner marketplace.
+     */
+    if (
+      $file_name !== $gambar_asli ||
+      !preg_match(
+        '/^banner_mkt_[A-Za-z0-9._-]+\.(jpg|jpeg|png|webp)$/i',
+        $file_name
+      )
+    ) {
+      $this->db->trans_rollback();
+
+      log_message(
+        'error',
+        'Nama file banner marketplace tidak aman: ' .
+          $gambar_asli
+      );
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Nama file banner pada database tidak valid.'
+      ], 409);
+      return;
+    }
+
+    $delete = $this->db
+      ->where('id', $id_banner)
+      ->delete('tb_banner_market');
+
+    if (
+      !$delete ||
+      $this->db->trans_status() === false
+    ) {
+      $database_error = $this->db->error();
+
+      $this->db->trans_rollback();
+
+      log_message(
+        'error',
+        'Gagal menghapus banner marketplace: ' .
+          json_encode($database_error)
+      );
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Banner marketplace gagal dihapus.'
+      ], 500);
+      return;
+    }
+
+    $this->db->trans_commit();
+
+    /*
+     * File dihapus setelah transaksi database berhasil.
+     * Path selalu berasal dari basename yang telah divalidasi.
+     */
+    $file_path = FCPATH . 'assets/' . $file_name;
+    $file_ditemukan = is_file($file_path);
+    $file_terhapus = true;
+
+    if ($file_ditemukan) {
+      $file_terhapus = @unlink($file_path);
+
+      if (!$file_terhapus) {
+        log_message(
+          'error',
+          'File banner marketplace gagal dihapus: ' .
+            $file_name
+        );
+      }
+    }
+
+    $this->api_response([
+      'status'  => true,
+      'message' => $file_terhapus
+        ? 'Banner marketplace berhasil dihapus.'
+        : 'Data banner berhasil dihapus, tetapi file fisik gagal dibersihkan.',
+      'data'    => [
+        'id_banner'       => $id_banner,
+        'gambar'          => $file_name,
+        'file_ditemukan'  => $file_ditemukan,
+        'file_terhapus'   => $file_terhapus,
+        'dihapus_oleh'    => (int) $auth->id_user,
+        'nama_operator'   => $auth->nama
+      ]
+    ]);
   }
 
   public function simpan_emas()
