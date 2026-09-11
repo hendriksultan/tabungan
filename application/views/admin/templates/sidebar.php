@@ -85,6 +85,15 @@ $isSuperAdmin = ($userLevel === 'super admin');
                 $userLevel === 'super admin'
             ): ?>
 
+                <li class="<?= $this->uri->segment(2) === 'laporan'
+                    ? 'active'
+                    : '' ?>">
+                    <a href="<?= base_url('admin/laporan') ?>">
+                        <i class="fa fa-bar-chart"></i>
+                        <span>Laporan</span>
+                    </a>
+                </li>
+
                 <li>
                     <a href="<?= base_url('admin/potongan') ?>">
                         <i class="fa fa-minus-circle"></i>
