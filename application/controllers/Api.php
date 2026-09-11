@@ -1281,6 +1281,7 @@ class Api extends CI_Controller
       'inner'
     );
     $this->db->where('u.level', 'Nasabah');
+    $this->db->where('u.login', 'Ya');
     $this->db->where('c.status', 'Aktif');
 
     /*
@@ -1949,6 +1950,7 @@ class Api extends CI_Controller
             u.id,
             u.nama,
             u.level,
+            u.login AS status_akun,
             u.cabang_id,
             c.kode AS kode_cabang,
             c.nama AS nama_cabang,
@@ -1993,6 +1995,26 @@ class Api extends CI_Controller
         'status'  => false,
         'message' => 'Data penerima tidak ditemukan.'
       ], 404);
+
+      return;
+    }
+
+    /*
+     * Akun yang belum diverifikasi, ditolak, atau dinonaktifkan
+     * tidak boleh menjadi pengirim maupun penerima transfer.
+     * Pemeriksaan dilakukan kembali di server meskipun daftar
+     * penerima pada get_nasabah sudah disaring.
+     */
+    if (
+      $pengirim->status_akun !== 'Ya' ||
+      $penerima->status_akun !== 'Ya'
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Akun pengirim atau penerima tidak aktif.'
+      ], 403);
 
       return;
     }
