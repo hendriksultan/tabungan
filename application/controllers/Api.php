@@ -2710,6 +2710,10 @@ class Api extends CI_Controller
       : $current_user->alamat;
 
     $password = (string) ($request['password'] ?? '');
+    $password_saat_ini = (string) (
+      $request['password_saat_ini'] ?? ''
+    );
+    $password_changed = $password !== '';
     $foto_base64 = (string) ($request['foto_base64'] ?? '');
 
     if ($nama === '' || $username === '') {
@@ -2789,21 +2793,172 @@ class Api extends CI_Controller
 
     /*
      * Password tidak wajib diisi.
-     * Jika diisi, gunakan minimal 8 karakter.
+     * Jika diisi, gunakan 8 sampai 72 karakter agar sesuai
+     * dengan batas input bcrypt.
      */
     if (
-      $password !== '' &&
+      $password_changed &&
       (
-        mb_strlen($password) < 8 ||
-        mb_strlen($password) > 128
+        strlen($password) < 8 ||
+        strlen($password) > 72
       )
     ) {
       $this->api_response([
         'status'  => false,
-        'message' => 'Password harus berisi 8 sampai 128 karakter.'
+        'message' => 'Password baru harus berisi 8 sampai 72 karakter.'
       ], 422);
 
       return;
+    }
+
+    if ($password_changed) {
+      if ($password_saat_ini === '') {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Password saat ini wajib diisi untuk mengganti password.'
+        ], 422);
+        return;
+      }
+
+      if (strlen($password_saat_ini) > 1024) {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Password saat ini tidak valid.'
+        ], 401);
+        return;
+      }
+
+      $username_hash = hash(
+        'sha256',
+        mb_strtolower(
+          (string) $current_user->username,
+          'UTF-8'
+        )
+      );
+
+      $ip_address = mb_substr(
+        (string) $this->input->ip_address(),
+        0,
+        45
+      );
+
+      $batas_waktu = date(
+        'Y-m-d H:i:s',
+        strtotime('-15 minutes')
+      );
+
+      $jumlah_kombinasi = $this->db
+        ->where('username_hash', $username_hash)
+        ->where('ip_address', $ip_address)
+        ->where('dicoba_pada >=', $batas_waktu)
+        ->count_all_results('tb_login_attempt');
+
+      $jumlah_username = $this->db
+        ->where('username_hash', $username_hash)
+        ->where('dicoba_pada >=', $batas_waktu)
+        ->count_all_results('tb_login_attempt');
+
+      $jumlah_ip = $this->db
+        ->where('ip_address', $ip_address)
+        ->where('dicoba_pada >=', $batas_waktu)
+        ->count_all_results('tb_login_attempt');
+
+      if (
+        $jumlah_kombinasi >= 5 ||
+        $jumlah_username >= 10 ||
+        $jumlah_ip >= 30
+      ) {
+        header('Retry-After: 900');
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Terlalu banyak percobaan verifikasi password. Silakan coba kembali setelah 15 menit.',
+          'data'    => [
+            'coba_lagi_dalam_detik' => 900
+          ]
+        ], 429);
+        return;
+      }
+
+      if (!password_verify(
+        $password_saat_ini,
+        (string) $current_user->password
+      )) {
+        $user_agent_header =
+          $this->input->get_request_header(
+            'User-Agent',
+            true
+          );
+
+        $insert_attempt = $this->db->insert(
+          'tb_login_attempt',
+          [
+            'username_hash' => $username_hash,
+            'id_user'       => $id_user,
+            'ip_address'    => $ip_address,
+            'user_agent'    => $user_agent_header
+              ? mb_substr(
+                (string) $user_agent_header,
+                0,
+                255
+              )
+              : null,
+            'dicoba_pada'   => date('Y-m-d H:i:s')
+          ]
+        );
+
+        if (!$insert_attempt) {
+          log_message(
+            'error',
+            'Gagal mencatat verifikasi password profil dari IP ' .
+              $ip_address
+          );
+
+          $this->api_response([
+            'status'  => false,
+            'message' => 'Layanan perubahan password sementara tidak tersedia.'
+          ], 503);
+          return;
+        }
+
+        $jumlah_kombinasi++;
+        $jumlah_username++;
+        $jumlah_ip++;
+
+        if (
+          $jumlah_kombinasi >= 5 ||
+          $jumlah_username >= 10 ||
+          $jumlah_ip >= 30
+        ) {
+          header('Retry-After: 900');
+
+          $this->api_response([
+            'status'  => false,
+            'message' => 'Terlalu banyak percobaan verifikasi password. Silakan coba kembali setelah 15 menit.',
+            'data'    => [
+              'coba_lagi_dalam_detik' => 900
+            ]
+          ], 429);
+          return;
+        }
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Password saat ini salah.'
+        ], 401);
+        return;
+      }
+
+      if (password_verify(
+        $password,
+        (string) $current_user->password
+      )) {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Password baru tidak boleh sama dengan password saat ini.'
+        ], 422);
+        return;
+      }
     }
 
     // Pastikan username belum digunakan akun lain
@@ -2896,15 +3051,22 @@ class Api extends CI_Controller
       'alamat'       => $alamat
     ];
 
-    $password_changed = false;
-
-    if ($password !== '') {
-      $data_update['password'] = password_hash(
+    if ($password_changed) {
+      $hash_password_baru = password_hash(
         $password,
-        PASSWORD_DEFAULT
+        PASSWORD_BCRYPT
       );
 
-      $password_changed = true;
+      if ($hash_password_baru === false) {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Password baru gagal dilindungi.'
+        ], 500);
+        return;
+      }
+
+      $data_update['password'] =
+        $hash_password_baru;
     }
 
     $file_name = null;
@@ -2958,6 +3120,44 @@ class Api extends CI_Controller
 
     $this->db->trans_begin();
 
+    if ($password_changed) {
+      $password_terkunci = $this->db->query(
+        "SELECT password
+         FROM tb_user
+         WHERE id = ?
+         LIMIT 1
+         FOR UPDATE",
+        [$id_user]
+      )->row();
+
+      /*
+       * Pastikan password tidak berubah oleh request lain
+       * di antara proses verifikasi dan penyimpanan.
+       */
+      if (
+        !$password_terkunci ||
+        !password_verify(
+          $password_saat_ini,
+          (string) $password_terkunci->password
+        )
+      ) {
+        $this->db->trans_rollback();
+
+        if (
+          $saved_file_path !== null &&
+          is_file($saved_file_path)
+        ) {
+          unlink($saved_file_path);
+        }
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Password akun telah berubah. Silakan login kembali dan ulangi permintaan.'
+        ], 409);
+        return;
+      }
+    }
+
     $this->db->where('id', $id_user);
     $updated = $this->db->update(
       'tb_user',
@@ -2965,12 +3165,11 @@ class Api extends CI_Controller
     );
 
     /*
-     * Jika password berubah, cabut semua sesi lain.
-     * Token yang sedang digunakan tetap aktif.
+     * Jika password berubah, cabut seluruh sesi termasuk
+     * token yang sedang digunakan. Pengguna wajib login ulang.
      */
     if ($updated && $password_changed) {
       $this->db->where('id_user', $id_user);
-      $this->db->where('id !=', (int) $auth->token_id);
       $this->db->where(
         'revoked_at IS NULL',
         null,
@@ -2979,6 +3178,14 @@ class Api extends CI_Controller
       $this->db->update('tb_api_token', [
         'revoked_at' => date('Y-m-d H:i:s')
       ]);
+
+      /*
+       * Verifikasi berhasil membersihkan kegagalan password
+       * untuk username pemilik akun.
+       */
+      $this->db
+        ->where('username_hash', $username_hash)
+        ->delete('tb_login_attempt');
     }
 
     if (!$updated || $this->db->trans_status() === false) {
@@ -3010,7 +3217,9 @@ class Api extends CI_Controller
 
     $this->api_response([
       'status'     => true,
-      'message'    => 'Profil berhasil diperbarui.',
+      'message'    => $password_changed
+        ? 'Password berhasil diperbarui. Silakan login kembali pada seluruh perangkat.'
+        : 'Profil berhasil diperbarui.',
       'foto_baru'  => $file_name,
       'data'       => [
         'id'              => $id_user,
@@ -3025,7 +3234,10 @@ class Api extends CI_Controller
         'level'           => $current_user->level,
         'cabang_id'       => (int) $current_user->cabang_id,
         'kode_cabang'     => $current_user->kode_cabang,
-        'nama_cabang'     => $current_user->nama_cabang
+        'nama_cabang'     => $current_user->nama_cabang,
+        'password_diubah' => $password_changed,
+        'login_ulang'     => $password_changed,
+        'semua_sesi_dicabut' => $password_changed
       ]
     ]);
   }
