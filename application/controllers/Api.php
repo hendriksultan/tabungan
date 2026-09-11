@@ -232,33 +232,150 @@ class Api extends CI_Controller
   // ==========================================
   public function login()
   {
-    if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-      echo json_encode([
+    header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+    header('Pragma: no-cache');
+
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
         'status'  => false,
         'message' => 'Gunakan metode POST.'
-      ]);
+      ], 405);
+      return;
+    }
+
+    $content_length = (int) $this->input->server(
+      'CONTENT_LENGTH'
+    );
+
+    if ($content_length > 8192) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Ukuran permintaan login terlalu besar.'
+      ], 413);
       return;
     }
 
     $request = json_decode($this->input->raw_input_stream, true);
 
     if (!is_array($request)) {
-      echo json_encode([
+      $this->api_response([
         'status'  => false,
         'message' => 'Format permintaan tidak valid.'
-      ]);
+      ], 400);
       return;
     }
 
     $username = trim((string) ($request['username'] ?? ''));
     $password = (string) ($request['password'] ?? '');
-    $device   = trim((string) ($request['device'] ?? 'Perangkat tidak diketahui'));
+    $device = trim((string) (
+      $request['device'] ?? 'Perangkat tidak diketahui'
+    ));
 
     if ($username === '' || $password === '') {
-      echo json_encode([
+      $this->api_response([
         'status'  => false,
         'message' => 'Username dan password harus diisi.'
-      ]);
+      ], 422);
+      return;
+    }
+
+    if (
+      mb_strlen($username) > 256 ||
+      strlen($password) > 1024
+    ) {
+      /*
+       * Pesan dibuat sama agar keberadaan username
+       * tidak dapat ditebak dari validasi panjang.
+       */
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Username atau password salah.'
+      ], 401);
+      return;
+    }
+
+    $username_normal = mb_strtolower(
+      $username,
+      'UTF-8'
+    );
+
+    /*
+     * Username mentah tidak pernah dicatat pada log percobaan.
+     */
+    $username_hash = hash(
+      'sha256',
+      $username_normal
+    );
+
+    $ip_address = mb_substr(
+      (string) $this->input->ip_address(),
+      0,
+      45
+    );
+
+    $user_agent_header =
+      $this->input->get_request_header(
+        'User-Agent',
+        true
+      );
+
+    $user_agent = $user_agent_header
+      ? mb_substr(
+        (string) $user_agent_header,
+        0,
+        255
+      )
+      : null;
+
+    $batas_waktu = date(
+      'Y-m-d H:i:s',
+      strtotime('-15 minutes')
+    );
+
+    /*
+     * Hapus catatan kedaluwarsa agar tabel tidak tumbuh
+     * tanpa batas. Data tujuh hari terakhir dipertahankan.
+     */
+    $this->db
+      ->where(
+        'dicoba_pada <',
+        date(
+          'Y-m-d H:i:s',
+          strtotime('-7 days')
+        )
+      )
+      ->delete('tb_login_attempt');
+
+    $jumlah_kombinasi = $this->db
+      ->where('username_hash', $username_hash)
+      ->where('ip_address', $ip_address)
+      ->where('dicoba_pada >=', $batas_waktu)
+      ->count_all_results('tb_login_attempt');
+
+    $jumlah_username = $this->db
+      ->where('username_hash', $username_hash)
+      ->where('dicoba_pada >=', $batas_waktu)
+      ->count_all_results('tb_login_attempt');
+
+    $jumlah_ip = $this->db
+      ->where('ip_address', $ip_address)
+      ->where('dicoba_pada >=', $batas_waktu)
+      ->count_all_results('tb_login_attempt');
+
+    if (
+      $jumlah_kombinasi >= 5 ||
+      $jumlah_username >= 10 ||
+      $jumlah_ip >= 30
+    ) {
+      header('Retry-After: 900');
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Terlalu banyak percobaan login. Silakan coba kembali setelah 15 menit.',
+        'data'    => [
+          'coba_lagi_dalam_detik' => 900
+        ]
+      ], 429);
       return;
     }
 
@@ -277,10 +394,58 @@ class Api extends CI_Controller
 
     // Gunakan pesan yang sama agar username terdaftar tidak mudah ditebak
     if (!$user || !password_verify($password, $user->password)) {
-      echo json_encode([
+      $insert_attempt = $this->db->insert(
+        'tb_login_attempt',
+        [
+          'username_hash' => $username_hash,
+          'id_user'       => $user
+            ? (int) $user->id
+            : null,
+          'ip_address'    => $ip_address,
+          'user_agent'    => $user_agent,
+          'dicoba_pada'   => date('Y-m-d H:i:s')
+        ]
+      );
+
+      if (!$insert_attempt) {
+        log_message(
+          'error',
+          'Gagal mencatat percobaan login dari IP ' .
+            $ip_address
+        );
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Layanan login sementara tidak tersedia.'
+        ], 503);
+        return;
+      }
+
+      $jumlah_kombinasi++;
+      $jumlah_username++;
+      $jumlah_ip++;
+
+      if (
+        $jumlah_kombinasi >= 5 ||
+        $jumlah_username >= 10 ||
+        $jumlah_ip >= 30
+      ) {
+        header('Retry-After: 900');
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Terlalu banyak percobaan login. Silakan coba kembali setelah 15 menit.',
+          'data'    => [
+            'coba_lagi_dalam_detik' => 900
+          ]
+        ], 429);
+        return;
+      }
+
+      $this->api_response([
         'status'  => false,
         'message' => 'Username atau password salah.'
-      ]);
+      ], 401);
       return;
     }
 
@@ -293,29 +458,31 @@ class Api extends CI_Controller
         ? 'Pendaftaran akun Anda telah ditolak.'
         : 'Akun Anda belum diverifikasi oleh Administrator.';
 
-      echo json_encode([
+      $this->api_response([
         'status'  => false,
         'message' => $message
-      ]);
+      ], 403);
 
       return;
     }
 
     if (empty($user->cabang_id)) {
-      echo json_encode([
+      $this->api_response([
         'status'  => false,
         'message' => 'Akun belum terhubung dengan cabang.'
-      ]);
+      ], 403);
       return;
     }
 
     if ($user->status_cabang !== 'Aktif') {
-      echo json_encode([
+      $this->api_response([
         'status'  => false,
         'message' => 'Cabang akun Anda sedang tidak aktif.'
-      ]);
+      ], 403);
       return;
     }
+
+    $transaksi_login_dimulai = false;
 
     try {
       // Token asli hanya dikirim kepada aplikasi
@@ -336,15 +503,47 @@ class Api extends CI_Controller
         'terdaftar'    => date('Y-m-d H:i:s')
       ];
 
-      if (!$this->db->insert('tb_api_token', $dataToken)) {
-        echo json_encode([
+      $this->db->trans_begin();
+      $transaksi_login_dimulai = true;
+
+      $token_disimpan = $this->db->insert(
+        'tb_api_token',
+        $dataToken
+      );
+
+      /*
+       * Login berhasil menghapus kegagalan untuk username
+       * tersebut. Catatan IP bagi username lain tetap ada.
+       */
+      $attempt_dibersihkan = $this->db
+        ->where('username_hash', $username_hash)
+        ->delete('tb_login_attempt');
+
+      if (
+        !$token_disimpan ||
+        !$attempt_dibersihkan ||
+        $this->db->trans_status() === false
+      ) {
+        $database_error = $this->db->error();
+        $this->db->trans_rollback();
+
+        log_message(
+          'error',
+          'Gagal membuat sesi login: ' .
+            json_encode($database_error)
+        );
+
+        $this->api_response([
           'status'  => false,
           'message' => 'Gagal membuat sesi login.'
-        ]);
+        ], 500);
         return;
       }
 
-      echo json_encode([
+      $this->db->trans_commit();
+      $transaksi_login_dimulai = false;
+
+      $this->api_response([
         'status'       => true,
         'message'      => 'Login berhasil.',
         'token'        => $token,
@@ -376,13 +575,21 @@ class Api extends CI_Controller
             : null
         ]
       ]);
-    } catch (Exception $e) {
-      log_message('error', 'Gagal membuat token API: ' . $e->getMessage());
+    } catch (Throwable $e) {
+      if ($transaksi_login_dimulai) {
+        $this->db->trans_rollback();
+      }
 
-      echo json_encode([
+      log_message(
+        'error',
+        'Gagal membuat token API: ' .
+          $e->getMessage()
+      );
+
+      $this->api_response([
         'status'  => false,
         'message' => 'Terjadi kesalahan saat membuat sesi login.'
-      ]);
+      ], 500);
     }
   }
 
