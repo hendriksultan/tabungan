@@ -1741,35 +1741,16 @@ class Api extends CI_Controller
 
     $this->db->trans_commit();
 
-    /*
-     * Notifikasi dilakukan setelah transaksi database selesai,
-     * sehingga koneksi WhatsApp/push tidak menahan transaksi.
-     */
+    // Notifikasi dikirim setelah transaksi database selesai.
     if ($status_konfirmasi === 'Pending') {
       $jenis_teks = $jenis === 'Masuk'
         ? 'menabung'
         : 'penarikan';
 
-      $jenis_wa = $jenis === 'Masuk'
-        ? 'Menabung'
-        : 'Penarikan';
-
-      $pesan_wa = "🔔 *PENGAJUAN TRANSAKSI BARU*\n\n";
-      $pesan_wa .= "👤 *Nama:* {$nasabah->nama}\n";
-      $pesan_wa .= "🏢 *Cabang:* {$nasabah->nama_cabang}\n";
-      $pesan_wa .= "📝 *Jenis:* {$jenis_wa} Dana\n";
-      $pesan_wa .= "💰 *Nominal:* Rp " .
-        number_format($nominal, 0, ',', '.') . "\n";
-      $pesan_wa .= "📌 *Keterangan:* " .
-        ($keterangan !== '' ? $keterangan : '-') . "\n\n";
-      $pesan_wa .= "Mohon segera periksa aplikasi.";
-
       /*
-         * Administrator cabang terkait dan seluruh Super Admin.
-         */
-      $this->db->select(
-        'id, nama, telp, expo_token, level, cabang_id'
-      );
+       * Administrator cabang terkait dan seluruh Super Admin.
+       */
+      $this->db->select('id, expo_token');
       $this->db->from('tb_user');
       $this->db->group_start();
 
@@ -1806,13 +1787,6 @@ class Api extends CI_Controller
             $admin->expo_token,
             $judul_notifikasi,
             $isi_notifikasi
-          );
-        }
-
-        if (!empty($admin->telp)) {
-          $this->send_whatsapp(
-            $admin->telp,
-            $pesan_wa
           );
         }
       }
@@ -3430,33 +3404,6 @@ class Api extends CI_Controller
     }
 
     return true;
-  }
-
-  private function send_whatsapp($nomor_tujuan, $pesan)
-  {
-    $token = 'TOKEN_WA_GATEWAY_ANDA_DISINI';
-
-    $curl = curl_init();
-    curl_setopt_array($curl, array(
-      CURLOPT_URL => 'https://api.fonnte.com/send',
-      CURLOPT_RETURNTRANSFER => true,
-      CURLOPT_ENCODING => '',
-      CURLOPT_MAXREDIRS => 10,
-      CURLOPT_TIMEOUT => 0,
-      CURLOPT_FOLLOWLOCATION => true,
-      CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
-      CURLOPT_CUSTOMREQUEST => 'POST',
-      CURLOPT_POSTFIELDS => array(
-        'target' => $nomor_tujuan,
-        'message' => $pesan,
-        'countryCode' => '62',
-      ),
-      CURLOPT_HTTPHEADER => array('Authorization: ' . $token),
-    ));
-
-    $response = curl_exec($curl);
-    curl_close($curl);
-    return $response;
   }
 
   // ==========================================
