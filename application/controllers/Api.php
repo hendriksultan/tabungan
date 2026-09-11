@@ -3403,9 +3403,33 @@ class Api extends CI_Controller
     curl_setopt($ch, CURLOPT_POST, 1);
     curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 3);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 5);
+    curl_setopt($ch, CURLOPT_NOSIGNAL, true);
     $response = curl_exec($ch);
+    $curl_error = curl_error($ch);
+    $http_status = (int) curl_getinfo(
+      $ch,
+      CURLINFO_HTTP_CODE
+    );
     curl_close($ch);
-    return $response;
+
+    if (
+      $response === false ||
+      $curl_error !== '' ||
+      $http_status < 200 ||
+      $http_status >= 300
+    ) {
+      log_message(
+        'error',
+        'Pengiriman notifikasi Expo gagal dengan HTTP ' .
+          $http_status
+      );
+
+      return false;
+    }
+
+    return true;
   }
 
   private function send_whatsapp($nomor_tujuan, $pesan)
@@ -4204,6 +4228,9 @@ class Api extends CI_Controller
       return;
     }
 
+    header('Cache-Control: no-store, max-age=0');
+    header('Pragma: no-cache');
+
     $raw_request = $this->input->raw_input_stream;
 
     // Pendaftaran tidak mengandung foto, jadi 64 KB sudah cukup
@@ -4275,12 +4302,12 @@ class Api extends CI_Controller
     }
 
     if (
-      mb_strlen($password) < 8 ||
-      mb_strlen($password) > 128
+      strlen($password) < 8 ||
+      strlen($password) > 72
     ) {
       $this->api_response([
         'status'  => false,
-        'message' => 'Password harus berisi 8 sampai 128 karakter.'
+        'message' => 'Password harus berisi 8 sampai 72 karakter.'
       ], 422);
 
       return;
@@ -4340,6 +4367,159 @@ class Api extends CI_Controller
       return;
     }
 
+    /*
+     * Batasi pendaftaran publik berdasarkan IP.
+     * Username hanya disimpan sebagai hash SHA-256.
+     */
+    $ip_address = mb_substr(
+      (string) $this->input->ip_address(),
+      0,
+      45
+    );
+
+    $username_hash = hash(
+      'sha256',
+      mb_strtolower($username, 'UTF-8')
+    );
+
+    $user_agent_header =
+      $this->input->get_request_header(
+        'User-Agent',
+        true
+      );
+
+    $batas_15_menit = date(
+      'Y-m-d H:i:s',
+      strtotime('-15 minutes')
+    );
+
+    $batas_24_jam = date(
+      'Y-m-d H:i:s',
+      strtotime('-24 hours')
+    );
+
+    /*
+     * Bersihkan maksimal 1.000 catatan lama per request
+     * agar tabel tidak tumbuh tanpa batas.
+     */
+    $cleanup_register_attempt = $this->db
+      ->where(
+        'dicoba_pada <',
+        date(
+          'Y-m-d H:i:s',
+          strtotime('-7 days')
+        )
+      )
+      ->limit(1000)
+      ->delete('tb_register_attempt');
+
+    if (!$cleanup_register_attempt) {
+      log_message(
+        'error',
+        'Gagal membersihkan catatan rate limit pendaftaran.'
+      );
+    }
+
+    /*
+     * Advisory lock membuat pemeriksaan dan pencatatan
+     * atomik untuk request paralel dari IP yang sama.
+     */
+    $register_lock_name = 'register_rate_' . substr(
+      hash('sha256', $ip_address),
+      0,
+      40
+    );
+
+    $register_lock = $this->db->query(
+      'SELECT GET_LOCK(?, 3) AS acquired',
+      [$register_lock_name]
+    )->row();
+
+    if (
+      !$register_lock ||
+      (int) $register_lock->acquired !== 1
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Layanan pendaftaran sedang sibuk. Silakan coba kembali.'
+      ], 503);
+      return;
+    }
+
+    $jumlah_15_menit = $this->db
+      ->where('ip_address', $ip_address)
+      ->where('dicoba_pada >=', $batas_15_menit)
+      ->count_all_results('tb_register_attempt');
+
+    $jumlah_24_jam = $this->db
+      ->where('ip_address', $ip_address)
+      ->where('dicoba_pada >=', $batas_24_jam)
+      ->count_all_results('tb_register_attempt');
+
+    if (
+      $jumlah_15_menit >= 5 ||
+      $jumlah_24_jam >= 20
+    ) {
+      $retry_after = $jumlah_24_jam >= 20
+        ? 86400
+        : 900;
+
+      $this->db->query(
+        'SELECT RELEASE_LOCK(?)',
+        [$register_lock_name]
+      );
+
+      header('Retry-After: ' . $retry_after);
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Terlalu banyak percobaan pendaftaran dari jaringan ini. Silakan coba kembali nanti.',
+        'data'    => [
+          'coba_lagi_dalam_detik' => $retry_after
+        ]
+      ], 429);
+      return;
+    }
+
+    $register_attempt_saved = $this->db->insert(
+      'tb_register_attempt',
+      [
+        'ip_address'    => $ip_address,
+        'username_hash' => $username_hash,
+        'user_agent'    => $user_agent_header
+          ? mb_substr(
+            (string) $user_agent_header,
+            0,
+            255
+          )
+          : null,
+        'berhasil'      => 0,
+        'id_user'       => null,
+        'dicoba_pada'   => date('Y-m-d H:i:s')
+      ]
+    );
+
+    $id_register_attempt = (int) $this->db->insert_id();
+
+    $this->db->query(
+      'SELECT RELEASE_LOCK(?)',
+      [$register_lock_name]
+    );
+
+    if (!$register_attempt_saved) {
+      log_message(
+        'error',
+        'Gagal mencatat rate limit pendaftaran dari IP ' .
+          $ip_address
+      );
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Layanan pendaftaran sementara tidak tersedia.'
+      ], 503);
+      return;
+    }
+
     // Pastikan cabang ada dan aktif
     $cabang = $this->db
       ->select('id, kode, nama, status')
@@ -4371,6 +4551,19 @@ class Api extends CI_Controller
       return;
     }
 
+    $password_hash = password_hash(
+      $password,
+      PASSWORD_BCRYPT
+    );
+
+    if ($password_hash === false) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Password gagal diamankan.'
+      ], 500);
+      return;
+    }
+
     $data_user = [
       'nama'         => $nama,
       'jenisKelamin' => $jenis_kelamin,
@@ -4379,10 +4572,7 @@ class Api extends CI_Controller
       'alamat'       => $alamat,
       'id_kota'      => 0,
       'username'     => $username,
-      'password'     => password_hash(
-        $password,
-        PASSWORD_DEFAULT
-      ),
+      'password'     => $password_hash,
       'foto'         => 'no-image.png',
       'skin'         => 'green',
       'expo_token'   => null,
@@ -4411,22 +4601,46 @@ class Api extends CI_Controller
           json_encode($database_error)
       );
 
-      $message = (
+      $username_duplicate = (
         isset($database_error['code']) &&
         (int) $database_error['code'] === 1062
-      )
+      );
+
+      $message = $username_duplicate
         ? 'Username sudah terdaftar.'
         : 'Pendaftaran gagal diproses.';
 
       $this->api_response([
         'status'  => false,
         'message' => $message
-      ], 500);
+      ], $username_duplicate ? 409 : 500);
 
       return;
     }
 
     $this->db->trans_commit();
+
+    /*
+     * Tandai catatan rate limit sebagai pendaftaran berhasil.
+     * Kegagalan audit tidak membatalkan akun yang sudah dibuat.
+     */
+    $register_attempt_updated = $this->db
+      ->where('id_attempt', $id_register_attempt)
+      ->update(
+        'tb_register_attempt',
+        [
+          'berhasil' => 1,
+          'id_user'  => $id_user
+        ]
+      );
+
+    if (!$register_attempt_updated) {
+      log_message(
+        'error',
+        'Gagal menandai keberhasilan audit pendaftaran ID ' .
+          $id_user
+      );
+    }
 
     /*
      * Beri tahu Administrator pada cabang pilihan
