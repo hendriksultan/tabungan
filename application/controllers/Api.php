@@ -131,6 +131,7 @@ class Api extends CI_Controller
          u.nama,
          u.username,
          u.level,
+         u.login AS status_akun,
          u.cabang_id,
          c.kode AS kode_cabang,
          c.nama AS nama_cabang,
@@ -171,6 +172,30 @@ class Api extends CI_Controller
         'status'  => false,
         'message' => 'Sesi login telah berakhir. Silakan login kembali.'
       ], 401);
+
+      return null;
+    }
+
+    /*
+     * Token lama tidak boleh tetap digunakan setelah akun
+     * dinonaktifkan atau pendaftar ditolak. Cabut seluruh sesi
+     * aktif pengguna agar token tidak hidup kembali jika akun
+     * kemudian diaktifkan ulang.
+     */
+    if ($auth->status_akun !== 'Ya') {
+      $waktu_pencabutan = date('Y-m-d H:i:s');
+
+      $this->db
+        ->where('id_user', (int) $auth->id_user)
+        ->where('revoked_at IS NULL', null, false)
+        ->update('tb_api_token', [
+          'revoked_at' => $waktu_pencabutan
+        ]);
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Akun sudah tidak aktif. Seluruh sesi login telah dicabut.'
+      ], 403);
 
       return null;
     }
