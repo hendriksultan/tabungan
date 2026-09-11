@@ -340,7 +340,15 @@ class Api extends CI_Controller
           'cabang_id'      => (int) $user->cabang_id,
           'kode_cabang'    => $user->kode_cabang,
           'nama_cabang'    => $user->nama_cabang,
-          'is_pusat'       => (int) $user->is_pusat
+          'is_pusat'       => (int) $user->is_pusat,
+          'pin_wajib_diubah' =>
+          $user->level === 'Nasabah' &&
+            (int) $user->pin_wajib_diubah === 1,
+          'pin_reset_kedaluwarsa' =>
+          $user->level === 'Nasabah' &&
+            (int) $user->pin_wajib_diubah === 1
+            ? $user->pin_reset_kedaluwarsa
+            : null
         ]
       ]);
     } catch (Exception $e) {
@@ -6141,6 +6149,29 @@ class Api extends CI_Controller
    * Helper ini harus dipanggil setelah baris tb_user
    * dikunci menggunakan FOR UPDATE.
    */
+    if ((int) $user->pin_wajib_diubah === 1) {
+      $pin_kedaluwarsa =
+        empty($user->pin_reset_kedaluwarsa) ||
+        strtotime($user->pin_reset_kedaluwarsa) <=
+        $waktu_sekarang;
+
+      return [
+        'status'    => false,
+        'http_code' => 403,
+        'message'   => $pin_kedaluwarsa
+          ? 'PIN sementara sudah kedaluwarsa. Silakan meminta reset PIN baru kepada Administrator.'
+          : 'PIN sementara wajib diganti sebelum melakukan transaksi.',
+        'data'      => [
+          'pin_wajib_diubah' => true,
+          'pin_sementara_kedaluwarsa' =>
+          $pin_kedaluwarsa,
+          'kedaluwarsa_pada' =>
+          $user->pin_reset_kedaluwarsa
+        ],
+        'simpan_perubahan' => false
+      ];
+    }
+
     if (
       !empty($user->pin_terkunci_sampai) &&
       strtotime($user->pin_terkunci_sampai) >
@@ -6388,7 +6419,9 @@ class Api extends CI_Controller
             login,
             pin,
             pin_gagal,
-            pin_terkunci_sampai
+            pin_terkunci_sampai,
+            pin_wajib_diubah,
+            pin_reset_kedaluwarsa
          FROM tb_user
          WHERE id = ?
          LIMIT 1
@@ -6411,6 +6444,30 @@ class Api extends CI_Controller
     }
 
     $waktu_sekarang = time();
+
+    if ((int) $user->pin_wajib_diubah === 1) {
+      $pin_kedaluwarsa =
+        empty($user->pin_reset_kedaluwarsa) ||
+        strtotime($user->pin_reset_kedaluwarsa) <=
+        $waktu_sekarang;
+
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => $pin_kedaluwarsa
+          ? 'PIN sementara sudah kedaluwarsa. Silakan meminta reset PIN baru kepada Administrator.'
+          : 'PIN sementara wajib diganti melalui menu Ubah PIN sebelum dapat digunakan.',
+        'data'    => [
+          'pin_wajib_diubah' => true,
+          'pin_sementara_kedaluwarsa' =>
+          $pin_kedaluwarsa,
+          'kedaluwarsa_pada' =>
+          $user->pin_reset_kedaluwarsa
+        ]
+      ], 403);
+      return;
+    }
 
     /*
      * Jika masa penguncian belum berakhir, PIN tidak diperiksa.
@@ -6704,7 +6761,9 @@ class Api extends CI_Controller
             login,
             pin,
             pin_gagal,
-            pin_terkunci_sampai
+            pin_terkunci_sampai,
+            pin_wajib_diubah,
+            pin_reset_kedaluwarsa
          FROM tb_user
          WHERE id = ?
          LIMIT 1
@@ -6727,6 +6786,29 @@ class Api extends CI_Controller
     }
 
     $waktu_sekarang = time();
+
+    if (
+      (int) $user->pin_wajib_diubah === 1 &&
+      (
+        empty($user->pin_reset_kedaluwarsa) ||
+        strtotime($user->pin_reset_kedaluwarsa) <=
+        $waktu_sekarang
+      )
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'PIN sementara sudah kedaluwarsa. Silakan meminta reset PIN baru kepada Administrator.',
+        'data'    => [
+          'pin_wajib_diubah' => true,
+          'pin_sementara_kedaluwarsa' => true,
+          'kedaluwarsa_pada' =>
+          $user->pin_reset_kedaluwarsa
+        ]
+      ], 403);
+      return;
+    }
 
     if (
       !empty($user->pin_terkunci_sampai) &&
@@ -6895,7 +6977,11 @@ class Api extends CI_Controller
       ->update('tb_user', [
         'pin'                  => $hash_pin_baru,
         'pin_gagal'            => 0,
-        'pin_terkunci_sampai'  => null
+        'pin_terkunci_sampai'  => null,
+        'pin_wajib_diubah'     => 0,
+        'pin_reset_oleh'       => null,
+        'pin_reset_pada'       => null,
+        'pin_reset_kedaluwarsa' => null
       ]);
 
     if (!$update || $this->db->trans_status() === false) {
@@ -6918,6 +7004,7 @@ class Api extends CI_Controller
       'data'    => [
         'id_user'        => $id_user,
         'pin_terlindungi' => true,
+        'pin_wajib_diubah' => false,
         'login_ulang'    => false
       ]
     ]);
@@ -11610,6 +11697,8 @@ class Api extends CI_Controller
         pin,
         pin_gagal,
         pin_terkunci_sampai,
+        pin_wajib_diubah,
+        pin_reset_kedaluwarsa,
         expo_token,
         cabang_id
      FROM tb_user
@@ -18359,6 +18448,8 @@ class Api extends CI_Controller
           u.pin,
           u.pin_gagal,
           u.pin_terkunci_sampai,
+          u.pin_wajib_diubah,
+          u.pin_reset_kedaluwarsa,
           u.expo_token,
           u.cabang_id,
           c.status AS status_cabang
@@ -19470,6 +19561,8 @@ class Api extends CI_Controller
           u.pin,
           u.pin_gagal,
           u.pin_terkunci_sampai,
+          u.pin_wajib_diubah,
+          u.pin_reset_kedaluwarsa,
           u.expo_token,
           u.cabang_id,
           c.status AS status_cabang
@@ -21945,45 +22038,412 @@ class Api extends CI_Controller
 
   public function reset_pin_nasabah()
   {
-    header("Access-Control-Allow-Origin: *");
-    header("Content-Type: application/json; charset=UTF-8");
-    header("Access-Control-Allow-Methods: POST");
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
+    header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+    header('Pragma: no-cache');
 
-    $json = file_get_contents('php://input');
-    $data = json_decode($json, true);
-
-    // Pastikan yang mengakses ini adalah Admin
-    if (!empty($data['id_admin']) && !empty($data['id_nasabah'])) {
-
-      // 1. Tentukan PIN Default
-      $default_pin = '123456';
-
-      // 🔥 PERBAIKAN: Langsung gunakan angka murni tanpa password_hash
-      $hashed_pin = $default_pin;
-
-      // Jika ternyata database Bapak menggunakan MD5, aktifkan baris di bawah ini dan matikan baris di atas:
-      // $hashed_pin = md5($default_pin);
-
-      // 2. Update PIN nasabah tersebut
-      $this->db->where('id', $data['id_nasabah']);
-      $update = $this->db->update('tb_user', ['pin' => $hashed_pin]);
-
-      if ($update) {
-        echo json_encode([
-          'status' => true,
-          'message' => "PIN berhasil direset ke default (123456)."
-        ]);
-      } else {
-        echo json_encode([
-          'status' => false,
-          'message' => 'Gagal mereset PIN, terjadi kesalahan database.'
-        ]);
-      }
-    } else {
-      echo json_encode([
-        'status' => false,
-        'message' => 'Data tidak lengkap. ID Admin dan ID Nasabah wajib dikirim.'
-      ]);
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Metode request tidak diizinkan.'
+      ], 405);
+      return;
     }
+
+    $auth = $this->authenticate_api();
+
+    if (!$auth) {
+      return;
+    }
+
+    if (!in_array(
+      $auth->level,
+      ['Administrator', 'Super Admin'],
+      true
+    )) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Reset PIN hanya dapat dilakukan oleh Administrator atau Super Admin.'
+      ], 403);
+      return;
+    }
+
+    $request = json_decode(
+      $this->input->raw_input_stream,
+      true
+    );
+
+    if (!is_array($request)) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Format JSON tidak valid.'
+      ], 400);
+      return;
+    }
+
+    $id_nasabah_raw = $request['id_nasabah'] ?? null;
+
+    if (
+      !is_int($id_nasabah_raw) &&
+      !(
+        is_string($id_nasabah_raw) &&
+        ctype_digit($id_nasabah_raw)
+      )
+    ) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'ID Nasabah wajib berupa angka.'
+      ], 422);
+      return;
+    }
+
+    $id_nasabah = (int) $id_nasabah_raw;
+
+    if ($id_nasabah <= 0) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'ID Nasabah tidak valid.'
+      ], 422);
+      return;
+    }
+
+    $id_pereset = (int) $auth->id_user;
+    $this->db->trans_begin();
+
+    /*
+     * Identitas pelaksana selalu berasal dari Bearer token.
+     * id_admin yang dikirim dari body tidak pernah dipercaya.
+     */
+    $pereset = $this->db->query(
+      "SELECT
+          u.id,
+          u.nama,
+          u.level,
+          u.login,
+          u.cabang_id,
+          c.status AS status_cabang
+       FROM tb_user AS u
+       LEFT JOIN tb_cabang AS c
+         ON c.id = u.cabang_id
+       WHERE u.id = ?
+       LIMIT 1
+       FOR UPDATE",
+      [$id_pereset]
+    )->row();
+
+    if (
+      !$pereset ||
+      !in_array(
+        $pereset->level,
+        ['Administrator', 'Super Admin'],
+        true
+      ) ||
+      $pereset->login !== 'Ya' ||
+      $pereset->status_cabang !== 'Aktif'
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Akun Administrator tidak ditemukan atau tidak aktif.'
+      ], 403);
+      return;
+    }
+
+    $nasabah = $this->db->query(
+      "SELECT
+          u.id,
+          u.nama,
+          u.level,
+          u.login,
+          u.cabang_id,
+          u.expo_token,
+          c.kode AS kode_cabang,
+          c.nama AS nama_cabang,
+          c.status AS status_cabang
+       FROM tb_user AS u
+       LEFT JOIN tb_cabang AS c
+         ON c.id = u.cabang_id
+       WHERE u.id = ?
+       LIMIT 1
+       FOR UPDATE",
+      [$id_nasabah]
+    )->row();
+
+    if (
+      !$nasabah ||
+      $nasabah->level !== 'Nasabah' ||
+      $nasabah->login !== 'Ya'
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Akun Nasabah tidak ditemukan atau tidak aktif.'
+      ], 404);
+      return;
+    }
+
+    if ($nasabah->status_cabang !== 'Aktif') {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Cabang Nasabah sedang tidak aktif.'
+      ], 403);
+      return;
+    }
+
+    if (
+      $pereset->level === 'Administrator' &&
+      (int) $pereset->cabang_id !==
+      (int) $nasabah->cabang_id
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Administrator hanya dapat mereset PIN Nasabah pada cabangnya sendiri.'
+      ], 403);
+      return;
+    }
+
+    /*
+     * Cegah reset berulang untuk Nasabah yang sama dalam 5 menit.
+     */
+    $reset_terakhir = $this->db->query(
+      "SELECT dibuat_pada
+       FROM tb_reset_pin_log
+       WHERE id_nasabah = ?
+         AND dibuat_pada > DATE_SUB(NOW(), INTERVAL 5 MINUTE)
+       ORDER BY dibuat_pada DESC
+       LIMIT 1",
+      [$id_nasabah]
+    )->row();
+
+    if ($reset_terakhir) {
+      $coba_lagi_pada = date(
+        'Y-m-d H:i:s',
+        strtotime(
+          '+5 minutes',
+          strtotime($reset_terakhir->dibuat_pada)
+        )
+      );
+
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'PIN baru saja direset. Silakan tunggu sebelum melakukan reset kembali.',
+        'data'    => [
+          'coba_lagi_pada' => $coba_lagi_pada
+        ]
+      ], 429);
+      return;
+    }
+
+    $pin_lemah = [
+      '000000',
+      '111111',
+      '222222',
+      '333333',
+      '444444',
+      '555555',
+      '666666',
+      '777777',
+      '888888',
+      '999999',
+      '012345',
+      '123456',
+      '234567',
+      '345678',
+      '456789',
+      '987654',
+      '876543',
+      '765432',
+      '654321',
+      '543210'
+    ];
+
+    try {
+      do {
+        $pin_sementara = str_pad(
+          (string) random_int(0, 999999),
+          6,
+          '0',
+          STR_PAD_LEFT
+        );
+      } while (in_array($pin_sementara, $pin_lemah, true));
+    } catch (Throwable $e) {
+      $this->db->trans_rollback();
+
+      log_message(
+        'error',
+        'Generator PIN sementara gagal: ' .
+          $e->getMessage()
+      );
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gagal membuat PIN sementara yang aman.'
+      ], 500);
+      return;
+    }
+
+    $hash_pin = password_hash(
+      $pin_sementara,
+      PASSWORD_BCRYPT
+    );
+
+    if ($hash_pin === false) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Gagal melindungi PIN sementara.'
+      ], 500);
+      return;
+    }
+
+    $waktu_reset = date('Y-m-d H:i:s');
+    $kedaluwarsa_pada = date(
+      'Y-m-d H:i:s',
+      strtotime('+24 hours')
+    );
+
+    $update = $this->db
+      ->where('id', $id_nasabah)
+      ->update('tb_user', [
+        'pin'                   => $hash_pin,
+        'pin_gagal'             => 0,
+        'pin_terkunci_sampai'   => null,
+        'pin_wajib_diubah'      => 1,
+        'pin_reset_oleh'        => $id_pereset,
+        'pin_reset_pada'        => $waktu_reset,
+        'pin_reset_kedaluwarsa' => $kedaluwarsa_pada
+      ]);
+
+    $user_agent = $this->input->get_request_header(
+      'User-Agent',
+      true
+    );
+
+    $insert_log = $this->db->insert(
+      'tb_reset_pin_log',
+      [
+        'id_nasabah'        => $id_nasabah,
+        'nama_nasabah'      => mb_substr(
+          (string) $nasabah->nama,
+          0,
+          255
+        ),
+        'direset_oleh'       => $id_pereset,
+        'nama_pereset'      => mb_substr(
+          (string) $pereset->nama,
+          0,
+          255
+        ),
+        'level_pereset'     => mb_substr(
+          (string) $pereset->level,
+          0,
+          50
+        ),
+        'cabang_id'         => (int) $nasabah->cabang_id,
+        'kedaluwarsa_pada'  => $kedaluwarsa_pada,
+        'ip_address'        => mb_substr(
+          (string) $this->input->ip_address(),
+          0,
+          45
+        ),
+        'user_agent'        => $user_agent
+          ? mb_substr((string) $user_agent, 0, 255)
+          : null,
+        'dibuat_pada'       => $waktu_reset
+      ]
+    );
+
+    $judul_notifikasi = 'PIN Transaksi Direset';
+    $pesan_notifikasi =
+      'PIN transaksi Anda telah direset oleh ' .
+      $pereset->nama .
+      '. Gunakan PIN sementara yang diberikan Administrator lalu segera ubah PIN sebelum ' .
+      $kedaluwarsa_pada .
+      '.';
+
+    $insert_notifikasi = $this->db->insert(
+      'tb_notifikasi',
+      [
+        'id_user' => $id_nasabah,
+        'judul'   => $judul_notifikasi,
+        'pesan'   => $pesan_notifikasi,
+        'is_read' => 0,
+        'tanggal' => $waktu_reset
+      ]
+    );
+
+    if (
+      !$update ||
+      !$insert_log ||
+      !$insert_notifikasi ||
+      $this->db->trans_status() === false
+    ) {
+      $database_error = $this->db->error();
+      $this->db->trans_rollback();
+
+      log_message(
+        'error',
+        'Reset PIN Nasabah gagal: ' .
+          json_encode($database_error)
+      );
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Terjadi kesalahan sistem. PIN gagal direset.'
+      ], 500);
+      return;
+    }
+
+    $this->db->trans_commit();
+
+    /*
+     * Push tidak berisi PIN dan dikirim setelah transaksi tersimpan.
+     */
+    try {
+      if (!empty($nasabah->expo_token)) {
+        $this->send_expo_push_notification(
+          $nasabah->expo_token,
+          $judul_notifikasi,
+          'PIN transaksi Anda telah direset. Segera ubah PIN sementara melalui aplikasi.'
+        );
+      }
+    } catch (Throwable $e) {
+      log_message(
+        'error',
+        'Push reset PIN gagal: ' .
+          $e->getMessage()
+      );
+    }
+
+    /*
+     * PIN plaintext hanya dikirim pada respons ini satu kali.
+     * Database, audit, notifikasi, dan log tidak menyimpannya.
+     */
+    $this->api_response([
+      'status'  => true,
+      'message' => 'PIN Nasabah berhasil direset. PIN sementara hanya ditampilkan satu kali.',
+      'data'    => [
+        'id_nasabah'        => $id_nasabah,
+        'nama_nasabah'      => $nasabah->nama,
+        'cabang_id'         => (int) $nasabah->cabang_id,
+        'kode_cabang'       => $nasabah->kode_cabang,
+        'nama_cabang'       => $nasabah->nama_cabang,
+        'pin_sementara'     => $pin_sementara,
+        'pin_wajib_diubah'  => true,
+        'kedaluwarsa_pada'  => $kedaluwarsa_pada,
+        'masa_berlaku_jam'  => 24
+      ]
+    ]);
   }
 }
