@@ -2586,30 +2586,96 @@ class Api extends CI_Controller
       return;
     }
 
-    $rekening = [
-      [
-        'id'        => 1,
-        'bank'      => 'BCA (Bank Central Asia)',
-        'nomor'     => '0380463563',
-        'atas_nama' => 'a.n. Mohammad Lukman Nurdin',
-        'icon'      => 'card'
-      ],
-      [
-        'id'        => 2,
-        'bank'      => 'DANA',
-        'nomor'     => '085793771111',
-        'atas_nama' => 'a.n. Mohammad Lukman Nurdin',
-        'icon'      => 'wallet'
-      ]
+    if (!$this->db->table_exists('tb_rekening_penampungan')) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Tabel rekening penampungan belum tersedia.'
+      ], 503);
+
+      return;
+    }
+
+    /*
+     * Nasabah dan Administrator selalu menggunakan cabang dari token.
+     * Super Admin dapat meminta rekening cabang nasabah yang sedang dipilih.
+     * cabang_id dari request sengaja tidak diterima agar cakupan cabang tidak
+     * dapat dimanipulasi oleh klien.
+     */
+    $cabang = (object) [
+      'id'   => (int) $auth->cabang_id,
+      'kode' => $auth->kode_cabang,
+      'nama' => $auth->nama_cabang
     ];
+
+    $id_nasabah = (int) $this->input->get('id_nasabah', true);
+
+    if ($auth->level === 'Super Admin' && $id_nasabah > 0) {
+      $this->db->select([
+        'c.id',
+        'c.kode',
+        'c.nama'
+      ]);
+
+      $this->db->from('tb_user AS u');
+
+      $this->db->join(
+        'tb_cabang AS c',
+        'c.id = u.cabang_id',
+        'inner'
+      );
+
+      $this->db->where('u.id', $id_nasabah);
+      $this->db->where('u.level', 'Nasabah');
+      $this->db->where('c.status', 'Aktif');
+
+      $cabang_nasabah = $this->db->get()->row();
+
+      if (!$cabang_nasabah) {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Nasabah atau cabang nasabah tidak ditemukan.'
+        ], 404);
+
+        return;
+      }
+
+      $cabang = $cabang_nasabah;
+    }
+
+    if ((int) $cabang->id <= 0) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Cabang rekening belum dapat ditentukan.'
+      ], 422);
+
+      return;
+    }
+
+    $this->db->select([
+      'id',
+      'jenis',
+      'nama_bank AS bank',
+      'nomor_rekening AS nomor',
+      'atas_nama',
+      'icon',
+      'urutan'
+    ]);
+
+    $this->db->from('tb_rekening_penampungan');
+    $this->db->where('cabang_id', (int) $cabang->id);
+    $this->db->where('status', 'Aktif');
+    $this->db->order_by('urutan', 'ASC');
+    $this->db->order_by('id', 'ASC');
+
+    $rekening = $this->db->get()->result_array();
 
     $this->api_response([
       'status' => true,
-      'scope'  => 'rekening_pusat',
+      'scope'  => 'rekening_cabang',
       'cabang' => [
-        'id'   => (int) $auth->cabang_id,
-        'kode' => $auth->kode_cabang,
-        'nama' => $auth->nama_cabang
+        'id'   => (int) $cabang->id,
+        'kode' => $cabang->kode,
+        'nama' => $cabang->nama
       ],
       'data' => $rekening
     ]);

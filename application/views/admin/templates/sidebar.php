@@ -119,6 +119,13 @@ $isSuperAdmin = ($userLevel === 'super admin');
                             </a>
                         </li>
 
+                        <li>
+                            <a href="<?= base_url('admin/rekening') ?>">
+                                <i class="fa fa-credit-card"></i>
+                                Rekening Penampungan
+                            </a>
+                        </li>
+
                         <?php if ($isSuperAdmin): ?>
                             <li>
                                 <a href="<?= base_url('admin/cabang') ?>">
