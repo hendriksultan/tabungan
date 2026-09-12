@@ -1847,6 +1847,295 @@ class Api extends CI_Controller
   }
 
   // ==========================================
+  // QR TRANSFER INTERNAL ANTAR NASABAH
+  // ==========================================
+  private function _ambil_token_qr_transfer($nilai)
+  {
+    $nilai = trim((string) $nilai);
+    if ($nilai === '') return null;
+    if (preg_match('/^[A-Za-z0-9_-]{43}$/', $nilai)) return $nilai;
+
+    $bagian = parse_url($nilai);
+    if (!is_array($bagian)) return null;
+
+    $query = [];
+    parse_str((string) ($bagian['query'] ?? ''), $query);
+    $token = trim((string) ($query['token'] ?? ''));
+    return preg_match('/^[A-Za-z0-9_-]{43}$/', $token) ? $token : null;
+  }
+
+  public function buat_qr_transfer()
+  {
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response(['status' => false, 'message' => 'Gunakan metode POST.'], 405);
+      return;
+    }
+
+    $auth = $this->authenticate_api();
+    if (!$auth) return;
+
+    if ($auth->level !== 'Nasabah') {
+      $this->api_response(['status' => false, 'message' => 'QR Transfer hanya dapat dibuat oleh Nasabah.'], 403);
+      return;
+    }
+
+    if (!$this->db->table_exists('tb_qr_transfer')) {
+      $this->api_response(['status' => false, 'message' => 'Tabel QR Transfer belum dipasang.'], 503);
+      return;
+    }
+
+    $request = json_decode($this->input->raw_input_stream, true);
+    if (!is_array($request)) {
+      $this->api_response(['status' => false, 'message' => 'Format permintaan tidak valid.'], 400);
+      return;
+    }
+
+    $nominal_input = trim((string) ($request['nominal'] ?? ''));
+    $nominal = null;
+    if ($nominal_input !== '') {
+      if (strpos($nominal_input, '-') !== false) {
+        $this->api_response(['status' => false, 'message' => 'Nominal QR tidak valid.'], 422);
+        return;
+      }
+      $nominal = (int) preg_replace('/[^0-9]/', '', $nominal_input);
+      if ($nominal <= 0 || $nominal > 2147483647) {
+        $this->api_response(['status' => false, 'message' => 'Nominal QR berada di luar batas.'], 422);
+        return;
+      }
+    }
+
+    $penerima = $this->db->query(
+      "SELECT u.id, u.nama, u.login, u.level, u.cabang_id,
+              c.kode AS kode_cabang, c.nama AS nama_cabang,
+              c.status AS status_cabang
+       FROM tb_user u
+       INNER JOIN tb_cabang c ON c.id = u.cabang_id
+       WHERE u.id = ? LIMIT 1",
+      [(int) $auth->id_user]
+    )->row();
+
+    if (!$penerima || $penerima->level !== 'Nasabah' ||
+        $penerima->login !== 'Ya' || $penerima->status_cabang !== 'Aktif') {
+      $this->api_response(['status' => false, 'message' => 'Akun atau cabang Nasabah sedang tidak aktif.'], 403);
+      return;
+    }
+
+    try {
+      $token = rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '=');
+    } catch (Exception $e) {
+      log_message('error', 'Token QR Transfer gagal dibuat: ' . $e->getMessage());
+      $this->api_response(['status' => false, 'message' => 'QR Transfer gagal dibuat.'], 500);
+      return;
+    }
+
+    $sekarang = date('Y-m-d H:i:s');
+    $kedaluwarsa = date('Y-m-d H:i:s', strtotime('+10 minutes'));
+    $this->db->trans_begin();
+
+    $this->db
+      ->where('id_penerima', (int) $auth->id_user)
+      ->where('status', 'Aktif')
+      ->update('tb_qr_transfer', ['status' => 'Dibatalkan']);
+
+    $insert = $this->db->insert('tb_qr_transfer', [
+      'token_hash' => hash('sha256', $token),
+      'id_penerima' => (int) $auth->id_user,
+      'nominal' => $nominal,
+      'status' => 'Aktif',
+      'kedaluwarsa_pada' => $kedaluwarsa,
+      'dibuat_pada' => $sekarang
+    ]);
+
+    if (!$insert || $this->db->trans_status() === false) {
+      $this->db->trans_rollback();
+      $this->api_response(['status' => false, 'message' => 'QR Transfer gagal disimpan.'], 500);
+      return;
+    }
+
+    $id_qr = (int) $this->db->insert_id();
+    $this->db->trans_commit();
+    $payload = 'tabunganmakmur://qr-transfer?token=' . rawurlencode($token);
+
+    $this->api_response([
+      'status' => true,
+      'message' => 'QR Transfer berhasil dibuat dan berlaku selama 10 menit.',
+      'data' => [
+        'id_qr' => $id_qr,
+        'qr_payload' => $payload,
+        'nominal' => $nominal,
+        'kedaluwarsa_pada' => $kedaluwarsa,
+        'penerima' => [
+          'nama' => $penerima->nama,
+          'cabang_id' => (int) $penerima->cabang_id,
+          'kode_cabang' => $penerima->kode_cabang,
+          'nama_cabang' => $penerima->nama_cabang
+        ]
+      ]
+    ], 201);
+  }
+
+  public function baca_qr_transfer()
+  {
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response(['status' => false, 'message' => 'Gunakan metode POST.'], 405);
+      return;
+    }
+
+    $auth = $this->authenticate_api();
+    if (!$auth) return;
+
+    if ($auth->level !== 'Nasabah') {
+      $this->api_response(['status' => false, 'message' => 'QR Transfer hanya dapat dipindai oleh Nasabah.'], 403);
+      return;
+    }
+
+    if (!$this->db->table_exists('tb_qr_transfer')) {
+      $this->api_response(['status' => false, 'message' => 'Tabel QR Transfer belum dipasang.'], 503);
+      return;
+    }
+
+    $request = json_decode($this->input->raw_input_stream, true);
+    if (!is_array($request)) {
+      $this->api_response(['status' => false, 'message' => 'Format permintaan tidak valid.'], 400);
+      return;
+    }
+
+    $token = $this->_ambil_token_qr_transfer(
+      $request['qr_payload'] ?? ($request['token'] ?? '')
+    );
+    if ($token === null) {
+      $this->api_response(['status' => false, 'message' => 'Kode QR Transfer tidak valid.'], 422);
+      return;
+    }
+
+    $qr = $this->db->query(
+      "SELECT q.id, q.id_penerima, q.nominal, q.status, q.kedaluwarsa_pada,
+              u.nama AS nama_penerima, u.login AS status_akun, u.level,
+              u.cabang_id, c.kode AS kode_cabang, c.nama AS nama_cabang,
+              c.status AS status_cabang
+       FROM tb_qr_transfer q
+       INNER JOIN tb_user u ON u.id = q.id_penerima
+       INNER JOIN tb_cabang c ON c.id = u.cabang_id
+       WHERE q.token_hash = ? LIMIT 1",
+      [hash('sha256', $token)]
+    )->row();
+
+    if (!$qr) {
+      $this->api_response(['status' => false, 'message' => 'QR Transfer tidak ditemukan.'], 404);
+      return;
+    }
+    if ($qr->status !== 'Aktif') {
+      $this->api_response(['status' => false, 'message' => 'QR Transfer sudah tidak aktif.'], 409);
+      return;
+    }
+    if (strtotime($qr->kedaluwarsa_pada) <= time()) {
+      $this->db->where('id', (int) $qr->id)->update('tb_qr_transfer', ['status' => 'Kedaluwarsa']);
+      $this->api_response(['status' => false, 'message' => 'QR Transfer sudah kedaluwarsa.'], 410);
+      return;
+    }
+    if ((int) $qr->id_penerima === (int) $auth->id_user) {
+      $this->api_response(['status' => false, 'message' => 'Anda tidak dapat memindai QR milik sendiri.'], 422);
+      return;
+    }
+    if ($qr->level !== 'Nasabah' || $qr->status_akun !== 'Ya' ||
+        $qr->status_cabang !== 'Aktif') {
+      $this->api_response(['status' => false, 'message' => 'Penerima atau cabang sedang tidak aktif.'], 403);
+      return;
+    }
+
+    $this->api_response([
+      'status' => true,
+      'message' => 'QR Transfer valid.',
+      'data' => [
+        'qr_payload' => 'tabunganmakmur://qr-transfer?token=' . rawurlencode($token),
+        'nominal' => $qr->nominal === null ? null : (int) $qr->nominal,
+        'kedaluwarsa_pada' => $qr->kedaluwarsa_pada,
+        'penerima' => [
+          'nama' => $qr->nama_penerima,
+          'cabang_id' => (int) $qr->cabang_id,
+          'kode_cabang' => $qr->kode_cabang,
+          'nama_cabang' => $qr->nama_cabang
+        ]
+      ]
+    ]);
+  }
+
+  public function status_qr_transfer()
+  {
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response(['status' => false, 'message' => 'Gunakan metode POST.'], 405);
+      return;
+    }
+
+    $auth = $this->authenticate_api();
+    if (!$auth) return;
+
+    if ($auth->level !== 'Nasabah') {
+      $this->api_response(['status' => false, 'message' => 'Status QR Transfer hanya dapat diperiksa oleh Nasabah.'], 403);
+      return;
+    }
+
+    if (!$this->db->table_exists('tb_qr_transfer')) {
+      $this->api_response(['status' => false, 'message' => 'Tabel QR Transfer belum dipasang.'], 503);
+      return;
+    }
+
+    $request = json_decode($this->input->raw_input_stream, true);
+    if (!is_array($request)) {
+      $this->api_response(['status' => false, 'message' => 'Format permintaan tidak valid.'], 400);
+      return;
+    }
+
+    $token = $this->_ambil_token_qr_transfer(
+      $request['qr_payload'] ?? ($request['token'] ?? '')
+    );
+    if ($token === null) {
+      $this->api_response(['status' => false, 'message' => 'Kode QR Transfer tidak valid.'], 422);
+      return;
+    }
+
+    $qr = $this->db->query(
+      "SELECT q.id, q.nominal AS nominal_qr, q.status, q.kedaluwarsa_pada,
+              q.digunakan_pada, t.nominal AS nominal_transfer,
+              pengirim.nama AS nama_pengirim
+       FROM tb_qr_transfer q
+       LEFT JOIN tb_transfer t ON t.id = q.id_transfer
+       LEFT JOIN tb_user pengirim ON pengirim.id = t.idPengirim
+       WHERE q.token_hash = ? AND q.id_penerima = ? LIMIT 1",
+      [hash('sha256', $token), (int) $auth->id_user]
+    )->row();
+
+    if (!$qr) {
+      $this->api_response(['status' => false, 'message' => 'QR Transfer tidak ditemukan atau bukan milik Anda.'], 404);
+      return;
+    }
+
+    if ($qr->status === 'Aktif' && strtotime($qr->kedaluwarsa_pada) <= time()) {
+      $this->db
+        ->where('id', (int) $qr->id)
+        ->where('status', 'Aktif')
+        ->update('tb_qr_transfer', ['status' => 'Kedaluwarsa']);
+      $qr->status = 'Kedaluwarsa';
+    }
+
+    $nominal_diterima = $qr->nominal_transfer !== null
+      ? (int) $qr->nominal_transfer
+      : ($qr->nominal_qr === null ? null : (int) $qr->nominal_qr);
+
+    $this->api_response([
+      'status' => true,
+      'message' => 'Status QR Transfer berhasil diperiksa.',
+      'data' => [
+        'status' => $qr->status,
+        'nominal' => $nominal_diterima,
+        'nama_pengirim' => $qr->nama_pengirim,
+        'kedaluwarsa_pada' => $qr->kedaluwarsa_pada,
+        'digunakan_pada' => $qr->digunakan_pada
+      ]
+    ]);
+  }
+
+  // ==========================================
   // ENDPOINT SIMPAN TRANSFER TERPROTEKSI
   // ==========================================
   public function simpan_transfer()
@@ -1904,7 +2193,37 @@ class Api extends CI_Controller
       $id_pengirim = (int) ($request['id_pengirim'] ?? 0);
     }
 
-    $id_penerima = (int) ($request['id_penerima'] ?? 0);
+    $qr_token = $this->_ambil_token_qr_transfer(
+      $request['qr_payload'] ?? ($request['qr_token'] ?? '')
+    );
+    $is_qr_transfer = $qr_token !== null;
+    $qr_preview = null;
+
+    if ($is_qr_transfer) {
+      if ($level !== 'Nasabah') {
+        $this->api_response(['status' => false, 'message' => 'QR Transfer hanya dapat dilakukan oleh Nasabah.'], 403);
+        return;
+      }
+      if (!$this->db->table_exists('tb_qr_transfer')) {
+        $this->api_response(['status' => false, 'message' => 'Tabel QR Transfer belum dipasang.'], 503);
+        return;
+      }
+      $qr_preview = $this->db
+        ->where('token_hash', hash('sha256', $qr_token))
+        ->limit(1)->get('tb_qr_transfer')->row();
+      if (!$qr_preview) {
+        $this->api_response(['status' => false, 'message' => 'QR Transfer tidak ditemukan.'], 404);
+        return;
+      }
+      if ($qr_preview->status !== 'Aktif' ||
+          strtotime($qr_preview->kedaluwarsa_pada) <= time()) {
+        $this->api_response(['status' => false, 'message' => 'QR Transfer sudah tidak aktif atau kedaluwarsa.'], 410);
+        return;
+      }
+      $id_penerima = (int) $qr_preview->id_penerima;
+    } else {
+      $id_penerima = (int) ($request['id_penerima'] ?? 0);
+    }
 
     if ($id_pengirim <= 0 || $id_penerima <= 0) {
       $this->api_response([
@@ -1925,6 +2244,10 @@ class Api extends CI_Controller
     }
 
     $nominal_input = trim((string) ($request['nominal'] ?? ''));
+
+    if ($is_qr_transfer && $qr_preview->nominal !== null) {
+      $nominal_input = (string) $qr_preview->nominal;
+    }
 
     if (
       $nominal_input === '' ||
@@ -1966,7 +2289,45 @@ class Api extends CI_Controller
       return;
     }
 
+    if ($is_qr_transfer) {
+      $keterangan = $keterangan === ''
+        ? 'QR Transfer'
+        : 'QR Transfer - ' . $keterangan;
+    }
+
+    $pin = trim((string) ($request['pin'] ?? ''));
+    if ($level === 'Nasabah' && !preg_match('/^[0-9]{6}$/', $pin)) {
+      $this->api_response(['status' => false, 'message' => 'PIN harus terdiri dari tepat 6 digit angka.'], 422);
+      return;
+    }
+
     $this->db->trans_begin();
+    $qr_transfer = null;
+
+    if ($is_qr_transfer) {
+      $qr_transfer = $this->db->query(
+        "SELECT * FROM tb_qr_transfer
+         WHERE token_hash = ? LIMIT 1 FOR UPDATE",
+        [hash('sha256', $qr_token)]
+      )->row();
+
+      if (!$qr_transfer || $qr_transfer->status !== 'Aktif' ||
+          strtotime($qr_transfer->kedaluwarsa_pada) <= time()) {
+        $this->db->trans_rollback();
+        $this->api_response(['status' => false, 'message' => 'QR Transfer sudah digunakan, dibatalkan, atau kedaluwarsa.'], 409);
+        return;
+      }
+      if ((int) $qr_transfer->id_penerima !== $id_penerima) {
+        $this->db->trans_rollback();
+        $this->api_response(['status' => false, 'message' => 'Penerima QR Transfer tidak valid.'], 409);
+        return;
+      }
+      if ($qr_transfer->nominal !== null && (int) $qr_transfer->nominal !== $nominal) {
+        $this->db->trans_rollback();
+        $this->api_response(['status' => false, 'message' => 'Nominal tidak sesuai dengan QR Transfer.'], 409);
+        return;
+      }
+    }
 
     /*
      * Kunci kedua akun dengan urutan ID yang konsisten.
@@ -1981,6 +2342,12 @@ class Api extends CI_Controller
             u.nama,
             u.level,
             u.login AS status_akun,
+            u.pin,
+            u.pin_gagal,
+            u.pin_terkunci_sampai,
+            u.pin_wajib_diubah,
+            u.pin_reset_kedaluwarsa,
+            u.expo_token,
             u.cabang_id,
             c.kode AS kode_cabang,
             c.nama AS nama_cabang,
@@ -2061,6 +2428,32 @@ class Api extends CI_Controller
       ], 403);
 
       return;
+    }
+
+    /*
+     * PIN diverifikasi di transaksi database yang sama dengan transfer.
+     */
+    if ($level === 'Nasabah') {
+      $hasil_pin = $this->verifikasi_pin_user_dalam_transaksi($pengirim, $pin);
+
+      if (!$hasil_pin['status']) {
+        if (!empty($hasil_pin['simpan_perubahan']) &&
+            $this->db->trans_status() !== false) {
+          $this->db->trans_commit();
+        } else {
+          $this->db->trans_rollback();
+        }
+
+        $jawaban_pin = [
+          'status' => false,
+          'message' => $hasil_pin['message']
+        ];
+        if (!empty($hasil_pin['data'])) {
+          $jawaban_pin['data'] = $hasil_pin['data'];
+        }
+        $this->api_response($jawaban_pin, (int) $hasil_pin['http_code']);
+        return;
+      }
     }
 
     /*
@@ -2218,7 +2611,46 @@ class Api extends CI_Controller
       return;
     }
 
+    if ($is_qr_transfer) {
+      $qr_updated = $this->db
+        ->where('id', (int) $qr_transfer->id)
+        ->where('status', 'Aktif')
+        ->update('tb_qr_transfer', [
+          'status' => 'Digunakan',
+          'digunakan_pada' => date('Y-m-d H:i:s'),
+          'id_transfer' => $id_transfer
+        ]);
+
+      if (!$qr_updated || $this->db->affected_rows() !== 1 ||
+          $this->db->trans_status() === false) {
+        $this->db->trans_rollback();
+        $this->api_response(['status' => false, 'message' => 'QR Transfer gagal ditandai sebagai telah digunakan.'], 409);
+        return;
+      }
+    }
+
     $this->db->trans_commit();
+
+    if ($is_qr_transfer) {
+      $nominal_format = 'Rp ' . number_format($nominal, 0, ',', '.');
+      $judul_notifikasi = 'QR Transfer Diterima';
+      $isi_notifikasi = 'Anda menerima ' . $nominal_format .
+        ' dari ' . $pengirim->nama . '.';
+
+      $this->db->insert('tb_notifikasi', [
+        'id_user' => $id_penerima,
+        'judul' => $judul_notifikasi,
+        'pesan' => $isi_notifikasi,
+        'tanggal' => date('Y-m-d H:i:s')
+      ]);
+      if (!empty($penerima->expo_token)) {
+        $this->send_expo_push_notification(
+          $penerima->expo_token,
+          $judul_notifikasi,
+          $isi_notifikasi
+        );
+      }
+    }
 
     $this->api_response([
       'status'  => true,
@@ -2228,6 +2660,9 @@ class Api extends CI_Controller
         'kode_transfer'      => $kode_transfer,
         'nominal'            => $nominal,
         'status_transfer'    => 'Sukses',
+        'metode_transfer'    => $is_qr_transfer
+          ? 'QR Transfer'
+          : 'Transfer Antar Rekening',
         'dibuat_oleh'        => (int) $auth->id_user,
         'nama_operator'      => $auth->nama,
         'id_pengirim'        => $id_pengirim,
