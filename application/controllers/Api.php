@@ -1455,6 +1455,36 @@ class Api extends CI_Controller
       return;
     }
 
+    /*
+     * Semua transaksi Setor (jenis Masuk) wajib mempunyai sedikitnya satu
+     * rekening penampungan aktif pada cabang nasabah. Validasi server ini
+     * tidak dapat dilewati dengan memanggil API secara manual.
+     */
+    if ($jenis === 'Masuk') {
+      if (!$this->db->table_exists('tb_rekening_penampungan')) {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Rekening penampungan belum dikonfigurasi.'
+        ], 503);
+
+        return;
+      }
+
+      $rekening_aktif = $this->db
+        ->where('cabang_id', (int) $nasabah->cabang_id)
+        ->where('status', 'Aktif')
+        ->count_all_results('tb_rekening_penampungan');
+
+      if ($rekening_aktif < 1) {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Cabang nasabah belum memiliki rekening penampungan aktif.'
+        ], 422);
+
+        return;
+      }
+    }
+
     // Nominal Rupiah disimpan sebagai bilangan bulat
     $nominal_input = trim((string) ($request['nominal'] ?? ''));
 

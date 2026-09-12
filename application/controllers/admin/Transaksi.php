@@ -231,6 +231,31 @@ class Transaksi extends CI_Controller
             return;
         }
 
+        /*
+         * Transaksi Setor wajib mempunyai rekening penampungan aktif.
+         * Berlaku untuk Administrator maupun Super Admin pada web.
+         */
+        if ($jenis === 'Masuk') {
+            if (!$this->db->table_exists('tb_rekening_penampungan')) {
+                $this->gagal(
+                    'Rekening penampungan belum dikonfigurasi!'
+                );
+                return;
+            }
+
+            $rekeningAktif = $this->db
+                ->where('cabang_id', $cabangTransaksi)
+                ->where('status', 'Aktif')
+                ->count_all_results('tb_rekening_penampungan');
+
+            if ($rekeningAktif < 1) {
+                $this->gagal(
+                    'Cabang nasabah belum memiliki rekening penampungan aktif!'
+                );
+                return;
+            }
+        }
+
         $this->db->trans_begin();
 
         if ($jenis === 'Keluar') {
