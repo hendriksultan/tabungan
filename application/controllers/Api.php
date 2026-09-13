@@ -614,12 +614,29 @@ class Api extends CI_Controller
       return;
     }
 
+    $this->db->trans_begin();
+
     $this->db->where('id', $auth->token_id);
-    $updated = $this->db->update('tb_api_token', [
+    $session_revoked = $this->db->update('tb_api_token', [
       'revoked_at' => date('Y-m-d H:i:s')
     ]);
 
-    if (!$updated) {
+    /*
+     * Lepaskan Expo token saat logout agar perangkat yang sudah
+     * keluar tidak lagi menerima notifikasi milik akun sebelumnya.
+     */
+    $this->db->where('id', (int) $auth->id_user);
+    $notification_token_removed = $this->db->update('tb_user', [
+      'expo_token' => null
+    ]);
+
+    if (
+      !$session_revoked ||
+      !$notification_token_removed ||
+      $this->db->trans_status() === false
+    ) {
+      $this->db->trans_rollback();
+
       $this->api_response([
         'status'  => false,
         'message' => 'Logout gagal diproses.'
@@ -627,6 +644,8 @@ class Api extends CI_Controller
 
       return;
     }
+
+    $this->db->trans_commit();
 
     $this->api_response([
       'status'  => true,
@@ -3951,6 +3970,55 @@ class Api extends CI_Controller
         'error',
         'Pengiriman notifikasi Expo gagal dengan HTTP ' .
           $http_status
+      );
+
+      return false;
+    }
+
+    $payload = json_decode($response, true);
+    $ticket = is_array($payload)
+      ? ($payload['data'] ?? null)
+      : null;
+
+    if (!is_array($ticket)) {
+      log_message(
+        'error',
+        'Respons ticket notifikasi Expo tidak valid.'
+      );
+
+      return false;
+    }
+
+    $ticket_status = (string) ($ticket['status'] ?? '');
+
+    if ($ticket_status === 'error') {
+      $error_code = (string) (
+        $ticket['details']['error'] ?? 'UnknownError'
+      );
+
+      /*
+       * Token perangkat yang sudah tidak terdaftar tidak boleh terus
+       * digunakan pada pengiriman berikutnya.
+       */
+      if ($error_code === 'DeviceNotRegistered') {
+        $this->db->where('expo_token', $token);
+        $this->db->update('tb_user', [
+          'expo_token' => null
+        ]);
+      }
+
+      log_message(
+        'error',
+        'Ticket notifikasi Expo gagal: ' . $error_code
+      );
+
+      return false;
+    }
+
+    if ($ticket_status !== 'ok') {
+      log_message(
+        'error',
+        'Status ticket notifikasi Expo tidak dikenal.'
       );
 
       return false;
