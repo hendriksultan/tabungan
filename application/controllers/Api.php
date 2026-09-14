@@ -227,6 +227,67 @@ class Api extends CI_Controller
     return $auth;
   }
 
+  /**
+   * Menentukan cakupan cabang untuk menu pemantauan Administrator.
+   *
+   * Administrator selalu dikunci ke cabang pada Bearer token.
+   * Super Admin boleh memilih satu cabang aktif atau memakai seluruh cabang
+   * dengan mengirim cabang_id kosong/0.
+   */
+  private function resolve_admin_branch_scope($auth, $requested_cabang_id = 0)
+  {
+    if ($auth->level === 'Administrator') {
+      return [
+        'cabang_id'   => (int) $auth->cabang_id,
+        'kode_cabang' => $auth->kode_cabang,
+        'nama_cabang' => $auth->nama_cabang,
+        'cakupan'     => 'Cabang sendiri'
+      ];
+    }
+
+    if ($auth->level !== 'Super Admin') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Anda tidak memiliki izin untuk memilih cakupan cabang.'
+      ], 403);
+      return null;
+    }
+
+    $requested_cabang_id = (int) $requested_cabang_id;
+
+    if ($requested_cabang_id <= 0) {
+      return [
+        'cabang_id'   => null,
+        'kode_cabang' => null,
+        'nama_cabang' => null,
+        'cakupan'     => 'Semua cabang'
+      ];
+    }
+
+    $cabang = $this->db
+      ->select('id, kode, nama')
+      ->where('id', $requested_cabang_id)
+      ->where('status', 'Aktif')
+      ->limit(1)
+      ->get('tb_cabang')
+      ->row();
+
+    if (!$cabang) {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Cabang yang dipilih tidak ditemukan atau sedang tidak aktif.'
+      ], 422);
+      return null;
+    }
+
+    return [
+      'cabang_id'   => (int) $cabang->id,
+      'kode_cabang' => $cabang->kode,
+      'nama_cabang' => $cabang->nama,
+      'cakupan'     => 'Cabang pilihan'
+    ];
+  }
+
   // ==========================================
   // 1. ENDPOINT LOGIN (SUDAH DENGAN FOTO)
   // ==========================================
@@ -7063,15 +7124,23 @@ class Api extends CI_Controller
       return;
     }
 
-    /*
-     * Level dari request tidak digunakan.
-     * Hak akses selalu berasal dari Bearer token.
-     */
+    // Level operator selalu berasal dari Bearer token.
     if (!in_array($auth->level, ['Administrator', 'Super Admin'], true)) {
       $this->api_response([
         'status'  => false,
         'message' => 'Anda tidak memiliki izin untuk melihat seluruh target.'
       ], 403);
+      return;
+    }
+
+    $request = json_decode($this->input->raw_input_stream, true);
+    $request = is_array($request) ? $request : [];
+    $scope = $this->resolve_admin_branch_scope(
+      $auth,
+      $request['cabang_id'] ?? 0
+    );
+
+    if ($scope === null) {
       return;
     }
 
@@ -7098,11 +7167,10 @@ class Api extends CI_Controller
 
     $this->db->where('tb_user.level', 'Nasabah');
 
-    // Administrator hanya dapat melihat Nasabah cabangnya sendiri.
-    if ($auth->level === 'Administrator') {
+    if ($scope['cabang_id'] !== null) {
       $this->db->where(
         'tb_user.cabang_id',
-        (int) $auth->cabang_id
+        (int) $scope['cabang_id']
       );
     }
 
@@ -7133,12 +7201,10 @@ class Api extends CI_Controller
       'status' => true,
       'akses'  => [
         'level'       => $auth->level,
-        'cabang_id'   => $auth->level === 'Administrator'
-          ? (int) $auth->cabang_id
-          : null,
-        'cakupan'     => $auth->level === 'Super Admin'
-          ? 'Semua cabang'
-          : 'Cabang sendiri'
+        'cabang_id'   => $scope['cabang_id'],
+        'kode_cabang' => $scope['kode_cabang'],
+        'nama_cabang' => $scope['nama_cabang'],
+        'cakupan'     => $scope['cakupan']
       ],
       'jumlah' => count($formatted_data),
       'data'   => $formatted_data
@@ -7168,15 +7234,23 @@ class Api extends CI_Controller
       return;
     }
 
-    /*
-     * Level, id_admin, dan cabang_id dari request tidak digunakan.
-     * Hak akses sepenuhnya berasal dari Bearer token.
-     */
+    // Level operator selalu berasal dari Bearer token.
     if (!in_array($auth->level, ['Administrator', 'Super Admin'], true)) {
       $this->api_response([
         'status'  => false,
         'message' => 'Anda tidak memiliki izin untuk melihat saldo seluruh Nasabah.'
       ], 403);
+      return;
+    }
+
+    $request = json_decode($this->input->raw_input_stream, true);
+    $request = is_array($request) ? $request : [];
+    $scope = $this->resolve_admin_branch_scope(
+      $auth,
+      $request['cabang_id'] ?? 0
+    );
+
+    if ($scope === null) {
       return;
     }
 
@@ -7278,10 +7352,9 @@ class Api extends CI_Controller
 
     $params = [];
 
-    // Administrator hanya boleh melihat Nasabah cabangnya sendiri.
-    if ($auth->level === 'Administrator') {
+    if ($scope['cabang_id'] !== null) {
       $sql .= " AND u.cabang_id = ? ";
-      $params[] = (int) $auth->cabang_id;
+      $params[] = (int) $scope['cabang_id'];
     }
 
     $sql .= " ORDER BY u.nama ASC ";
@@ -7337,12 +7410,10 @@ class Api extends CI_Controller
       'status' => true,
       'akses'  => [
         'level'     => $auth->level,
-        'cabang_id' => $auth->level === 'Administrator'
-          ? (int) $auth->cabang_id
-          : null,
-        'cakupan'   => $auth->level === 'Super Admin'
-          ? 'Semua cabang'
-          : 'Cabang sendiri'
+        'cabang_id'   => $scope['cabang_id'],
+        'kode_cabang' => $scope['kode_cabang'],
+        'nama_cabang' => $scope['nama_cabang'],
+        'cakupan'     => $scope['cakupan']
       ],
       'ringkasan' => [
         'jumlah_nasabah'            => count($data_saldo),
@@ -8275,6 +8346,15 @@ class Api extends CI_Controller
       return;
     }
 
+    $scope = $this->resolve_admin_branch_scope(
+      $auth,
+      $this->input->get('cabang_id', true)
+    );
+
+    if ($scope === null) {
+      return;
+    }
+
     $start = trim((string) $this->input->get('start', true));
     $end = trim((string) $this->input->get('end', true));
 
@@ -8385,12 +8465,12 @@ class Api extends CI_Controller
      * Administrator hanya melihat transaksi cabangnya.
      * Transaksi lama tanpa cabang_id mengikuti cabang Nasabah.
      */
-    if ($auth->level === 'Administrator') {
+    if ($scope['cabang_id'] !== null) {
       $this->db->group_start();
 
       $this->db->where(
         't.cabang_id',
-        (int) $auth->cabang_id
+        (int) $scope['cabang_id']
       );
 
       $this->db->or_group_start();
@@ -8403,7 +8483,7 @@ class Api extends CI_Controller
 
       $this->db->where(
         'u.cabang_id',
-        (int) $auth->cabang_id
+        (int) $scope['cabang_id']
       );
 
       $this->db->group_end();
@@ -8432,9 +8512,9 @@ class Api extends CI_Controller
       $periode_file = 'Semua_' . date('Y-m-d');
     }
 
-    if ($auth->level === 'Administrator') {
+    if ($scope['cabang_id'] !== null) {
       $cakupan_file = 'Cabang_' .
-        (int) $auth->cabang_id;
+        (int) $scope['cabang_id'];
     } else {
       $cakupan_file = 'Semua_Cabang';
     }
@@ -21890,13 +21970,21 @@ class Api extends CI_Controller
       return;
     }
 
+    $request = json_decode($this->input->raw_input_stream, true);
+    $request = is_array($request) ? $request : [];
+    $scope = $this->resolve_admin_branch_scope(
+      $auth,
+      $request['cabang_id'] ?? 0
+    );
+
+    if ($scope === null) {
+      return;
+    }
+
     /*
-   * Identitas, level, dan cabang operator selalu
-   * berasal dari Bearer token. Data dari body diabaikan.
-   *
-   * Administrator hanya melihat Nasabah di cabangnya.
-   * Super Admin dapat melihat seluruh cabang.
-   */
+     * Identitas, level, dan cabang operator berasal dari Bearer token.
+     * cabang_id pada body hanya menjadi filter opsional untuk Super Admin.
+     */
     $sql = "
     SELECT
       u.id,
@@ -21931,12 +22019,12 @@ class Api extends CI_Controller
 
     $parameter = [];
 
-    if ($auth->level === 'Administrator') {
+    if ($scope['cabang_id'] !== null) {
       $sql .= "
       AND u.cabang_id = ?
     ";
 
-      $parameter[] = (int) $auth->cabang_id;
+      $parameter[] = (int) $scope['cabang_id'];
     }
 
     $sql .= "
@@ -22141,10 +22229,13 @@ class Api extends CI_Controller
           ''
         ),
 
-        'cakupan' =>
-        $auth->level === 'Super Admin'
-          ? 'Semua Cabang'
-          : 'Cabang Sendiri',
+        'cakupan' => $scope['cakupan'],
+
+        'cabang_id_filter' => $scope['cabang_id'],
+
+        'kode_cabang_filter' => $scope['kode_cabang'],
+
+        'nama_cabang_filter' => $scope['nama_cabang'],
 
         'cabang_id_operator' =>
         (int) $auth->cabang_id,
