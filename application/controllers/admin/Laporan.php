@@ -61,7 +61,9 @@ class Laporan extends CI_Controller
     public function index()
     {
         $filter = $this->ambilFilter();
-        $ringkasan = $this->hitungRingkasan($filter);
+        $transaksi = $this->ambilTransaksi($filter);
+        $transfer = $this->ambilTransfer($filter);
+        $ringkasan = $this->hitungRingkasan($transaksi, $transfer);
 
         $data = [
             'title' => 'Laporan Keuangan',
@@ -71,13 +73,13 @@ class Laporan extends CI_Controller
             'isSuperAdmin' => $this->isSuperAdmin,
             'filter' => $filter,
             'ringkasan' => $ringkasan,
-            'transaksi' => $this->ambilTransaksi($filter),
-            'transfer' => $this->ambilTransfer($filter),
+            'transaksi' => $transaksi,
+            'transfer' => $transfer,
             'cabang' => $this->isSuperAdmin
                 ? $this->db
-                    ->order_by('nama', 'ASC')
-                    ->get('tb_cabang')
-                    ->result_array()
+                ->order_by('nama', 'ASC')
+                ->get('tb_cabang')
+                ->result_array()
                 : [],
             'namaScope' => $filter['nama_cabang'],
             'queryExport' => http_build_query([
@@ -98,9 +100,9 @@ class Laporan extends CI_Controller
     public function export_csv()
     {
         $filter = $this->ambilFilter();
-        $ringkasan = $this->hitungRingkasan($filter);
         $transaksi = $this->ambilTransaksi($filter);
         $transfer = $this->ambilTransfer($filter);
+        $ringkasan = $this->hitungRingkasan($transaksi, $transfer);
 
         $scopeFile = $filter['cabang_id'] === null
             ? 'semua-cabang'
@@ -143,7 +145,7 @@ class Laporan extends CI_Controller
 
         $this->tulisCsv($output, ['RINGKASAN']);
         $this->tulisCsv($output, [
-            'Transaksi masuk',
+            'Arus transaksi masuk',
             $ringkasan['transaksi_masuk']
         ]);
         $this->tulisCsv($output, [
@@ -155,7 +157,7 @@ class Laporan extends CI_Controller
             $ringkasan['total_masuk']
         ]);
         $this->tulisCsv($output, [
-            'Transaksi keluar',
+            'Arus transaksi keluar',
             $ringkasan['transaksi_keluar']
         ]);
         $this->tulisCsv($output, [
@@ -171,9 +173,44 @@ class Laporan extends CI_Controller
             $ringkasan['saldo_bersih']
         ]);
         $this->tulisCsv($output, [
+            'Mutasi target ke saldo utama',
+            $ringkasan['mutasi_target_masuk']
+        ]);
+        $this->tulisCsv($output, [
+            'Mutasi saldo utama ke target',
+            $ringkasan['mutasi_target_keluar']
+        ]);
+        $this->tulisCsv($output, [
             'Jumlah aktivitas',
             $ringkasan['jumlah_aktivitas']
         ]);
+        $this->tulisCsv($output, []);
+
+        $this->tulisCsv($output, ['RINGKASAN PER JENIS TRANSAKSI']);
+        $this->tulisCsv($output, [
+            'Kategori',
+            'Sifat',
+            'Jumlah aktivitas',
+            'Masuk',
+            'Keluar / Mutasi',
+            'Dampak saldo bersih'
+        ]);
+
+        foreach ($ringkasan['kategori'] as $kategori) {
+            if ($kategori['jumlah'] < 1) {
+                continue;
+            }
+
+            $this->tulisCsv($output, [
+                $kategori['label'],
+                $kategori['sifat'],
+                $kategori['jumlah'],
+                $kategori['masuk'],
+                $kategori['keluar'],
+                $kategori['dampak_saldo']
+            ]);
+        }
+
         $this->tulisCsv($output, []);
 
         $this->tulisCsv($output, [
@@ -183,6 +220,8 @@ class Laporan extends CI_Controller
             'Pihak/Nasabah',
             'Cabang Asal',
             'Cabang Tujuan',
+            'Kategori',
+            'Sifat',
             'Masuk',
             'Keluar',
             'Keterangan'
@@ -204,6 +243,8 @@ class Laporan extends CI_Controller
                 $row['nama_nasabah'],
                 $row['nama_cabang'],
                 $row['nama_cabang'],
+                $row['kategori_label'],
+                $row['sifat_label'],
                 $masuk,
                 $keluar,
                 $row['keterangan']
@@ -218,6 +259,8 @@ class Laporan extends CI_Controller
                 $row['nama_pengirim'] . ' → ' . $row['nama_penerima'],
                 $row['nama_cabang_asal'],
                 $row['nama_cabang_tujuan'],
+                'Transfer Antar Nasabah',
+                'Mutasi internal',
                 $row['masuk_scope'] ? (int) $row['nominal'] : '',
                 $row['keluar_scope'] ? (int) $row['nominal'] : '',
                 $row['keterangan']
@@ -241,9 +284,9 @@ class Laporan extends CI_Controller
         }
 
         $filter = $this->ambilFilter();
-        $ringkasan = $this->hitungRingkasan($filter);
         $transaksi = $this->ambilTransaksi($filter);
         $transfer = $this->ambilTransfer($filter);
+        $ringkasan = $this->hitungRingkasan($transaksi, $transfer);
 
         $scopeFile = $filter['cabang_id'] === null
             ? 'semua-cabang'
@@ -274,13 +317,15 @@ class Laporan extends CI_Controller
         ], 22);
 
         $ringkasanRows = [
-            ['Transaksi masuk', $ringkasan['transaksi_masuk'], 9],
+            ['Arus transaksi masuk', $ringkasan['transaksi_masuk'], 9],
             ['Transfer masuk', $ringkasan['transfer_masuk'], 9],
             ['Total masuk', $ringkasan['total_masuk'], 9],
-            ['Transaksi keluar', $ringkasan['transaksi_keluar'], 9],
+            ['Arus transaksi keluar', $ringkasan['transaksi_keluar'], 9],
             ['Transfer keluar', $ringkasan['transfer_keluar'], 9],
             ['Total keluar', $ringkasan['total_keluar'], 9],
             ['Saldo bersih periode', $ringkasan['saldo_bersih'], 9],
+            ['Mutasi target ke saldo utama', $ringkasan['mutasi_target_masuk'], 9],
+            ['Mutasi saldo utama ke target', $ringkasan['mutasi_target_keluar'], 9],
             ['Jumlah aktivitas', $ringkasan['jumlah_aktivitas'], 10]
         ];
 
@@ -296,6 +341,56 @@ class Laporan extends CI_Controller
 
         $rows[] = $this->barisExcel($nomorBaris, []);
         $nomorBaris++;
+
+        $rows[] = $this->barisExcel($nomorBaris, [
+            ['A', 'RINGKASAN PER JENIS TRANSAKSI', 3]
+        ], 22);
+        $nomorBaris++;
+
+        $kategoriHeaders = [
+            'A' => 'Kategori',
+            'B' => 'Sifat',
+            'C' => 'Jumlah Aktivitas',
+            'D' => 'Masuk',
+            'E' => 'Keluar / Mutasi',
+            'F' => 'Dampak Saldo Bersih'
+        ];
+        $kategoriHeaderCells = [];
+
+        foreach ($kategoriHeaders as $kolom => $label) {
+            $kategoriHeaderCells[] = [$kolom, $label, 4];
+        }
+
+        $rows[] = $this->barisExcel(
+            $nomorBaris,
+            $kategoriHeaderCells,
+            24
+        );
+        $nomorBaris++;
+
+        foreach ($ringkasan['kategori'] as $kategori) {
+            if ($kategori['jumlah'] < 1) {
+                continue;
+            }
+
+            $rows[] = $this->barisExcel($nomorBaris, [
+                ['A', $kategori['label'], 5],
+                ['B', $kategori['sifat'], 5],
+                ['C', $kategori['jumlah'], 6, true],
+                ['D', $kategori['masuk'], 7, true],
+                ['E', $kategori['keluar'], 7, true],
+                [
+                    'F',
+                    $kategori['dampak_saldo'],
+                    7,
+                    true
+                ]
+            ]);
+            $nomorBaris++;
+        }
+
+        $rows[] = $this->barisExcel($nomorBaris, []);
+        $nomorBaris++;
         $barisHeader = $nomorBaris;
 
         $headers = [
@@ -305,9 +400,11 @@ class Laporan extends CI_Controller
             'D' => 'Pihak/Nasabah',
             'E' => 'Cabang Asal',
             'F' => 'Cabang Tujuan',
-            'G' => 'Masuk',
-            'H' => 'Keluar',
-            'I' => 'Keterangan'
+            'G' => 'Kategori',
+            'H' => 'Sifat',
+            'I' => 'Masuk',
+            'J' => 'Keluar',
+            'K' => 'Keterangan'
         ];
 
         $headerCells = [];
@@ -339,9 +436,11 @@ class Laporan extends CI_Controller
                 ['D', $row['nama_nasabah'], 5],
                 ['E', $row['nama_cabang'], 5],
                 ['F', $row['nama_cabang'], 5],
-                ['G', $masuk, 7, true],
-                ['H', $keluar, 7, true],
-                ['I', $row['keterangan'], 5]
+                ['G', $row['kategori_label'], 5],
+                ['H', $row['sifat_label'], 5],
+                ['I', $masuk, 7, true],
+                ['J', $keluar, 7, true],
+                ['K', $row['keterangan'], 5]
             ]);
             $nomorBaris++;
         }
@@ -374,9 +473,11 @@ class Laporan extends CI_Controller
                 ],
                 ['E', $row['nama_cabang_asal'], 5],
                 ['F', $row['nama_cabang_tujuan'], 5],
-                ['G', $masuk, 7, true],
-                ['H', $keluar, 7, true],
-                ['I', $row['keterangan'], 5]
+                ['G', 'Transfer Antar Nasabah', 5],
+                ['H', 'Mutasi internal', 5],
+                ['I', $masuk, 7, true],
+                ['J', $keluar, 7, true],
+                ['K', $row['keterangan'], 5]
             ]);
             $nomorBaris++;
         }
@@ -525,126 +626,151 @@ class Laporan extends CI_Controller
         ];
     }
 
-    private function hitungRingkasan($filter)
+    private function hitungRingkasan(array $transaksi, array $transfer)
     {
-        $transaksiMasuk = $this->agregatTransaksi(
-            $filter,
-            'Masuk'
-        );
+        $kategori = $this->templateRingkasanKategori();
+        $transaksiMasuk = 0;
+        $transaksiKeluar = 0;
+        $mutasiTargetMasuk = 0;
+        $mutasiTargetKeluar = 0;
 
-        $transaksiKeluar = $this->agregatTransaksi(
-            $filter,
-            'Keluar'
-        );
+        foreach ($transaksi as $row) {
+            $kategoriKey = $row['kategori_key'];
+            $nominal = (float) $row['nominal'];
+            $jenis = $row['jenis'];
 
-        $transferMasuk = $this->agregatTransfer(
-            $filter,
-            'masuk'
-        );
+            if (!isset($kategori[$kategoriKey])) {
+                continue;
+            }
 
-        $transferKeluar = $this->agregatTransfer(
-            $filter,
-            'keluar'
-        );
+            $kategori[$kategoriKey]['jumlah']++;
 
-        $jumlahTransfer = $this->hitungJumlahTransferUnik($filter);
-        $totalMasuk = $transaksiMasuk['nominal'] +
-            $transferMasuk['nominal'];
-        $totalKeluar = $transaksiKeluar['nominal'] +
-            $transferKeluar['nominal'];
+            if ($jenis === 'Masuk') {
+                $kategori[$kategoriKey]['masuk'] += $nominal;
+            } elseif ($jenis === 'Keluar') {
+                $kategori[$kategoriKey]['keluar'] += $nominal;
+            }
+
+            if ($kategoriKey === 'target') {
+                if ($jenis === 'Masuk') {
+                    $mutasiTargetMasuk += $nominal;
+                } elseif ($jenis === 'Keluar') {
+                    $mutasiTargetKeluar += $nominal;
+                }
+
+                // Isi/refund target hanya memindahkan dana antara saldo utama
+                // dan tabungan target. Nilainya tidak mengubah dana kelolaan.
+                continue;
+            }
+
+            if ($jenis === 'Masuk') {
+                $transaksiMasuk += $nominal;
+            } elseif ($jenis === 'Keluar') {
+                $transaksiKeluar += $nominal;
+            }
+        }
+
+        $transferMasuk = 0;
+        $transferKeluar = 0;
+
+        foreach ($transfer as $row) {
+            $nominal = (float) $row['nominal'];
+            $kategori['transfer']['jumlah']++;
+
+            if (!empty($row['masuk_scope'])) {
+                $transferMasuk += $nominal;
+                $kategori['transfer']['masuk'] += $nominal;
+            }
+
+            if (!empty($row['keluar_scope'])) {
+                $transferKeluar += $nominal;
+                $kategori['transfer']['keluar'] += $nominal;
+            }
+        }
+
+        $jumlahTransfer = count($transfer);
+        $totalMasuk = $transaksiMasuk + $transferMasuk;
+        $totalKeluar = $transaksiKeluar + $transferKeluar;
+
+        foreach ($kategori as $key => &$item) {
+            // Tabungan target hanya memindahkan dana dari/ke saldo utama.
+            // Nominal mutasinya tetap ditampilkan, tetapi tidak berdampak
+            // pada saldo bersih laporan.
+            $item['dampak_saldo'] = $key === 'target'
+                ? 0
+                : $item['masuk'] - $item['keluar'];
+        }
+        unset($item);
 
         return [
-            'transaksi_masuk' => $transaksiMasuk['nominal'],
-            'transaksi_keluar' => $transaksiKeluar['nominal'],
-            'transfer_masuk' => $transferMasuk['nominal'],
-            'transfer_keluar' => $transferKeluar['nominal'],
-            'jumlah_transaksi' => (
-                $transaksiMasuk['jumlah'] +
-                $transaksiKeluar['jumlah']
+            'transaksi_masuk' => $transaksiMasuk,
+            'transaksi_keluar' => $transaksiKeluar,
+            'transfer_masuk' => $transferMasuk,
+            'transfer_keluar' => $transferKeluar,
+            'mutasi_target_masuk' => $mutasiTargetMasuk,
+            'mutasi_target_keluar' => $mutasiTargetKeluar,
+            'mutasi_target_total' => (
+                $mutasiTargetMasuk + $mutasiTargetKeluar
             ),
+            'jumlah_transaksi' => count($transaksi),
             'jumlah_transfer' => $jumlahTransfer,
             'jumlah_aktivitas' => (
-                $transaksiMasuk['jumlah'] +
-                $transaksiKeluar['jumlah'] +
-                $jumlahTransfer
+                count($transaksi) + $jumlahTransfer
             ),
             'total_masuk' => $totalMasuk,
             'total_keluar' => $totalKeluar,
-            'saldo_bersih' => $totalMasuk - $totalKeluar
+            'saldo_bersih' => $totalMasuk - $totalKeluar,
+            'kategori' => $kategori
         ];
     }
 
-    private function agregatTransaksi($filter, $jenis)
+    private function templateRingkasanKategori()
     {
-        $this->db->select(
-            'COUNT(*) AS jumlah, IFNULL(SUM(nominal), 0) AS nominal',
-            false
-        );
-
-        $this->db->where('jenis', $jenis);
-        $this->db->where('status_konfirmasi', 'Sukses');
-        $this->db->where('tanggal >=', $filter['dari']);
-        $this->db->where('tanggal <=', $filter['sampai']);
-
-        if ($filter['cabang_id'] !== null) {
-            $this->db->where('cabang_id', $filter['cabang_id']);
-        }
-
-        $row = $this->db->get('tb_transaksi')->row_array();
-
         return [
-            'jumlah' => (int) ($row['jumlah'] ?? 0),
-            'nominal' => (float) ($row['nominal'] ?? 0)
+            'setoran' => $this->buatRingkasanKategori(
+                'Setoran Tabungan',
+                'Arus dana'
+            ),
+            'penarikan' => $this->buatRingkasanKategori(
+                'Penarikan Tunai',
+                'Arus dana'
+            ),
+            'infaq' => $this->buatRingkasanKategori(
+                'Infaq / Sedekah',
+                'Arus dana'
+            ),
+            'target' => $this->buatRingkasanKategori(
+                'Tabungan Target',
+                'Mutasi internal'
+            ),
+            'transfer' => $this->buatRingkasanKategori(
+                'Transfer Antar Nasabah',
+                'Mutasi internal'
+            ),
+            'emas' => $this->buatRingkasanKategori(
+                'Tabungan Emas',
+                'Konversi aset'
+            ),
+            'marketplace' => $this->buatRingkasanKategori(
+                'Marketplace',
+                'Transaksi usaha'
+            ),
+            'lainnya' => $this->buatRingkasanKategori(
+                'Transaksi Lainnya',
+                'Arus dana'
+            )
         ];
     }
 
-    private function agregatTransfer($filter, $arah)
+    private function buatRingkasanKategori($label, $sifat)
     {
-        $this->db->select(
-            'COUNT(*) AS jumlah, IFNULL(SUM(nominal), 0) AS nominal',
-            false
-        );
-
-        $this->db->where('status_transfer', 'Sukses');
-        $this->db->where('terdaftar >=', $filter['awal_waktu']);
-        $this->db->where('terdaftar <=', $filter['akhir_waktu']);
-
-        if ($filter['cabang_id'] !== null) {
-            $kolom = $arah === 'masuk'
-                ? 'cabang_tujuan_id'
-                : 'cabang_asal_id';
-
-            $this->db->where($kolom, $filter['cabang_id']);
-        }
-
-        $row = $this->db->get('tb_transfer')->row_array();
-
         return [
-            'jumlah' => (int) ($row['jumlah'] ?? 0),
-            'nominal' => (float) ($row['nominal'] ?? 0)
+            'label' => $label,
+            'sifat' => $sifat,
+            'jumlah' => 0,
+            'masuk' => 0,
+            'keluar' => 0
         ];
-    }
-
-    private function hitungJumlahTransferUnik($filter)
-    {
-        $this->db->where('status_transfer', 'Sukses');
-        $this->db->where('terdaftar >=', $filter['awal_waktu']);
-        $this->db->where('terdaftar <=', $filter['akhir_waktu']);
-
-        if ($filter['cabang_id'] !== null) {
-            $this->db->group_start();
-            $this->db->where(
-                'cabang_asal_id',
-                $filter['cabang_id']
-            );
-            $this->db->or_where(
-                'cabang_tujuan_id',
-                $filter['cabang_id']
-            );
-            $this->db->group_end();
-        }
-
-        return $this->db->count_all_results('tb_transfer');
     }
 
     private function ambilTransaksi($filter)
@@ -655,6 +781,7 @@ class Laporan extends CI_Controller
             'tb_transaksi.nominal',
             'tb_transaksi.jenis',
             'tb_transaksi.keterangan',
+            'tb_transaksi.referensi_tipe',
             'tb_transaksi.terdaftar',
             'tb_user.nama AS nama_nasabah',
             'tb_cabang.kode AS kode_cabang',
@@ -686,7 +813,144 @@ class Laporan extends CI_Controller
         $this->db->order_by('tb_transaksi.tanggal', 'DESC');
         $this->db->order_by('tb_transaksi.id', 'DESC');
 
-        return $this->db->get()->result_array();
+        $rows = $this->db->get()->result_array();
+
+        foreach ($rows as &$row) {
+            $klasifikasi = $this->klasifikasikanTransaksi($row);
+            $row['kategori_key'] = $klasifikasi['key'];
+            $row['kategori_label'] = $klasifikasi['label'];
+            $row['sifat_label'] = $klasifikasi['sifat'];
+            $row['mutasi_internal'] = $klasifikasi['mutasi_internal'];
+        }
+        unset($row);
+
+        return $rows;
+    }
+
+    private function klasifikasikanTransaksi(array $row)
+    {
+        $jenis = trim((string) ($row['jenis'] ?? ''));
+        $referensi = strtolower(trim(
+            (string) ($row['referensi_tipe'] ?? '')
+        ));
+        $keterangan = strtolower(trim(
+            (string) ($row['keterangan'] ?? '')
+        ));
+
+        if (
+            in_array($referensi, [
+                'topuptarget',
+                'refundtarget',
+                'tabungantarget'
+            ], true) ||
+            $this->teksMengandung($keterangan, [
+                'isi tabungan:',
+                'isi tabungan target',
+                'refund hapus target',
+                'refund target',
+                'celengan impian'
+            ])
+        ) {
+            return $this->hasilKlasifikasi(
+                'target',
+                'Tabungan Target',
+                'Mutasi internal',
+                true
+            );
+        }
+
+        if (
+            in_array($referensi, [
+                'pembelianemas',
+                'pencairanemas'
+            ], true) ||
+            $this->teksMengandung($keterangan, [
+                'nabung emas',
+                'jual emas',
+                'tabungan emas'
+            ])
+        ) {
+            return $this->hasilKlasifikasi(
+                'emas',
+                'Tabungan Emas',
+                'Konversi aset'
+            );
+        }
+
+        if (
+            in_array($referensi, [
+                'pembayaranpesanan',
+                'pencairanpesanan',
+                'refundpesanan'
+            ], true) ||
+            $this->teksMengandung($keterangan, [
+                'bayar pesanan',
+                'pencairan dana penjualan',
+                'refund pembatalan',
+                'marketplace'
+            ])
+        ) {
+            return $this->hasilKlasifikasi(
+                'marketplace',
+                'Marketplace',
+                'Transaksi usaha'
+            );
+        }
+
+        if ($this->teksMengandung($keterangan, ['infaq', 'sedekah'])) {
+            return $this->hasilKlasifikasi(
+                'infaq',
+                'Infaq / Sedekah',
+                'Arus dana'
+            );
+        }
+
+        if ($jenis === 'Masuk') {
+            return $this->hasilKlasifikasi(
+                'setoran',
+                'Setoran Tabungan',
+                'Arus dana'
+            );
+        }
+
+        if ($jenis === 'Keluar') {
+            return $this->hasilKlasifikasi(
+                'penarikan',
+                'Penarikan Tunai',
+                'Arus dana'
+            );
+        }
+
+        return $this->hasilKlasifikasi(
+            'lainnya',
+            'Transaksi Lainnya',
+            'Arus dana'
+        );
+    }
+
+    private function hasilKlasifikasi(
+        $key,
+        $label,
+        $sifat,
+        $mutasiInternal = false
+    ) {
+        return [
+            'key' => $key,
+            'label' => $label,
+            'sifat' => $sifat,
+            'mutasi_internal' => (bool) $mutasiInternal
+        ];
+    }
+
+    private function teksMengandung($teks, array $kataKunci)
+    {
+        foreach ($kataKunci as $kata) {
+            if (strpos($teks, $kata) !== false) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function ambilTransfer($filter)
@@ -765,8 +1029,8 @@ class Laporan extends CI_Controller
                 $row['arah_scope'] =
                     (int) $row['cabang_asal_id'] ===
                     (int) $row['cabang_tujuan_id']
-                        ? 'Internal cabang'
-                        : 'Antar cabang';
+                    ? 'Internal cabang'
+                    : 'Antar cabang';
             } else {
                 $row['masuk_scope'] = (
                     (int) $row['cabang_tujuan_id'] ===
@@ -859,12 +1123,8 @@ class Laporan extends CI_Controller
     ) {
         return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' .
             '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' .
-            '<dimension ref="A1:I' . (int) $barisTerakhir . '"/>' .
-            '<sheetViews><sheetView workbookViewId="0">' .
-            '<pane ySplit="' . (int) $barisHeader .
-            '" topLeftCell="A' . ((int) $barisHeader + 1) .
-            '" activePane="bottomLeft" state="frozen"/>' .
-            '</sheetView></sheetViews>' .
+            '<dimension ref="A1:K' . (int) $barisTerakhir . '"/>' .
+            '<sheetViews><sheetView workbookViewId="0"/></sheetViews>' .
             '<sheetFormatPr defaultRowHeight="15"/>' .
             '<cols>' .
             '<col min="1" max="1" width="22" customWidth="1"/>' .
@@ -872,17 +1132,18 @@ class Laporan extends CI_Controller
             '<col min="3" max="3" width="18" customWidth="1"/>' .
             '<col min="4" max="4" width="32" customWidth="1"/>' .
             '<col min="5" max="6" width="25" customWidth="1"/>' .
-            '<col min="7" max="8" width="18" customWidth="1"/>' .
-            '<col min="9" max="9" width="65" customWidth="1"/>' .
+            '<col min="7" max="8" width="24" customWidth="1"/>' .
+            '<col min="9" max="10" width="18" customWidth="1"/>' .
+            '<col min="11" max="11" width="65" customWidth="1"/>' .
             '</cols>' .
             '<sheetData>' . implode('', $rows) . '</sheetData>' .
-            '<autoFilter ref="A' . (int) $barisHeader . ':I' .
+            '<autoFilter ref="A' . (int) $barisHeader . ':K' .
             (int) $barisTerakhir . '"/>' .
             '<mergeCells count="4">' .
-            '<mergeCell ref="A1:I1"/>' .
-            '<mergeCell ref="B2:I2"/>' .
-            '<mergeCell ref="B3:I3"/>' .
-            '<mergeCell ref="A5:I5"/>' .
+            '<mergeCell ref="A1:K1"/>' .
+            '<mergeCell ref="B2:K2"/>' .
+            '<mergeCell ref="B3:K3"/>' .
+            '<mergeCell ref="A5:K5"/>' .
             '</mergeCells>' .
             '<pageMargins left="0.25" right="0.25" top="0.5" bottom="0.5" header="0.2" footer="0.2"/>' .
             '<pageSetup orientation="landscape" fitToWidth="1" fitToHeight="0" paperSize="9"/>' .

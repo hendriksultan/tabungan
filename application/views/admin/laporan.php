@@ -111,7 +111,7 @@ $formatRupiah = function ($nominal) {
                 margin-bottom: 4px;
             }
 
-            .table > thead > tr > th {
+            .table>thead>tr>th {
                 white-space: nowrap;
             }
 
@@ -125,6 +125,29 @@ $formatRupiah = function ($nominal) {
                 color: #be2f3e;
                 font-weight: 700;
                 white-space: nowrap;
+            }
+
+            .label-kategori {
+                display: inline-block;
+                background: #e8f1f8;
+                border: 1px solid #bdd5e7;
+                border-radius: 12px;
+                color: #245b7a;
+                font-size: 11px;
+                font-weight: 700;
+                padding: 4px 8px;
+                white-space: nowrap;
+            }
+
+            .label-internal {
+                background: #fff4d6;
+                border-color: #efd58a;
+                color: #8a6500;
+            }
+
+            .ringkasan-kategori td,
+            .ringkasan-kategori th {
+                vertical-align: middle !important;
             }
 
             .print-header {
@@ -211,8 +234,8 @@ $formatRupiah = function ($nominal) {
                     overflow: visible !important;
                 }
 
-                .table > thead > tr > th,
-                .table > tbody > tr > td {
+                .table>thead>tr>th,
+                .table>tbody>tr>td {
                     padding: 4px !important;
                     white-space: normal !important;
                     overflow-wrap: anywhere;
@@ -344,10 +367,10 @@ $formatRupiah = function ($nominal) {
                                                     : '' ?>>
                                                 <?= html_escape(
                                                     $item['nama'] .
-                                                    ' (' . $item['kode'] . ')' .
-                                                    ($item['status'] === 'Aktif'
-                                                        ? ''
-                                                        : ' — Nonaktif')
+                                                        ' (' . $item['kode'] . ')' .
+                                                        ($item['status'] === 'Aktif'
+                                                            ? ''
+                                                            : ' — Nonaktif')
                                                 ) ?>
                                             </option>
                                         <?php endforeach; ?>
@@ -385,16 +408,16 @@ $formatRupiah = function ($nominal) {
 
                     <a
                         href="<?= base_url(
-                            'admin/laporan/export_excel?' . $queryExport
-                        ) ?>"
+                                    'admin/laporan/export_excel?' . $queryExport
+                                ) ?>"
                         class="btn btn-success">
                         <i class="fa fa-file-excel-o"></i> Export Excel
                     </a>
 
                     <a
                         href="<?= base_url(
-                            'admin/laporan/export_csv?' . $queryExport
-                        ) ?>"
+                                    'admin/laporan/export_csv?' . $queryExport
+                                ) ?>"
                         class="btn btn-info">
                         <i class="fa fa-file-text-o"></i> Export CSV
                     </a>
@@ -405,16 +428,16 @@ $formatRupiah = function ($nominal) {
         <div class="row">
             <div class="col-lg-3 col-sm-6 col-xs-12">
                 <div class="laporan-card masuk">
-                    <div class="card-title">Total Masuk</div>
+                    <div class="card-title">Total Arus Masuk</div>
                     <div class="card-value">
                         <?= $formatRupiah($ringkasan['total_masuk']) ?>
                     </div>
                     <div class="card-detail">
-                        Transaksi <?= $formatRupiah(
-                            $ringkasan['transaksi_masuk']
-                        ) ?> • Transfer <?= $formatRupiah(
-                            $ringkasan['transfer_masuk']
-                        ) ?>
+                        Transaksi non-target <?= $formatRupiah(
+                                                    $ringkasan['transaksi_masuk']
+                                                ) ?> • Transfer <?= $formatRupiah(
+                                            $ringkasan['transfer_masuk']
+                                        ) ?>
                     </div>
                     <i class="fa fa-arrow-down card-icon"></i>
                 </div>
@@ -422,16 +445,16 @@ $formatRupiah = function ($nominal) {
 
             <div class="col-lg-3 col-sm-6 col-xs-12">
                 <div class="laporan-card keluar">
-                    <div class="card-title">Total Keluar</div>
+                    <div class="card-title">Total Arus Keluar</div>
                     <div class="card-value">
                         <?= $formatRupiah($ringkasan['total_keluar']) ?>
                     </div>
                     <div class="card-detail">
-                        Transaksi <?= $formatRupiah(
-                            $ringkasan['transaksi_keluar']
-                        ) ?> • Transfer <?= $formatRupiah(
-                            $ringkasan['transfer_keluar']
-                        ) ?>
+                        Transaksi non-target <?= $formatRupiah(
+                                                    $ringkasan['transaksi_keluar']
+                                                ) ?> • Transfer <?= $formatRupiah(
+                                            $ringkasan['transfer_keluar']
+                                        ) ?>
                     </div>
                     <i class="fa fa-arrow-up card-icon"></i>
                 </div>
@@ -452,18 +475,84 @@ $formatRupiah = function ($nominal) {
 
             <div class="col-lg-3 col-sm-6 col-xs-12">
                 <div class="laporan-card aktivitas">
-                    <div class="card-title">Jumlah Aktivitas</div>
+                    <div class="card-title">Mutasi Tabungan Target</div>
                     <div class="card-value">
-                        <?= number_format($ringkasan['jumlah_aktivitas']) ?>
+                        <?= $formatRupiah(
+                            $ringkasan['mutasi_target_total']
+                        ) ?>
                     </div>
                     <div class="card-detail">
-                        <?= number_format($ringkasan['jumlah_transaksi']) ?>
-                        transaksi •
-                        <?= number_format($ringkasan['jumlah_transfer']) ?>
-                        transfer
+                        Ke target <?= $formatRupiah(
+                                        $ringkasan['mutasi_target_keluar']
+                                    ) ?> • Kembali <?= $formatRupiah(
+                                            $ringkasan['mutasi_target_masuk']
+                                        ) ?>
                     </div>
-                    <i class="fa fa-exchange card-icon"></i>
+                    <i class="fa fa-bullseye card-icon"></i>
                 </div>
+            </div>
+        </div>
+
+        <div class="box box-warning">
+            <div class="box-header with-border">
+                <h3 class="box-title laporan-section-title">
+                    <i class="fa fa-pie-chart"></i>
+                    Ringkasan Per Jenis Transaksi
+                </h3>
+                <div class="box-tools pull-right">
+                    <span class="label label-default">
+                        <?= number_format($ringkasan['jumlah_aktivitas']) ?>
+                        aktivitas
+                    </span>
+                </div>
+            </div>
+
+            <div class="box-body">
+                <div class="table-responsive">
+                    <table class="table table-bordered table-striped ringkasan-kategori">
+                        <thead>
+                            <tr>
+                                <th>Jenis Transaksi</th>
+                                <th>Sifat</th>
+                                <th>Aktivitas</th>
+                                <th>Masuk</th>
+                                <th>Keluar / Mutasi</th>
+                                <th>Dampak Saldo Bersih</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($ringkasan['kategori'] as $kategori): ?>
+                                <?php if ($kategori['jumlah'] < 1) continue; ?>
+                                <tr>
+                                    <td>
+                                        <span class="label-kategori <?= $kategori['sifat'] === 'Mutasi internal'
+                                                                        ? 'label-internal'
+                                                                        : '' ?>">
+                                            <?= html_escape($kategori['label']) ?>
+                                        </span>
+                                    </td>
+                                    <td><?= html_escape($kategori['sifat']) ?></td>
+                                    <td><?= number_format($kategori['jumlah']) ?></td>
+                                    <td class="nilai-masuk">
+                                        <?= $formatRupiah($kategori['masuk']) ?>
+                                    </td>
+                                    <td class="nilai-keluar">
+                                        <?= $formatRupiah($kategori['keluar']) ?>
+                                    </td>
+                                    <td>
+                                        <?= $formatRupiah($kategori['dampak_saldo']) ?>
+                                    </td>
+                                </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+
+                <p class="text-muted" style="margin-bottom:0;">
+                    <i class="fa fa-info-circle"></i>
+                    Isi dan refund tabungan target adalah mutasi internal,
+                    sehingga tidak mengurangi atau menambah saldo bersih periode.
+                </p>
             </div>
         </div>
 
@@ -485,6 +574,8 @@ $formatRupiah = function ($nominal) {
                                 <th>Tanggal</th>
                                 <th>Nasabah</th>
                                 <th>Cabang</th>
+                                <th>Jenis Transaksi</th>
+                                <th>Sifat</th>
                                 <th>Masuk</th>
                                 <th>Keluar</th>
                                 <th>Keterangan</th>
@@ -508,6 +599,14 @@ $formatRupiah = function ($nominal) {
                                             <?= html_escape($row['kode_cabang']) ?>
                                         </span>
                                     </td>
+                                    <td>
+                                        <span class="label-kategori <?= $row['mutasi_internal']
+                                                                        ? 'label-internal'
+                                                                        : '' ?>">
+                                            <?= html_escape($row['kategori_label']) ?>
+                                        </span>
+                                    </td>
+                                    <td><?= html_escape($row['sifat_label']) ?></td>
                                     <td class="nilai-masuk">
                                         <?= $row['jenis'] === 'Masuk'
                                             ? $formatRupiah($row['nominal'])
@@ -615,7 +714,7 @@ $formatRupiah = function ($nominal) {
     function cetakLaporanLengkap() {
         panjangTabelSebelumCetak = [];
 
-        $('.dataTable').each(function () {
+        $('.dataTable').each(function() {
             if ($.fn.DataTable.isDataTable(this)) {
                 var tabel = $(this).DataTable();
 
@@ -628,13 +727,13 @@ $formatRupiah = function ($nominal) {
             }
         });
 
-        window.setTimeout(function () {
+        window.setTimeout(function() {
             window.print();
         }, 200);
     }
 
-    window.addEventListener('afterprint', function () {
-        panjangTabelSebelumCetak.forEach(function (item) {
+    window.addEventListener('afterprint', function() {
+        panjangTabelSebelumCetak.forEach(function(item) {
             item.tabel.page.len(item.panjang).draw();
         });
 
