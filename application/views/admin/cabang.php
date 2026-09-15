@@ -48,7 +48,7 @@
                 <th>Kontak</th>
                 <th>Alamat</th>
                 <th>Status</th>
-                <th width="155">Tindakan</th>
+                <th width="245">Tindakan</th>
               </tr>
             </thead>
 
@@ -163,6 +163,30 @@
                           </button>
                         <?php endif; ?>
                       </form>
+
+                      <form
+                        method="post"
+                        action="<?= base_url(
+                                  'admin/cabang/delete/' .
+                                    $idCabang
+                        ) ?>"
+                        style="display:inline-block;"
+                        onsubmit="return confirm(
+                          'Hapus cabang ini? Cabang harus nonaktif dan tidak mempunyai data terkait.'
+                        );">
+                        <input
+                          type="hidden"
+                          name="<?= $this->security->get_csrf_token_name() ?>"
+                          value="<?= $this->security->get_csrf_hash() ?>">
+
+                        <button
+                          type="submit"
+                          class="btn btn-danger btn-xs"
+                          <?= $isAktif ? 'disabled title="Nonaktifkan cabang terlebih dahulu"' : '' ?>>
+                          <i class="fa fa-trash"></i>
+                          Hapus
+                        </button>
+                      </form>
                     <?php endif; ?>
                   </td>
                 </tr>
@@ -207,14 +231,16 @@
 
                             <input
                               type="text"
+                              name="kode"
                               class="form-control"
+                              maxlength="20"
                               value="<?= html_escape(
                                         $row['kode']
                                       ) ?>"
-                              disabled>
+                              required>
 
                             <small class="text-muted">
-                              Kode cabang tidak dapat diubah.
+                              Gunakan huruf, angka, atau tanda hubung.
                             </small>
                           </div>
 

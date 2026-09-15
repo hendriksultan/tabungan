@@ -401,6 +401,206 @@ class User extends CI_Controller
 		redirect('admin/user');
 	}
 
+	public function delete($id)
+	{
+		$this->pastikanPost();
+
+		if (!$this->isSuperAdmin) {
+			$this->gagal('Penghapusan user hanya dapat dilakukan Super Admin!');
+			return;
+		}
+
+		$target = $this->ambilUserYangBolehDikelola($id);
+
+		if (!$target) {
+			return;
+		}
+
+		$ketergantungan = $this->cariDataTerkaitUser((int) $target['id']);
+
+		if ($ketergantungan !== '') {
+			$this->gagal(
+				'User tidak dapat dihapus karena sudah memiliki data ' .
+				$ketergantungan . '. Nonaktifkan status login untuk tetap menjaga histori.'
+			);
+			return;
+		}
+
+		$this->db->trans_begin();
+
+		$this->hapusDataSementaraUser((int) $target['id']);
+
+		$this->db->where('id', (int) $target['id']);
+		$this->db->delete('tb_user');
+		$userTerhapus = ($this->db->affected_rows() === 1);
+
+		if ($this->db->trans_status() === false || !$userTerhapus) {
+			$this->db->trans_rollback();
+			$this->gagal(
+				'User gagal dihapus. Kemungkinan masih terdapat data yang terhubung.'
+			);
+			return;
+		}
+
+		$this->db->trans_commit();
+
+		$this->session->set_flashdata(
+			'pesan',
+			'User ' . $target['nama'] . ' berhasil dihapus!'
+		);
+
+		redirect('admin/user');
+	}
+
+	private function cariDataTerkaitUser($id)
+	{
+		$referensi = [
+			'tb_transaksi' => [
+				'label' => 'transaksi',
+				'kolom' => ['idNasabah', 'idAdmin']
+			],
+			'tb_transfer' => [
+				'label' => 'transfer',
+				'kolom' => ['idPengirim', 'idPenerima', 'idAdmin']
+			],
+			'tb_target' => [
+				'label' => 'target tabungan',
+				'kolom' => ['id_nasabah']
+			],
+			'tb_toko' => [
+				'label' => 'toko',
+				'kolom' => ['id_user']
+			],
+			'tb_pesanan' => [
+				'label' => 'pesanan',
+				'kolom' => [
+					'id_pembeli', 'id_penjual', 'id_admin',
+					'dibatalkan_oleh'
+				]
+			],
+			'tb_ulasan' => [
+				'label' => 'ulasan',
+				'kolom' => ['id_pembeli', 'id_user']
+			],
+			'tb_qr_transfer' => [
+				'label' => 'QR transfer',
+				'kolom' => ['id_pengirim', 'id_penerima']
+			],
+			'tb_kunci_emas' => [
+				'label' => 'tabungan emas',
+				'kolom' => [
+					'id_nasabah', 'ditetapkan_oleh', 'dihapus_oleh'
+				]
+			],
+			'tb_potongan' => [
+				'label' => 'potongan',
+				'kolom' => ['idNasabah', 'id_nasabah']
+			]
+		];
+
+		foreach ($referensi as $tabel => $aturan) {
+			if (!$this->db->table_exists($tabel)) {
+				continue;
+			}
+
+			foreach ($aturan['kolom'] as $kolom) {
+				if (!$this->db->field_exists($kolom, $tabel)) {
+					continue;
+				}
+
+				$this->db->where($kolom, $id);
+
+				if ($this->db->count_all_results($tabel) > 0) {
+					return $aturan['label'];
+				}
+			}
+		}
+
+		$tabelDiabaikan = [
+			'tb_user', 'tb_api_token', 'tb_notifikasi', 'tb_wishlist',
+			'tb_login_attempt', 'tb_register_attempt',
+			'tb_reset_pin_log', 'tb_aplikasi'
+		];
+
+		$kolomUser = [
+			'id_user', 'user_id', 'idUser', 'id_nasabah', 'idNasabah',
+			'id_pengirim', 'idPengirim', 'id_penerima', 'idPenerima',
+			'id_admin', 'idAdmin', 'id_pembeli', 'id_penjual',
+			'dibuat_oleh', 'diupload_oleh', 'uploaded_by',
+			'dibatalkan_oleh', 'ditetapkan_oleh', 'dihapus_oleh'
+		];
+
+		foreach ($this->db->list_tables() as $tabel) {
+			if (
+				in_array($tabel, $tabelDiabaikan, true) ||
+				array_key_exists($tabel, $referensi) ||
+				stripos($tabel, 'backup') !== false
+			) {
+				continue;
+			}
+
+			foreach ($kolomUser as $kolom) {
+				if (!$this->db->field_exists($kolom, $tabel)) {
+					continue;
+				}
+
+				$this->db->where($kolom, $id);
+
+				if ($this->db->count_all_results($tabel) > 0) {
+					return 'terkait pada ' . $tabel;
+				}
+			}
+		}
+
+		return '';
+	}
+
+	private function hapusDataSementaraUser($id)
+	{
+		$dataHapus = [
+			'tb_api_token'  => ['id_user'],
+			'tb_notifikasi' => ['id_user'],
+			'tb_wishlist'   => ['id_pembeli', 'id_user']
+		];
+
+		foreach ($dataHapus as $tabel => $kolomKandidat) {
+			if (!$this->db->table_exists($tabel)) {
+				continue;
+			}
+
+			foreach ($kolomKandidat as $kolom) {
+				if ($this->db->field_exists($kolom, $tabel)) {
+					$this->db->where($kolom, $id);
+					$this->db->delete($tabel);
+					break;
+				}
+			}
+		}
+
+		$dataSetNull = [
+			'tb_login_attempt'   => ['id_user'],
+			'tb_register_attempt' => ['id_user'],
+			'tb_reset_pin_log'   => ['id_nasabah', 'direset_oleh'],
+			'tb_aplikasi'        => ['apk_diupload_oleh'],
+			'tb_user'            => ['pin_reset_oleh']
+		];
+
+		foreach ($dataSetNull as $tabel => $kolomKandidat) {
+			if (!$this->db->table_exists($tabel)) {
+				continue;
+			}
+
+			foreach ($kolomKandidat as $kolom) {
+				if (!$this->db->field_exists($kolom, $tabel)) {
+					continue;
+				}
+
+				$this->db->where($kolom, $id);
+				$this->db->update($tabel, [$kolom => null]);
+			}
+		}
+	}
+
 	private function ambilUserYangBolehDikelola($id)
 	{
 		$id = (int) $id;

@@ -46,7 +46,7 @@ $userRows = $user->result_array();
                                 <th>Login</th>
                                 <th>Level</th>
                                 <th>Terdaftar</th>
-                                <th width="190">Tindakan</th>
+                                <th width="270">Tindakan</th>
                             </tr>
                         </thead>
 
@@ -170,6 +170,31 @@ $userRows = $user->result_array();
                                                 <i class="fa fa-lock"></i>
                                                 Password
                                             </button>
+
+                                            <?php if ($is_super_admin): ?>
+                                                <form
+                                                    action="<?= base_url(
+                                                                'admin/user/delete/' .
+                                                                    $idUser
+                                                            ) ?>"
+                                                    method="post"
+                                                    style="display:inline-block;"
+                                                    onsubmit="return confirm(
+                                                        'Hapus user ini? Tindakan ini tidak dapat dibatalkan.'
+                                                    );">
+                                                    <input
+                                                        type="hidden"
+                                                        name="<?= $this->security->get_csrf_token_name() ?>"
+                                                        value="<?= $this->security->get_csrf_hash() ?>">
+
+                                                    <button
+                                                        type="submit"
+                                                        class="btn btn-danger btn-xs">
+                                                        <i class="fa fa-trash"></i>
+                                                        Hapus
+                                                    </button>
+                                                </form>
+                                            <?php endif; ?>
                                         <?php endif; ?>
                                     </td>
                                 </tr>
