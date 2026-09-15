@@ -51,9 +51,7 @@
                                 <th>Atas Nama</th>
                                 <th>Status</th>
                                 <th>Urutan</th>
-                                <?php if (!$isSuperAdmin): ?>
-                                    <th style="width: 150px;">Aksi</th>
-                                <?php endif; ?>
+                                <th style="width: 235px;">Aksi</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -79,8 +77,8 @@
                                     </td>
                                     <td><?= (int) $row['urutan'] ?></td>
 
-                                    <?php if (!$isSuperAdmin): ?>
-                                        <td>
+                                    <td>
+                                        <?php if (!$isSuperAdmin): ?>
                                             <button
                                                 type="button"
                                                 class="btn btn-warning btn-xs"
@@ -105,8 +103,27 @@
                                                     <?= $row['status'] === 'Aktif' ? 'Nonaktifkan' : 'Aktifkan' ?>
                                                 </button>
                                             </form>
-                                        </td>
-                                    <?php endif; ?>
+                                        <?php endif; ?>
+
+                                        <form
+                                            action="<?= base_url('admin/rekening/delete/' . (int) $row['id']) ?>"
+                                            method="POST"
+                                            style="display: inline-block;"
+                                            onsubmit="return confirm('Hapus rekening penampungan ini? Tindakan ini tidak dapat dibatalkan.');">
+                                            <input
+                                                type="hidden"
+                                                name="<?= $this->security->get_csrf_token_name() ?>"
+                                                value="<?= $this->security->get_csrf_hash() ?>">
+                                            <button
+                                                type="submit"
+                                                class="btn btn-danger btn-xs"
+                                                <?= $row['status'] === 'Aktif'
+                                                    ? 'disabled title="Nonaktifkan rekening terlebih dahulu"'
+                                                    : '' ?>>
+                                                <i class="fa fa-trash"></i> Hapus
+                                            </button>
+                                        </form>
+                                    </td>
                                 </tr>
                             <?php endforeach; ?>
                         </tbody>

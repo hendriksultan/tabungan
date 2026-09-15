@@ -203,6 +203,57 @@ class Rekening extends CI_Controller
         redirect('admin/rekening');
     }
 
+    public function delete($id)
+    {
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            $this->gagal('Gunakan metode POST.');
+            return;
+        }
+
+        if ($this->isSuperAdmin) {
+            $rekening = $this->db->get_where(
+                'tb_rekening_penampungan',
+                ['id' => (int) $id]
+            )->row_array();
+        } else {
+            $rekening = $this->rekening_cabang($id);
+        }
+
+        if (!$rekening) {
+            $this->gagal('Rekening penampungan tidak ditemukan.');
+            return;
+        }
+
+        if ($rekening['status'] === 'Aktif') {
+            $this->gagal(
+                'Nonaktifkan rekening terlebih dahulu sebelum menghapusnya.'
+            );
+            return;
+        }
+
+        $this->db->where('id', (int) $rekening['id']);
+
+        if (!$this->isSuperAdmin) {
+            $this->db->where('cabang_id', $this->cabangId);
+        }
+
+        $this->db->delete('tb_rekening_penampungan');
+
+        if ($this->db->affected_rows() === 1) {
+            $this->session->set_flashdata(
+                'pesan',
+                'Rekening penampungan berhasil dihapus!'
+            );
+        } else {
+            $this->session->set_flashdata(
+                'pesanError',
+                'Rekening penampungan gagal dihapus!'
+            );
+        }
+
+        redirect('admin/rekening');
+    }
+
     private function validasi_input()
     {
         if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
