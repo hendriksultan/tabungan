@@ -57,11 +57,11 @@ class Cabang extends CI_Controller
       trim((string) $this->input->post('kode', true))
     );
 
-    $nama = trim(
+    $nama = $this->format_kapital(
       (string) $this->input->post('nama', true)
     );
 
-    $alamat = trim(
+    $alamat = $this->format_kapital(
       (string) $this->input->post('alamat', true)
     );
 
@@ -69,8 +69,8 @@ class Cabang extends CI_Controller
       (string) $this->input->post('telp', true)
     );
 
-    $email = trim(
-      (string) $this->input->post('email', true)
+    $email = strtolower(
+      trim((string) $this->input->post('email', true))
     );
 
     if ($kode === '' || $nama === '') {
@@ -177,11 +177,11 @@ class Cabang extends CI_Controller
       trim((string) $this->input->post('kode', true))
     );
 
-    $nama = trim(
+    $nama = $this->format_kapital(
       (string) $this->input->post('nama', true)
     );
 
-    $alamat = trim(
+    $alamat = $this->format_kapital(
       (string) $this->input->post('alamat', true)
     );
 
@@ -189,8 +189,8 @@ class Cabang extends CI_Controller
       (string) $this->input->post('telp', true)
     );
 
-    $email = trim(
-      (string) $this->input->post('email', true)
+    $email = strtolower(
+      trim((string) $this->input->post('email', true))
     );
 
     if ($kode === '' || $nama === '') {
@@ -465,6 +465,34 @@ class Cabang extends CI_Controller
   {
     $this->session->set_flashdata('pesanError', $pesan);
     redirect('admin/cabang');
+  }
+
+  private function format_kapital($nilai)
+  {
+    $nilai = trim((string) $nilai);
+
+    if ($nilai === '') {
+      return '';
+    }
+
+    $baris = preg_split('/\R/u', $nilai);
+    $hasil = [];
+
+    foreach ($baris as $teks) {
+      $teks = preg_replace('/[ \t]+/u', ' ', trim($teks));
+
+      if (function_exists('mb_convert_case')) {
+        $hasil[] = mb_convert_case(
+          $teks,
+          MB_CASE_TITLE,
+          'UTF-8'
+        );
+      } else {
+        $hasil[] = ucwords(strtolower($teks));
+      }
+    }
+
+    return implode(PHP_EOL, $hasil);
   }
 
   private function pastikan_post()

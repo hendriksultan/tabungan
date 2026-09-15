@@ -1,3 +1,26 @@
+<?php
+$formatKapital = static function ($nilai) {
+  $nilai = trim((string) $nilai);
+
+  if ($nilai === '') {
+    return '';
+  }
+
+  $baris = preg_split('/\R/u', $nilai);
+  $hasil = [];
+
+  foreach ($baris as $teks) {
+    $teks = preg_replace('/[ \t]+/u', ' ', trim($teks));
+
+    $hasil[] = function_exists('mb_convert_case')
+      ? mb_convert_case($teks, MB_CASE_TITLE, 'UTF-8')
+      : ucwords(strtolower($teks));
+  }
+
+  return implode(PHP_EOL, $hasil);
+};
+?>
+
 <div class="content-wrapper">
   <section class="content-header">
     <h1>
@@ -67,7 +90,7 @@
 
                   <td>
                     <strong>
-                      <?= html_escape($row['kode']) ?>
+                      <?= html_escape(strtoupper($row['kode'])) ?>
                     </strong>
 
                     <?php if ($isPusat): ?>
@@ -79,7 +102,7 @@
                   </td>
 
                   <td>
-                    <?= html_escape($row['nama']) ?>
+                    <?= html_escape($formatKapital($row['nama'])) ?>
                   </td>
 
                   <td>
@@ -91,7 +114,7 @@
 
                     <?php if (!empty($row['email'])): ?>
                       <i class="fa fa-envelope"></i>
-                      <?= html_escape($row['email']) ?>
+                      <?= html_escape(strtolower($row['email'])) ?>
                     <?php endif; ?>
 
                     <?php if (
@@ -104,7 +127,7 @@
 
                   <td>
                     <?= !empty($row['alamat'])
-                      ? nl2br(html_escape($row['alamat']))
+                      ? nl2br(html_escape($formatKapital($row['alamat'])))
                       : '<span class="text-muted">-</span>'
                     ?>
                   </td>
@@ -235,7 +258,7 @@
                               class="form-control"
                               maxlength="20"
                               value="<?= html_escape(
-                                        $row['kode']
+                                        strtoupper($row['kode'])
                                       ) ?>"
                               required>
 
@@ -253,7 +276,7 @@
                               class="form-control"
                               maxlength="150"
                               value="<?= html_escape(
-                                        $row['nama']
+                                        $formatKapital($row['nama'])
                                       ) ?>"
                               required>
                           </div>
@@ -280,7 +303,7 @@
                               class="form-control"
                               maxlength="150"
                               value="<?= html_escape(
-                                        $row['email']
+                                        strtolower($row['email'])
                                       ) ?>">
                           </div>
 
@@ -291,7 +314,7 @@
                               name="alamat"
                               class="form-control"
                               rows="3"><?= html_escape(
-                                          $row['alamat']
+                                          $formatKapital($row['alamat'])
                                         ) ?></textarea>
                           </div>
                         </div>
