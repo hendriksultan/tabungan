@@ -1,10 +1,38 @@
+<?php
+$faviconDefault = 'Logo-1720958830.png';
+$pengaturanFavicon = isset($aplikasi) && is_object($aplikasi)
+  ? $aplikasi->row_array()
+  : [];
+
+$faviconFile = !empty($pengaturanFavicon['logo'])
+  ? basename((string) $pengaturanFavicon['logo'])
+  : $faviconDefault;
+
+$faviconPath = FCPATH . 'assets/logo/' . $faviconFile;
+
+if (!is_file($faviconPath)) {
+  $faviconFile = $faviconDefault;
+  $faviconPath = FCPATH . 'assets/logo/' . $faviconFile;
+}
+
+$faviconExtension = strtolower(pathinfo($faviconFile, PATHINFO_EXTENSION));
+$faviconMime = in_array($faviconExtension, ['jpg', 'jpeg'], true)
+  ? 'image/jpeg'
+  : 'image/png';
+$faviconVersion = is_file($faviconPath) ? filemtime($faviconPath) : 1;
+$faviconUrl = base_url('assets/logo/' . $faviconFile) .
+  '?v=' . rawurlencode((string) $faviconVersion);
+?>
 <!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
   <meta http-equiv="X-UA-Compatible" content="IE=edge">
   <title><?= $title; ?> Tabungan Umat </title>
-  <link rel="icon" type="image/x-icon" href="assets/logo/Logo-1720958830.png">
+  <link
+    rel="icon"
+    type="<?= html_escape($faviconMime) ?>"
+    href="<?= html_escape($faviconUrl) ?>">
   <meta content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" name="viewport">
   <link rel="stylesheet" href="<?= base_url('assets') ?>/bower_components/bootstrap/dist/css/bootstrap.min.css">
   <link rel="stylesheet" href="<?= base_url('assets') ?>/bower_components/font-awesome/css/font-awesome.min.css">

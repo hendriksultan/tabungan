@@ -1,10 +1,41 @@
+<?php
+$faviconDefault = 'Logo-1720958830.png';
+$pengaturanFavicon = $this->db
+  ->select('logo')
+  ->order_by('id', 'DESC')
+  ->limit(1)
+  ->get('tb_aplikasi')
+  ->row_array();
+
+$faviconFile = !empty($pengaturanFavicon['logo'])
+  ? basename((string) $pengaturanFavicon['logo'])
+  : $faviconDefault;
+
+$faviconPath = FCPATH . 'assets/logo/' . $faviconFile;
+
+if (!is_file($faviconPath)) {
+  $faviconFile = $faviconDefault;
+  $faviconPath = FCPATH . 'assets/logo/' . $faviconFile;
+}
+
+$faviconExtension = strtolower(pathinfo($faviconFile, PATHINFO_EXTENSION));
+$faviconMime = in_array($faviconExtension, ['jpg', 'jpeg'], true)
+  ? 'image/jpeg'
+  : 'image/png';
+$faviconVersion = is_file($faviconPath) ? filemtime($faviconPath) : 1;
+$faviconUrl = base_url('assets/logo/' . $faviconFile) .
+  '?v=' . rawurlencode((string) $faviconVersion);
+?>
 <!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
   <meta http-equiv="X-UA-Compatible" content="IE=edge">
   <title><?= $title; ?> | <?= $this->session->userdata('level') ?></title>
-  <link rel="icon" type="image/png" href="../assets/logo/Logo-1720958830.png"> 
+  <link
+    rel="icon"
+    type="<?= html_escape($faviconMime) ?>"
+    href="<?= html_escape($faviconUrl) ?>">
   <!-- Tell the browser to be responsive to screen width -->
   <meta content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" name="viewport">
   <!-- Bootstrap 3.3.7 -->
