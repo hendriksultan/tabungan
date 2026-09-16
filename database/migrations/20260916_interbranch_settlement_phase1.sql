@@ -7,6 +7,9 @@
 -- Tidak mengubah saldo, transfer, transaksi, maupun pesanan lama.
 -- Integrasi API dilakukan pada fase berikutnya setelah migrasi
 -- berhasil diverifikasi di lingkungan lokal.
+-- Validasi nominal, perbedaan cabang, jumlah detail, dan pemisahan
+-- tugas pengirim/verifikator ditegakkan oleh API agar kompatibel
+-- dengan parser phpMyAdmin lama yang menolak named CHECK constraint.
 -- =========================================================
 
 -- =========================================================
@@ -96,13 +99,7 @@ CREATE TABLE IF NOT EXISTS `tb_kewajiban_antar_cabang` (
     FOREIGN KEY (`dibuat_oleh`)
     REFERENCES `tb_user` (`id`)
     ON UPDATE CASCADE
-    ON DELETE SET NULL,
-
-  CONSTRAINT `chk_kewajiban_nominal`
-    CHECK (`nominal` > 0),
-
-  CONSTRAINT `chk_kewajiban_beda_cabang`
-    CHECK (`cabang_asal_id` <> `cabang_tujuan_id`)
+    ON DELETE SET NULL
 )
 ENGINE = InnoDB
 DEFAULT CHARSET = utf8mb4
@@ -280,20 +277,7 @@ CREATE TABLE IF NOT EXISTS `tb_settlement_cabang` (
     FOREIGN KEY (`ditolak_oleh`)
     REFERENCES `tb_user` (`id`)
     ON UPDATE CASCADE
-    ON DELETE SET NULL,
-
-  CONSTRAINT `chk_settlement_nominal`
-    CHECK (`nominal_total` > 0),
-
-  CONSTRAINT `chk_settlement_beda_cabang`
-    CHECK (`cabang_asal_id` <> `cabang_tujuan_id`),
-
-  CONSTRAINT `chk_settlement_pemisahan_tugas`
-    CHECK (
-      `dikirim_oleh` IS NULL
-      OR `diverifikasi_oleh` IS NULL
-      OR `dikirim_oleh` <> `diverifikasi_oleh`
-    )
+    ON DELETE SET NULL
 )
 ENGINE = InnoDB
 DEFAULT CHARSET = utf8mb4
@@ -342,10 +326,7 @@ CREATE TABLE IF NOT EXISTS `tb_settlement_detail` (
     FOREIGN KEY (`id_kewajiban`)
     REFERENCES `tb_kewajiban_antar_cabang` (`id_kewajiban`)
     ON UPDATE CASCADE
-    ON DELETE RESTRICT,
-
-  CONSTRAINT `chk_settlement_detail_nominal`
-    CHECK (`nominal_dialokasikan` > 0)
+    ON DELETE RESTRICT
 )
 ENGINE = InnoDB
 DEFAULT CHARSET = utf8mb4
@@ -502,13 +483,7 @@ CREATE TABLE IF NOT EXISTS `tb_escrow_marketplace` (
     FOREIGN KEY (`id_kewajiban`)
     REFERENCES `tb_kewajiban_antar_cabang` (`id_kewajiban`)
     ON UPDATE CASCADE
-    ON DELETE RESTRICT,
-
-  CONSTRAINT `chk_escrow_nominal_barang`
-    CHECK (`nominal_barang` > 0),
-
-  CONSTRAINT `chk_escrow_total_dana`
-    CHECK (`total_dana` = `nominal_barang` + `ongkir`)
+    ON DELETE RESTRICT
 )
 ENGINE = InnoDB
 DEFAULT CHARSET = utf8mb4
