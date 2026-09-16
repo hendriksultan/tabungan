@@ -19558,10 +19558,14 @@ class Api extends CI_Controller
       return;
     }
 
-    if ($auth->level !== 'Nasabah') {
+    if (!in_array(
+      $auth->level,
+      ['Nasabah', 'Administrator', 'Super Admin'],
+      true
+    )) {
       $this->api_response([
         'status'  => false,
-        'message' => 'Akses ditolak. Endpoint ini khusus Nasabah.'
+        'message' => 'Level pengguna tidak memiliki akses untuk mencatat tabungan emas.'
       ], 403);
       return;
     }
@@ -19580,10 +19584,24 @@ class Api extends CI_Controller
     }
 
     /*
-     * Identitas Nasabah berasal dari Bearer token.
-     * id_nasabah dari request diabaikan.
+     * Nasabah hanya boleh membeli untuk dirinya sendiri.
+     * Administrator dan Super Admin wajib menentukan nasabah
+     * tujuan. Validasi cakupan cabang dilakukan kembali setelah
+     * data nasabah dikunci dari database.
      */
-    $id_nasabah = (int) $auth->id_user;
+    if ($auth->level === 'Nasabah') {
+      $id_nasabah = (int) $auth->id_user;
+    } else {
+      $id_nasabah = (int) ($request['id_nasabah'] ?? 0);
+
+      if ($id_nasabah <= 0) {
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Nasabah tujuan tabungan emas wajib dipilih.'
+        ], 422);
+        return;
+      }
+    }
 
     $pin = trim(
       (string) ($request['pin'] ?? '')
@@ -19784,11 +19802,73 @@ class Api extends CI_Controller
     }
 
     /*
+     * Administrator hanya boleh mencatat transaksi untuk nasabah
+     * pada cabangnya. Super Admin boleh memilih nasabah dari semua
+     * cabang aktif. Cabang transaksi selalu mengikuti data nasabah.
+     */
+    if (
+      $auth->level === 'Administrator' &&
+      (int) $user->cabang_id !== (int) $auth->cabang_id
+    ) {
+      $this->db->trans_rollback();
+
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Nasabah tujuan tidak terdaftar pada cabang Anda.'
+      ], 403);
+      return;
+    }
+
+    /*
+     * PIN yang diverifikasi adalah PIN pelaku transaksi:
+     * PIN Nasabah untuk pembelian mandiri atau PIN operator untuk
+     * pencatatan manual oleh Administrator/Super Admin.
+     */
+    $pengguna_pin = $user;
+
+    if ($auth->level !== 'Nasabah') {
+      $pengguna_pin = $this->db->query(
+        "SELECT
+            id,
+            level,
+            login,
+            pin,
+            pin_gagal,
+            pin_terkunci_sampai,
+            pin_wajib_diubah,
+            pin_reset_kedaluwarsa
+         FROM tb_user
+         WHERE id = ?
+         LIMIT 1
+         FOR UPDATE",
+        [(int) $auth->id_user]
+      )->row();
+
+      if (
+        !$pengguna_pin ||
+        !in_array(
+          $pengguna_pin->level,
+          ['Administrator', 'Super Admin'],
+          true
+        ) ||
+        $pengguna_pin->login !== 'Ya'
+      ) {
+        $this->db->trans_rollback();
+
+        $this->api_response([
+          'status'  => false,
+          'message' => 'Akun operator tidak aktif.'
+        ], 403);
+        return;
+      }
+    }
+
+    /*
      * Verifikasi PIN berada dalam transaksi yang sama.
      */
     $hasil_pin =
       $this->verifikasi_pin_user_dalam_transaksi(
-        $user,
+        $pengguna_pin,
         $pin
       );
 
@@ -20085,7 +20165,9 @@ class Api extends CI_Controller
         (int) $user->cabang_id,
 
         'idAdmin' =>
-        0,
+        $auth->level === 'Nasabah'
+          ? 0
+          : (int) $auth->id_user,
 
         'idNasabah' =>
         $id_nasabah,
