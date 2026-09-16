@@ -488,35 +488,3 @@ CREATE TABLE IF NOT EXISTS `tb_escrow_marketplace` (
 ENGINE = InnoDB
 DEFAULT CHARSET = utf8mb4
 COLLATE = utf8mb4_unicode_ci;
-
--- =========================================================
--- Verifikasi struktur setelah migrasi
--- =========================================================
-
-SELECT
-  `TABLE_NAME`,
-  `ENGINE`,
-  `TABLE_COLLATION`
-FROM `information_schema`.`TABLES`
-WHERE `TABLE_SCHEMA` = DATABASE()
-  AND `TABLE_NAME` IN (
-    'tb_kewajiban_antar_cabang',
-    'tb_settlement_cabang',
-    'tb_settlement_detail',
-    'tb_escrow_marketplace'
-  )
-ORDER BY `TABLE_NAME`;
-
-SELECT
-  `TABLE_NAME`,
-  `CONSTRAINT_NAME`,
-  `CONSTRAINT_TYPE`
-FROM `information_schema`.`TABLE_CONSTRAINTS`
-WHERE `CONSTRAINT_SCHEMA` = DATABASE()
-  AND `TABLE_NAME` IN (
-    'tb_kewajiban_antar_cabang',
-    'tb_settlement_cabang',
-    'tb_settlement_detail',
-    'tb_escrow_marketplace'
-  )
-ORDER BY `TABLE_NAME`, `CONSTRAINT_TYPE`, `CONSTRAINT_NAME`;
