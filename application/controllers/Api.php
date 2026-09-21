@@ -1826,7 +1826,11 @@ class Api extends CI_Controller
     $insert = $this->db->insert('tb_transaksi', $data);
     $id_transaksi = (int) $this->db->insert_id();
 
-    if (!$insert || $this->db->trans_status() === false) {
+    if (
+      !$insert ||
+      $id_transfer <= 0 ||
+      $this->db->trans_status() === false
+    ) {
       $this->db->trans_rollback();
 
       if (
@@ -2691,6 +2695,72 @@ class Api extends CI_Controller
       return;
     }
 
+    /*
+     * Saldo digital langsung berpindah ketika transfer berhasil. Untuk
+     * transfer lintas cabang, dana fisik masih berada pada rekening
+     * penampungan cabang pengirim. Karena itu dibuat satu kewajiban
+     * antar-cabang dalam transaksi database yang sama dengan transfer.
+     * Transfer satu cabang tidak memerlukan settlement fisik.
+     */
+    $is_lintas_cabang = (
+      (int) $pengirim->cabang_id !==
+      (int) $penerima->cabang_id
+    );
+    $id_kewajiban = null;
+    $kode_kewajiban = null;
+
+    if ($is_lintas_cabang) {
+      $kode_kewajiban = 'KWA-TRF-' . str_pad(
+        (string) $id_transfer,
+        10,
+        '0',
+        STR_PAD_LEFT
+      );
+
+      $data_kewajiban = [
+        'kode_kewajiban'   => $kode_kewajiban,
+        'jenis_sumber'     => 'TransferNasabah',
+        'referensi_id'     => $id_transfer,
+        'cabang_asal_id'   => (int) $pengirim->cabang_id,
+        'cabang_tujuan_id' => (int) $penerima->cabang_id,
+        'nominal'          => $nominal,
+        'status'           => 'Terbuka',
+        'dibuat_oleh'      => (int) $auth->id_user,
+        'catatan_status'   =>
+          'Dibuat otomatis dari transfer ' . $kode_transfer
+      ];
+
+      $insert_kewajiban = $this->db->insert(
+        'tb_kewajiban_antar_cabang',
+        $data_kewajiban
+      );
+
+      $id_kewajiban = (int) $this->db->insert_id();
+
+      if (
+        !$insert_kewajiban ||
+        $id_kewajiban <= 0 ||
+        $this->db->trans_status() === false
+      ) {
+        $database_error = $this->db->error();
+        $this->db->trans_rollback();
+
+        log_message(
+          'error',
+          'Gagal membuat kewajiban transfer antar-cabang: ' .
+            json_encode($database_error)
+        );
+
+        $this->api_response([
+          'status'  => false,
+          'message' =>
+            'Transfer lintas cabang gagal mencatat kewajiban settlement.'
+        ], 500);
+
+        return;
+      }
+    }
+
     if ($is_qr_transfer) {
       $qr_updated = $this->db
         ->where('id', (int) $qr_transfer->id)
@@ -2755,8 +2825,17 @@ class Api extends CI_Controller
         'cabang_tujuan_id'   => (int) $penerima->cabang_id,
         'kode_cabang_tujuan' => $penerima->kode_cabang,
         'nama_cabang_tujuan' => $penerima->nama_cabang,
-        'saldo_sebelum'      => $saldo_pengirim,
-        'saldo_sesudah'      => $saldo_pengirim - $nominal
+        'saldo_sebelum'         => $saldo_pengirim,
+        'saldo_sesudah'         => $saldo_pengirim - $nominal,
+        'lintas_cabang'         => $is_lintas_cabang,
+        'settlement_diperlukan' => $is_lintas_cabang,
+        'kewajiban_settlement'  => $is_lintas_cabang
+          ? [
+              'id_kewajiban'   => $id_kewajiban,
+              'kode_kewajiban' => $kode_kewajiban,
+              'status'          => 'Terbuka'
+            ]
+          : null
       ]
     ]);
   }
