@@ -84,6 +84,20 @@ $isSuperAdmin = ($userLevel === 'super admin');
                 $userLevel === 'administrator' ||
                 $userLevel === 'super admin'
             ): ?>
+                <li class="<?= $this->uri->segment(2) === 'settlement'
+                    ? 'active'
+                    : '' ?>">
+                    <a href="<?= base_url('admin/settlement') ?>">
+                        <i class="fa fa-exchange"></i>
+                        <span>Settlement Cabang</span>
+                    </a>
+                </li>
+            <?php endif; ?>
+
+            <?php if (
+                $userLevel === 'administrator' ||
+                $userLevel === 'super admin'
+            ): ?>
 
                 <li class="<?= $this->uri->segment(2) === 'laporan'
                     ? 'active'
