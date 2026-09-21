@@ -20489,9 +20489,11 @@ class Api extends CI_Controller
           harga_jual,
           tanggal
        FROM tb_harga_emas
-       ORDER BY id DESC
+       WHERE cabang_id = ?
+       ORDER BY tanggal DESC, id DESC
        LIMIT 1
-       FOR UPDATE"
+       FOR UPDATE",
+      [(int) $user->cabang_id]
     )->row();
 
     if (
@@ -21691,9 +21693,11 @@ class Api extends CI_Controller
           harga_jual,
           tanggal
        FROM tb_harga_emas
-       ORDER BY id DESC
+       WHERE cabang_id = ?
+       ORDER BY tanggal DESC, id DESC
        LIMIT 1
-       FOR UPDATE"
+       FOR UPDATE",
+      [(int) $user->cabang_id]
     )->row();
 
     if (
@@ -22142,57 +22146,79 @@ class Api extends CI_Controller
 
   public function get_harga_emas_hari_ini()
   {
-    if (ob_get_length()) {
-      ob_clean();
-    }
+    if (ob_get_length()) { ob_clean(); }
 
     header('Access-Control-Allow-Origin: *');
     header('Content-Type: application/json; charset=UTF-8');
     header('Access-Control-Allow-Methods: GET, POST');
-    header(
-      'Cache-Control: no-store, no-cache, must-revalidate, max-age=0'
-    );
+    header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
 
     $method = $this->input->method(TRUE);
 
-    /*
-   * GET dan POST tetap diterima agar kompatibel
-   * dengan aplikasi versi lama.
-   */
     if (!in_array($method, ['GET', 'POST'], true)) {
       $this->api_response([
-        'status'     => false,
+        'status' => false,
         'harga_beli' => 0,
         'harga_jual' => 0,
-        'message'    => 'Metode request tidak diizinkan.'
+        'message' => 'Metode request tidak diizinkan.'
       ], 405);
       return;
     }
 
-    /*
-   * Harga emas merupakan informasi publik.
-   * Tidak memerlukan Bearer token.
-   */
+    $auth = $this->authenticate_api();
+    if (!$auth) { return; }
+
+    $request = [];
+    if ($method === 'POST') {
+      $request = json_decode($this->input->raw_input_stream, true);
+      $request = is_array($request) ? $request : [];
+    } else {
+      $request['cabang_id'] = $this->input->get('cabang_id', true);
+    }
+
+    $cabang_id_diminta = (int) ($request['cabang_id'] ?? 0);
+
+    if ($auth->level === 'Super Admin') {
+      $cabang_id_harga = $cabang_id_diminta > 0
+        ? $cabang_id_diminta
+        : (int) $auth->cabang_id;
+    } else {
+      $cabang_id_harga = (int) $auth->cabang_id;
+    }
+
+    if ($cabang_id_harga <= 0) {
+      $this->api_response([
+        'status' => false,
+        'harga_beli' => 0,
+        'harga_jual' => 0,
+        'message' => 'Cabang pengguna belum ditentukan.'
+      ], 403);
+      return;
+    }
+
     $harga_emas = $this->db
       ->select([
-        'id',
-        'harga_beli',
-        'harga_jual',
-        'tanggal'
+        'h.id', 'h.harga_beli', 'h.harga_jual', 'h.tanggal',
+        'h.cabang_id', 'c.kode AS kode_cabang', 'c.nama AS nama_cabang'
       ])
-      ->from('tb_harga_emas')
-      ->order_by('id', 'DESC')
+      ->from('tb_harga_emas AS h')
+      ->join('tb_cabang AS c', 'c.id = h.cabang_id', 'inner')
+      ->where('h.cabang_id', $cabang_id_harga)
+      ->where('c.status', 'Aktif')
+      ->order_by('h.tanggal', 'DESC')
+      ->order_by('h.id', 'DESC')
       ->limit(1)
       ->get()
       ->row();
 
     if (!$harga_emas) {
       $this->api_response([
-        'status'         => false,
-        'harga_beli'     => 0,
-        'harga_jual'     => 0,
+        'status' => false,
+        'harga_beli' => 0,
+        'harga_jual' => 0,
         'tanggal_update' => null,
-        'message'        => 'Harga emas belum tersedia.'
+        'cabang_id' => $cabang_id_harga,
+        'message' => 'Harga emas untuk cabang ini belum tersedia.'
       ], 404);
       return;
     }
@@ -22200,310 +22226,177 @@ class Api extends CI_Controller
     $harga_beli = (int) $harga_emas->harga_beli;
     $harga_jual = (int) $harga_emas->harga_jual;
 
-    /*
-   * Lindungi aplikasi dari data harga yang rusak
-   * atau tidak masuk akal.
-   */
-    if (
-      $harga_beli <= 0 ||
-      $harga_jual <= 0
-    ) {
-      log_message(
-        'error',
-        'Harga emas terbaru tidak valid. ID harga: ' .
-          (int) $harga_emas->id
-      );
-
+    if ($harga_beli <= 0 || $harga_jual <= 0) {
+      log_message('error', 'Harga emas cabang tidak valid. ID harga: ' . (int) $harga_emas->id);
       $this->api_response([
-        'status'         => false,
-        'harga_beli'     => 0,
-        'harga_jual'     => 0,
+        'status' => false,
+        'harga_beli' => 0,
+        'harga_jual' => 0,
         'tanggal_update' => null,
-        'message'        => 'Data harga emas tidak valid.'
+        'message' => 'Data harga emas tidak valid.'
       ], 500);
       return;
     }
 
-    /*
-   * Field lama tetap dipertahankan agar aplikasi
-   * tidak memerlukan perubahan format respons.
-   */
-    $this->api_response([
-      'status'         => true,
-      'harga_beli'     => $harga_beli,
-      'harga_jual'     => $harga_jual,
+    $data_harga = [
+      'id_harga' => (int) $harga_emas->id,
+      'harga_beli' => $harga_beli,
+      'harga_jual' => $harga_jual,
       'tanggal_update' => $harga_emas->tanggal,
-      'data'           => [
-        'id_harga'       => (int) $harga_emas->id,
-        'harga_beli'     => $harga_beli,
-        'harga_jual'     => $harga_jual,
-        'tanggal_update' => $harga_emas->tanggal
-      ]
+      'cabang_id' => (int) $harga_emas->cabang_id,
+      'kode_cabang' => $harga_emas->kode_cabang,
+      'nama_cabang' => $harga_emas->nama_cabang
+    ];
+
+    $this->api_response([
+      'status' => true,
+      'harga_beli' => $harga_beli,
+      'harga_jual' => $harga_jual,
+      'tanggal_update' => $harga_emas->tanggal,
+      'cabang_id' => (int) $harga_emas->cabang_id,
+      'kode_cabang' => $harga_emas->kode_cabang,
+      'nama_cabang' => $harga_emas->nama_cabang,
+      'data' => $data_harga
     ]);
   }
 
 
   public function update_harga_emas()
   {
-    if (ob_get_length()) {
-      ob_clean();
-    }
+    if (ob_get_length()) { ob_clean(); }
 
     header('Access-Control-Allow-Origin: *');
     header('Content-Type: application/json; charset=UTF-8');
     header('Access-Control-Allow-Methods: POST');
-    header(
-      'Cache-Control: no-store, no-cache, must-revalidate, max-age=0'
-    );
+    header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
 
     if ($this->input->method(TRUE) !== 'POST') {
-      $this->api_response([
-        'status'  => false,
-        'message' => 'Metode request tidak diizinkan.'
-      ], 405);
+      $this->api_response(['status' => false, 'message' => 'Metode request tidak diizinkan.'], 405);
       return;
     }
 
     $auth = $this->authenticate_api();
+    if (!$auth) { return; }
 
-    if (!$auth) {
-      return;
-    }
-
-    /*
-   * Harga emas berlaku global untuk seluruh cabang,
-   * sehingga hanya Super Admin yang dapat mengubahnya.
-   */
-    if ($auth->level !== 'Super Admin') {
+    if (!in_array($auth->level, ['Administrator', 'Super Admin'], true)) {
       $this->api_response([
-        'status'  => false,
-        'message' => 'Akses ditolak. Khusus Super Admin.'
+        'status' => false,
+        'message' => 'Akses ditolak. Khusus Administrator dan Super Admin.'
       ], 403);
       return;
     }
 
-    $request = json_decode(
-      $this->input->raw_input_stream,
-      true
-    );
-
+    $request = json_decode($this->input->raw_input_stream, true);
     if (!is_array($request)) {
-      $this->api_response([
-        'status'  => false,
-        'message' => 'Format JSON tidak valid.'
-      ], 400);
+      $this->api_response(['status' => false, 'message' => 'Format JSON tidak valid.'], 400);
       return;
     }
 
-    if (
-      !array_key_exists('harga_beli', $request) ||
-      !array_key_exists('harga_jual', $request)
-    ) {
-      $this->api_response([
-        'status'  => false,
-        'message' =>
-        'Harga beli dan harga jual wajib diisi.'
-      ], 422);
+    $scope = $this->resolve_admin_branch_scope($auth, $request['cabang_id'] ?? 0);
+    if ($scope === null) { return; }
+
+    if ($scope['cabang_id'] === null) {
+      $this->api_response(['status' => false, 'message' => 'Pilih cabang yang akan diperbarui.'], 422);
+      return;
+    }
+
+    if (!array_key_exists('harga_beli', $request) || !array_key_exists('harga_jual', $request)) {
+      $this->api_response(['status' => false, 'message' => 'Harga beli dan harga jual wajib diisi.'], 422);
       return;
     }
 
     $harga_beli_input = $request['harga_beli'];
     $harga_jual_input = $request['harga_jual'];
 
-    /*
-   * Hanya menerima bilangan bulat positif.
-   * Format pecahan, negatif, dan notasi ilmiah ditolak.
-   */
-    $harga_beli_valid =
-      is_int($harga_beli_input) ||
-      (
-        is_string($harga_beli_input) &&
-        preg_match(
-          '/^\d{1,10}$/',
-          trim($harga_beli_input)
-        )
-      );
+    $harga_beli_valid = is_int($harga_beli_input) ||
+      (is_string($harga_beli_input) && preg_match('/^\d{1,10}$/', trim($harga_beli_input)));
+    $harga_jual_valid = is_int($harga_jual_input) ||
+      (is_string($harga_jual_input) && preg_match('/^\d{1,10}$/', trim($harga_jual_input)));
 
-    $harga_jual_valid =
-      is_int($harga_jual_input) ||
-      (
-        is_string($harga_jual_input) &&
-        preg_match(
-          '/^\d{1,10}$/',
-          trim($harga_jual_input)
-        )
-      );
-
-    if (
-      !$harga_beli_valid ||
-      !$harga_jual_valid
-    ) {
-      $this->api_response([
-        'status'  => false,
-        'message' =>
-        'Harga emas harus berupa bilangan bulat positif.'
-      ], 422);
+    if (!$harga_beli_valid || !$harga_jual_valid) {
+      $this->api_response(['status' => false, 'message' => 'Harga emas harus berupa bilangan bulat positif.'], 422);
       return;
     }
 
     $harga_beli = (int) $harga_beli_input;
     $harga_jual = (int) $harga_jual_input;
 
-    if (
-      $harga_beli <= 0 ||
-      $harga_jual <= 0 ||
-      $harga_beli > 1000000000 ||
-      $harga_jual > 1000000000
-    ) {
-      $this->api_response([
-        'status'  => false,
-        'message' =>
-        'Nilai harga emas berada di luar batas yang diizinkan.'
-      ], 422);
+    if ($harga_beli <= 0 || $harga_jual <= 0 || $harga_beli > 1000000000 || $harga_jual > 1000000000) {
+      $this->api_response(['status' => false, 'message' => 'Nilai harga emas berada di luar batas yang diizinkan.'], 422);
       return;
     }
 
-    /*
-   * Harga buyback kepada Nasabah tidak boleh melebihi
-   * harga pembelian emas oleh Nasabah.
-   */
     if ($harga_jual > $harga_beli) {
-      $this->api_response([
-        'status'  => false,
-        'message' =>
-        'Harga jual kembali tidak boleh melebihi harga beli.'
-      ], 422);
+      $this->api_response(['status' => false, 'message' => 'Harga jual kembali tidak boleh melebihi harga beli.'], 422);
       return;
     }
 
+    $cabang_id = (int) $scope['cabang_id'];
     $tanggal = date('Y-m-d');
-
-    $db_debug_sebelumnya =
-      $this->db->db_debug;
-
-    /*
-   * Mencegah CodeIgniter mengeluarkan halaman HTML
-   * jika terjadi kesalahan database.
-   */
+    $db_debug_sebelumnya = $this->db->db_debug;
     $this->db->db_debug = false;
     $this->db->trans_begin();
 
-    /*
-   * Kolom tanggal memiliki UNIQUE KEY.
-   * Jika harga hari ini sudah ada, nilainya diperbarui.
-   */
     $proses = $this->db->query(
       "INSERT INTO tb_harga_emas
-      (
-        harga_beli,
-        harga_jual,
-        tanggal
-      )
-     VALUES (?, ?, ?)
-     ON DUPLICATE KEY UPDATE
-       harga_beli = VALUES(harga_beli),
-       harga_jual = VALUES(harga_jual)",
-      [
-        $harga_beli,
-        $harga_jual,
-        $tanggal
-      ]
+        (cabang_id, harga_beli, harga_jual, tanggal, diperbarui_oleh, diperbarui_pada)
+       VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+       ON DUPLICATE KEY UPDATE
+         harga_beli = VALUES(harga_beli),
+         harga_jual = VALUES(harga_jual),
+         diperbarui_oleh = VALUES(diperbarui_oleh),
+         diperbarui_pada = CURRENT_TIMESTAMP",
+      [$cabang_id, $harga_beli, $harga_jual, $tanggal, (int) $auth->id_user]
     );
 
-    if (
-      !$proses ||
-      $this->db->trans_status() === false
-    ) {
+    if (!$proses || $this->db->trans_status() === false) {
       $database_error = $this->db->error();
-
       $this->db->trans_rollback();
-      $this->db->db_debug =
-        $db_debug_sebelumnya;
-
-      log_message(
-        'error',
-        'Gagal memperbarui harga emas: ' .
-          json_encode($database_error)
-      );
-
-      $this->api_response([
-        'status'  => false,
-        'message' =>
-        'Harga acuan emas gagal diperbarui.'
-      ], 500);
+      $this->db->db_debug = $db_debug_sebelumnya;
+      log_message('error', 'Gagal memperbarui harga emas cabang: ' . json_encode($database_error));
+      $this->api_response(['status' => false, 'message' => 'Harga acuan emas cabang gagal diperbarui.'], 500);
       return;
     }
 
     $harga_tersimpan = $this->db
-      ->select([
-        'id',
-        'harga_beli',
-        'harga_jual',
-        'tanggal'
-      ])
+      ->select(['id', 'cabang_id', 'harga_beli', 'harga_jual', 'tanggal', 'diperbarui_pada'])
+      ->where('cabang_id', $cabang_id)
       ->where('tanggal', $tanggal)
       ->limit(1)
       ->get('tb_harga_emas')
       ->row();
 
-    if (
-      !$harga_tersimpan ||
-      $this->db->trans_status() === false
-    ) {
+    if (!$harga_tersimpan || $this->db->trans_status() === false) {
       $database_error = $this->db->error();
-
       $this->db->trans_rollback();
-      $this->db->db_debug =
-        $db_debug_sebelumnya;
-
-      log_message(
-        'error',
-        'Harga emas tersimpan gagal diverifikasi: ' .
-          json_encode($database_error)
-      );
-
-      $this->api_response([
-        'status'  => false,
-        'message' =>
-        'Harga acuan emas gagal diverifikasi.'
-      ], 500);
+      $this->db->db_debug = $db_debug_sebelumnya;
+      log_message('error', 'Harga emas cabang tersimpan gagal diverifikasi: ' . json_encode($database_error));
+      $this->api_response(['status' => false, 'message' => 'Harga acuan emas cabang gagal diverifikasi.'], 500);
       return;
     }
 
     $this->db->trans_commit();
-    $this->db->db_debug =
-      $db_debug_sebelumnya;
+    $this->db->db_debug = $db_debug_sebelumnya;
 
     $this->api_response([
-      'status'  => true,
-      'message' =>
-      'Harga acuan emas berhasil diperbarui.',
-      'data'    => [
-        'id_harga' =>
-        (int) $harga_tersimpan->id,
-
-        'harga_beli' =>
-        (int) $harga_tersimpan->harga_beli,
-
-        'harga_jual' =>
-        (int) $harga_tersimpan->harga_jual,
-
-        'tanggal_update' =>
-        $harga_tersimpan->tanggal,
-
-        'diperbarui_oleh' =>
-        (int) $auth->id_user,
-
-        'nama_operator' =>
-        $auth->nama
+      'status' => true,
+      'message' => 'Harga acuan emas cabang berhasil diperbarui.',
+      'data' => [
+        'id_harga' => (int) $harga_tersimpan->id,
+        'cabang_id' => (int) $harga_tersimpan->cabang_id,
+        'kode_cabang' => $scope['kode_cabang'],
+        'nama_cabang' => $scope['nama_cabang'],
+        'harga_beli' => (int) $harga_tersimpan->harga_beli,
+        'harga_jual' => (int) $harga_tersimpan->harga_jual,
+        'tanggal_update' => $harga_tersimpan->tanggal,
+        'diperbarui_pada' => $harga_tersimpan->diperbarui_pada,
+        'diperbarui_oleh' => (int) $auth->id_user,
+        'nama_operator' => $auth->nama
       ]
     ]);
   }
 
 
-  // ==========================================
-  // H. Ambil Saldo Emas Seluruh Nasabah (Khusus Admin)
-  // ==========================================
   public function admin_get_semua_emas()
   {
     if (ob_get_length()) {
@@ -22570,6 +22463,7 @@ class Api extends CI_Controller
       c.nama AS nama_cabang,
       c.status AS status_cabang,
       COALESCE(e.total_gram, 0) AS total_gram,
+      COALESCE(h.harga_jual, 0) AS harga_jual_emas,
       k.durasi_bulan,
       k.terkunci_sampai
     FROM tb_user AS u
@@ -22587,6 +22481,14 @@ class Api extends CI_Controller
       ON e.idNasabah = u.id
     LEFT JOIN tb_kunci_emas AS k
       ON k.id_nasabah = u.id
+    LEFT JOIN tb_harga_emas AS h
+      ON h.id = (
+        SELECT h2.id
+        FROM tb_harga_emas AS h2
+        WHERE h2.cabang_id = u.cabang_id
+        ORDER BY h2.tanggal DESC, h2.id DESC
+        LIMIT 1
+      )
     WHERE u.level = 'Nasabah'
   ";
 
@@ -22648,6 +22550,7 @@ class Api extends CI_Controller
     $jumlah_memiliki_emas = 0;
     $jumlah_saldo_terkunci = 0;
     $total_seluruh_gram = 0.0;
+    $total_estimasi_rupiah = 0;
 
     foreach ($nasabah as $row) {
       $total_gram_angka = max(
@@ -22697,8 +22600,18 @@ class Api extends CI_Controller
         $jumlah_saldo_terkunci++;
       }
 
+      $harga_jual_emas =
+        max(0, (int) $row->harga_jual_emas);
+
+      $estimasi_rupiah = (int) round(
+        $total_gram_angka * $harga_jual_emas
+      );
+
       $total_seluruh_gram +=
         $total_gram_angka;
+
+      $total_estimasi_rupiah +=
+        $estimasi_rupiah;
 
       /*
      * Field id, nama, username, foto, dan total_gram
@@ -22724,6 +22637,12 @@ class Api extends CI_Controller
           '.',
           ''
         ),
+
+        'harga_jual_emas' =>
+        $harga_jual_emas,
+
+        'estimasi_rupiah' =>
+        $estimasi_rupiah,
 
         'cabang_id' =>
         (int) $row->cabang_id,
@@ -22801,6 +22720,9 @@ class Api extends CI_Controller
           '.',
           ''
         ),
+
+        'total_estimasi_rupiah' =>
+        $total_estimasi_rupiah,
 
         'cakupan' => $scope['cakupan'],
 
