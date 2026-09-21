@@ -80,6 +80,17 @@ $faviconUrl = base_url('assets/logo/' . $faviconFile) .
 <!-- ADD THE CLASS fixed TO GET A FIXED HEADER AND SIDEBAR LAYOUT -->
 <!-- the fixed layout is not compatible with sidebar-mini -->
 <body class="hold-transition skin-<?= $this->session->userdata('skin') ?> fixed <?= ($title == 'Tambah Data Penjualan') ? 'sidebar-collapse' : '' ?>">
+<?php
+$settlementNotification = settlement_notification_summary();
+$settlementNotificationLevel = strtolower(trim(
+  (string) $this->session->userdata('level')
+));
+$canSeeSettlementNotification = in_array(
+  $settlementNotificationLevel,
+  ['administrator', 'super admin'],
+  true
+);
+?>
 <!-- Site wrapper -->
 <div class="wrapper">
 
@@ -103,6 +114,52 @@ $faviconUrl = base_url('assets/logo/' . $faviconFile) .
 
       <div class="navbar-custom-menu">
         <ul class="nav navbar-nav">
+          <?php if ($canSeeSettlementNotification): ?>
+            <li class="dropdown notifications-menu">
+              <a href="#" class="dropdown-toggle" data-toggle="dropdown" aria-label="Notifikasi settlement">
+                <i class="fa fa-bell-o"></i>
+                <?php if ($settlementNotification['total'] > 0): ?>
+                  <span class="label label-warning">
+                    <?= (int) $settlementNotification['total'] ?>
+                  </span>
+                <?php endif; ?>
+              </a>
+              <ul class="dropdown-menu">
+                <li class="header">
+                  <?php if ($settlementNotification['total'] > 0): ?>
+                    Ada <?= (int) $settlementNotification['total'] ?> pekerjaan settlement
+                  <?php else: ?>
+                    Tidak ada pekerjaan settlement baru
+                  <?php endif; ?>
+                </li>
+                <li>
+                  <ul class="menu">
+                    <li>
+                      <a href="<?= base_url('admin/settlement#kewajibanSettlement') ?>">
+                        <i class="fa fa-exchange text-yellow"></i>
+                        <?= (int) $settlementNotification['kewajiban_terbuka'] ?> kewajiban terbuka
+                      </a>
+                    </li>
+                    <li>
+                      <a href="<?= base_url('admin/settlement#riwayatSettlement') ?>">
+                        <i class="fa fa-clock-o text-aqua"></i>
+                        <?= (int) $settlementNotification['menunggu_verifikasi'] ?> menunggu verifikasi
+                      </a>
+                    </li>
+                    <li>
+                      <a href="<?= base_url('admin/settlement#riwayatSettlement') ?>">
+                        <i class="fa fa-times-circle text-red"></i>
+                        <?= (int) $settlementNotification['ditolak'] ?> settlement ditolak
+                      </a>
+                    </li>
+                  </ul>
+                </li>
+                <li class="footer">
+                  <a href="<?= base_url('admin/settlement') ?>">Buka Settlement Cabang</a>
+                </li>
+              </ul>
+            </li>
+          <?php endif; ?>
           <li class="dropdown messages-menu">
               <!-- Menu toggle button -->
               <a href="#" class="dropdown-toggle" data-toggle="dropdown">

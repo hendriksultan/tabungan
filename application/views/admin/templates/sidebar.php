@@ -1,5 +1,6 @@
 <?php
 $userLevel = strtolower((string) $this->session->userdata('level'));
+$settlementNotification = settlement_notification_summary();
 
 $namaCabang = $this->session->userdata('nama_cabang');
 $kodeCabang = $this->session->userdata('kode_cabang');
@@ -90,6 +91,13 @@ $isSuperAdmin = ($userLevel === 'super admin');
                     <a href="<?= base_url('admin/settlement') ?>">
                         <i class="fa fa-exchange"></i>
                         <span>Settlement Cabang</span>
+                        <?php if ($settlementNotification['total'] > 0): ?>
+                            <span class="pull-right-container">
+                                <small class="label pull-right bg-yellow">
+                                    <?= (int) $settlementNotification['total'] ?>
+                                </small>
+                            </span>
+                        <?php endif; ?>
                     </a>
                 </li>
             <?php endif; ?>

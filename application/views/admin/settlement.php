@@ -105,7 +105,7 @@ function formatRupiahSettlement($nominal)
             </div>
         </div>
 
-        <div class="box box-warning">
+        <div class="box box-warning" id="kewajibanSettlement">
             <div class="box-header with-border">
                 <h3 class="box-title">
                     <i class="fa fa-list"></i> Kewajiban Belum Dibayar
@@ -374,7 +374,7 @@ function formatRupiahSettlement($nominal)
             <?php endif; ?>
         </div>
 
-        <div class="box box-primary">
+        <div class="box box-primary" id="riwayatSettlement">
             <div class="box-header with-border">
                 <h3 class="box-title">
                     <i class="fa fa-history"></i> Riwayat Settlement
