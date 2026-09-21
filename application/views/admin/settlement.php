@@ -223,42 +223,98 @@ function formatRupiahSettlement($nominal)
 
                                 <div class="form-group">
                                     <label>Rekening Asal</label>
-                                    <select name="rekening_asal_id" class="form-control" required>
-                                        <option value="">-- Pilih Rekening Cabang Anda --</option>
+                                    <div class="settlement-account-list">
                                         <?php foreach ($rekeningAsal->result_array() as $rekening): ?>
-                                            <option value="<?= (int) $rekening['id'] ?>">
-                                                <?= html_escape(
-                                                    $rekening['nama_bank'] . ' • ' .
-                                                    $rekening['nomor_rekening'] . ' • ' .
-                                                    $rekening['atas_nama']
-                                                ) ?>
-                                            </option>
+                                            <label class="settlement-account-card">
+                                                <input
+                                                    type="radio"
+                                                    name="rekening_asal_id"
+                                                    value="<?= (int) $rekening['id'] ?>"
+                                                    required>
+                                                <span class="settlement-account-check">
+                                                    <i class="fa fa-check"></i>
+                                                </span>
+                                                <span class="settlement-account-body">
+                                                    <span class="label label-primary">
+                                                        <?= html_escape($rekening['jenis']) ?>
+                                                    </span>
+                                                    <strong class="settlement-account-bank">
+                                                        <?= html_escape($rekening['nama_bank']) ?>
+                                                    </strong>
+                                                    <span class="settlement-account-line">
+                                                        <i class="fa fa-credit-card"></i>
+                                                        <?= html_escape($rekening['nomor_rekening']) ?>
+                                                    </span>
+                                                    <span class="settlement-account-line text-muted">
+                                                        <i class="fa fa-user"></i>
+                                                        <?= html_escape($rekening['atas_nama']) ?>
+                                                    </span>
+                                                </span>
+                                            </label>
                                         <?php endforeach; ?>
-                                    </select>
+
+                                        <?php if ($rekeningAsal->num_rows() === 0): ?>
+                                            <div class="alert alert-danger" style="margin-bottom:0;">
+                                                Cabang Anda belum memiliki rekening aktif.
+                                            </div>
+                                        <?php endif; ?>
+                                    </div>
                                 </div>
 
                                 <div class="form-group">
                                     <label>Rekening Tujuan</label>
-                                    <select
-                                        name="rekening_tujuan_id"
-                                        id="rekeningTujuanSettlement"
-                                        class="form-control"
-                                        required>
-                                        <option value="">-- Pilih Rekening Cabang Tujuan --</option>
+                                    <div
+                                        id="pesanPilihKewajiban"
+                                        class="alert alert-info"
+                                        style="margin-bottom:10px;">
+                                        Pilih kewajiban terlebih dahulu agar rekening tujuan ditampilkan.
+                                    </div>
+                                    <div class="settlement-account-list" id="rekeningTujuanSettlement">
                                         <?php foreach ($rekeningTujuan->result_array() as $rekening): ?>
                                             <?php if ((int) $rekening['cabang_id'] === (int) $cabangId) continue; ?>
-                                            <option
-                                                value="<?= (int) $rekening['id'] ?>"
-                                                data-cabang="<?= (int) $rekening['cabang_id'] ?>">
-                                                <?= html_escape(
-                                                    $rekening['nama_cabang'] . ' • ' .
-                                                    $rekening['nama_bank'] . ' • ' .
-                                                    $rekening['nomor_rekening'] . ' • ' .
-                                                    $rekening['atas_nama']
-                                                ) ?>
-                                            </option>
+                                            <label
+                                                class="settlement-account-card rekening-tujuan-card"
+                                                data-cabang="<?= (int) $rekening['cabang_id'] ?>"
+                                                style="display:none;">
+                                                <input
+                                                    type="radio"
+                                                    name="rekening_tujuan_id"
+                                                    value="<?= (int) $rekening['id'] ?>">
+                                                <span class="settlement-account-check">
+                                                    <i class="fa fa-check"></i>
+                                                </span>
+                                                <span class="settlement-account-body">
+                                                    <span class="settlement-account-branch">
+                                                        <i class="fa fa-building"></i>
+                                                        <?= html_escape($rekening['nama_cabang']) ?>
+                                                        <small>(<?= html_escape($rekening['kode_cabang']) ?>)</small>
+                                                    </span>
+                                                    <span>
+                                                        <span class="label label-success">
+                                                            <?= html_escape($rekening['jenis']) ?>
+                                                        </span>
+                                                        <strong class="settlement-account-bank">
+                                                            <?= html_escape($rekening['nama_bank']) ?>
+                                                        </strong>
+                                                    </span>
+                                                    <span class="settlement-account-line">
+                                                        <i class="fa fa-credit-card"></i>
+                                                        <?= html_escape($rekening['nomor_rekening']) ?>
+                                                    </span>
+                                                    <span class="settlement-account-line text-muted">
+                                                        <i class="fa fa-user"></i>
+                                                        <?= html_escape($rekening['atas_nama']) ?>
+                                                    </span>
+                                                </span>
+                                            </label>
                                         <?php endforeach; ?>
-                                    </select>
+                                    </div>
+                                    <div
+                                        id="rekeningTujuanKosong"
+                                        class="alert alert-danger"
+                                        style="display:none; margin-bottom:0;">
+                                        Cabang tujuan belum memiliki rekening aktif.
+                                    </div>
                                     <small class="text-muted">
                                         Hanya rekening milik cabang tujuan yang dapat dipilih.
                                     </small>
@@ -579,6 +635,96 @@ function formatRupiahSettlement($nominal)
 <?php endif; ?>
 
 <?php if (!$isSuperAdmin): ?>
+<style>
+.settlement-account-list {
+    display: grid;
+    gap: 10px;
+}
+
+.settlement-account-card {
+    position: relative;
+    display: flex;
+    align-items: flex-start;
+    width: 100%;
+    margin: 0;
+    padding: 13px 46px 13px 14px;
+    border: 1px solid #d2d6de;
+    border-radius: 7px;
+    background: #ffffff;
+    cursor: pointer;
+    font-weight: 400;
+    transition: border-color .2s, box-shadow .2s, background .2s;
+}
+
+.settlement-account-card:hover {
+    border-color: #3c8dbc;
+    background: #f7fbfe;
+}
+
+.settlement-account-card.selected {
+    border-color: #00a65a;
+    box-shadow: 0 0 0 2px rgba(0, 166, 90, .14);
+    background: #f5fff9;
+}
+
+.settlement-account-card input[type="radio"] {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.settlement-account-check {
+    position: absolute;
+    top: 50%;
+    right: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    border: 2px solid #c8ced3;
+    border-radius: 50%;
+    color: transparent;
+    transform: translateY(-50%);
+}
+
+.settlement-account-card.selected .settlement-account-check {
+    border-color: #00a65a;
+    background: #00a65a;
+    color: #ffffff;
+}
+
+.settlement-account-body,
+.settlement-account-line,
+.settlement-account-branch {
+    display: block;
+}
+
+.settlement-account-bank {
+    display: inline-block;
+    margin-left: 6px;
+    color: #222d32;
+}
+
+.settlement-account-line {
+    margin-top: 6px;
+    word-break: break-word;
+}
+
+.settlement-account-line i,
+.settlement-account-branch i {
+    width: 18px;
+    color: #7a8690;
+}
+
+.settlement-account-branch {
+    margin-bottom: 9px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #edf0f2;
+    color: #3c8dbc;
+    font-weight: 600;
+}
+</style>
 <script>
 document.addEventListener('DOMContentLoaded', function () {
     var checkboxes = Array.prototype.slice.call(
@@ -588,7 +734,14 @@ document.addEventListener('DOMContentLoaded', function () {
     var jumlah = document.getElementById('jumlahTerpilih');
     var total = document.getElementById('totalTerpilih');
     var totalModal = document.getElementById('totalTerpilihModal');
-    var rekeningTujuan = document.getElementById('rekeningTujuanSettlement');
+    var kartuTujuan = Array.prototype.slice.call(
+        document.querySelectorAll('.rekening-tujuan-card')
+    );
+    var semuaKartuRekening = Array.prototype.slice.call(
+        document.querySelectorAll('.settlement-account-card')
+    );
+    var pesanPilih = document.getElementById('pesanPilihKewajiban');
+    var rekeningKosong = document.getElementById('rekeningTujuanKosong');
 
     function rupiah(nilai) {
         return 'Rp ' + Number(nilai).toLocaleString('id-ID');
@@ -611,21 +764,26 @@ document.addEventListener('DOMContentLoaded', function () {
             item.disabled = !item.checked && !!berbeda;
         });
 
-        Array.prototype.slice.call(rekeningTujuan.options).forEach(function (option) {
-            if (!option.value) {
-                option.hidden = false;
-                return;
+        var jumlahRekeningTujuan = 0;
+        kartuTujuan.forEach(function (kartu) {
+            var sesuai = !!cabangTujuan &&
+                kartu.getAttribute('data-cabang') === cabangTujuan;
+            var radio = kartu.querySelector('input[type="radio"]');
+            kartu.style.display = sesuai ? 'flex' : 'none';
+            if (radio) {
+                radio.required = sesuai;
             }
-            option.hidden = !cabangTujuan ||
-                option.getAttribute('data-cabang') !== cabangTujuan;
+            if (sesuai) {
+                jumlahRekeningTujuan++;
+            } else if (radio) {
+                radio.checked = false;
+                kartu.classList.remove('selected');
+            }
         });
 
-        if (
-            rekeningTujuan.selectedOptions.length &&
-            rekeningTujuan.selectedOptions[0].hidden
-        ) {
-            rekeningTujuan.value = '';
-        }
+        pesanPilih.style.display = cabangTujuan ? 'none' : 'block';
+        rekeningKosong.style.display =
+            cabangTujuan && jumlahRekeningTujuan === 0 ? 'block' : 'none';
 
         jumlah.textContent = terpilih.length;
         total.textContent = rupiah(nominal);
@@ -635,6 +793,20 @@ document.addEventListener('DOMContentLoaded', function () {
 
     checkboxes.forEach(function (item) {
         item.addEventListener('change', perbaruiPilihan);
+    });
+
+    semuaKartuRekening.forEach(function (kartu) {
+        var radio = kartu.querySelector('input[type="radio"]');
+        if (!radio) return;
+        radio.addEventListener('change', function () {
+            var nama = radio.getAttribute('name');
+            semuaKartuRekening.forEach(function (kartuLain) {
+                var radioLain = kartuLain.querySelector('input[type="radio"]');
+                if (radioLain && radioLain.getAttribute('name') === nama) {
+                    kartuLain.classList.toggle('selected', radioLain.checked);
+                }
+            });
+        });
     });
     perbaruiPilihan();
 });
