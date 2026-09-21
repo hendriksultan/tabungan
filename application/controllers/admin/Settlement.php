@@ -338,11 +338,22 @@ class Settlement extends CI_Controller
                 'diperbarui_pada' => $sekarang
             ]
         );
+        $jumlahKewajibanDiperbarui = $this->db->affected_rows();
+
+        $this->db->where_in('id_kewajiban', $ids);
+        $this->db->where('status', 'MenungguSettlement');
+        $escrowOk = $this->db->update('tb_escrow_marketplace', [
+            'status'          => 'Cair',
+            'catatan'         => 'Settlement selesai melalui ' .
+                $settlement['kode_settlement'],
+            'diperbarui_pada' => $sekarang
+        ]);
 
         if (
             !$headerOk ||
             !$kewajibanOk ||
-            $this->db->affected_rows() !== count($ids) ||
+            !$escrowOk ||
+            $jumlahKewajibanDiperbarui !== count($ids) ||
             $this->db->trans_status() === false
         ) {
             $this->batalkan('Verifikasi settlement gagal.');

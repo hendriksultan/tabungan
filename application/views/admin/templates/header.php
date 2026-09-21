@@ -127,7 +127,7 @@ $canSeeSettlementNotification = in_array(
               <ul class="dropdown-menu">
                 <li class="header">
                   <?php if ($settlementNotification['total'] > 0): ?>
-                    Ada <?= (int) $settlementNotification['total'] ?> pekerjaan settlement
+                    Ada <?= (int) $settlementNotification['total'] ?> pekerjaan keuangan
                   <?php else: ?>
                     Tidak ada pekerjaan settlement baru
                   <?php endif; ?>
@@ -150,6 +150,12 @@ $canSeeSettlementNotification = in_array(
                       <a href="<?= base_url('admin/settlement#riwayatSettlement') ?>">
                         <i class="fa fa-times-circle text-red"></i>
                         <?= (int) $settlementNotification['ditolak'] ?> settlement ditolak
+                      </a>
+                    </li>
+                    <li>
+                      <a href="<?= base_url('admin/escrow') ?>">
+                        <i class="fa fa-shield text-red"></i>
+                        <?= (int) $settlementNotification['sengketa_escrow'] ?> sengketa escrow
                       </a>
                     </li>
                   </ul>

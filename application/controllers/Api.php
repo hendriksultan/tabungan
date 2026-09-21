@@ -13487,6 +13487,50 @@ class Api extends CI_Controller
       return;
     }
 
+    /* Dana pembayaran belum menjadi hak penjual sampai pesanan diterima. */
+    $cabang_pembeli_id = (int) $pesanan->cabang_pembeli_id;
+    $cabang_penjual_id = (int) $pesanan->cabang_toko_id;
+
+    if ($cabang_pembeli_id <= 0 || $cabang_penjual_id <= 0 ||
+        (int) $pesanan->id_penjual <= 0) {
+      $this->db->trans_rollback();
+      $this->api_response([
+        'status' => false,
+        'message' => 'Cabang pembeli atau penjual tidak valid. Pembayaran dibatalkan.'
+      ], 409);
+      return;
+    }
+
+    $escrow_disimpan = $this->db->insert('tb_escrow_marketplace', [
+      'id_pesanan'              => $id_pesanan,
+      'id_pembeli'              => $id_pembeli,
+      'id_penjual'              => (int) $pesanan->id_penjual,
+      'cabang_pembeli_id'       => $cabang_pembeli_id,
+      'cabang_penjual_id'       => $cabang_penjual_id,
+      'nominal_barang'          => $total_harga,
+      'ongkir'                  => $ongkir,
+      'total_dana'              => $grand_total,
+      'id_transaksi_pembayaran' => $id_transaksi,
+      'status'                  => 'Ditahan',
+      'ditahan_pada'            => $waktu_pembayaran,
+      'catatan'                 => 'Dana ditahan setelah pembayaran pesanan ' .
+        $pesanan->invoice_pesanan
+    ]);
+    $id_escrow = (int) $this->db->insert_id();
+
+    if (!$escrow_disimpan || $id_escrow <= 0 ||
+        $this->db->trans_status() === false) {
+      $database_error = $this->db->error();
+      $this->db->trans_rollback();
+      log_message('error', 'Gagal membuat escrow marketplace: ' .
+        json_encode($database_error));
+      $this->api_response([
+        'status' => false,
+        'message' => 'Pembayaran dibatalkan karena dana escrow gagal dicatat.'
+      ], 500);
+      return;
+    }
+
     $judul_pembeli = "\u{1F4B8} Pembayaran Berhasil!";
     $pesan_pembeli =
       'Pembayaran sebesar Rp ' .
@@ -13580,6 +13624,8 @@ class Api extends CI_Controller
         'saldo_setelah'           =>
         $saldo_sebelum - $grand_total,
         'status_pesanan'          => 'Diproses',
+        'id_escrow'               => $id_escrow,
+        'status_escrow'           => 'Ditahan',
         'dibayar_pada'            => $waktu_pembayaran,
         'idempotent'              => false
       ]
@@ -13780,7 +13826,15 @@ class Api extends CI_Controller
       'p.dibayar_pada',
       'p.terdaftar',
       'pembeli.nama AS nama_pembeli',
-      't.nama_toko'
+      't.nama_toko',
+      'e.id_escrow',
+      'e.status AS status_escrow',
+      'e.total_dana AS dana_escrow',
+      'e.id_kewajiban',
+      'e.sengketa_pada',
+      'e.alasan_sengketa',
+      'e.dicairkan_pada',
+      'e.dikembalikan_pada'
     ]);
 
     $this->db->from('tb_pesanan p');
@@ -13793,6 +13847,12 @@ class Api extends CI_Controller
     $this->db->join(
       'tb_toko t',
       'p.id_toko = t.id_toko'
+    );
+
+    $this->db->join(
+      'tb_escrow_marketplace e',
+      'e.id_pesanan = p.id_pesanan',
+      'left'
     );
 
     if ($role === 'pembeli') {
@@ -13905,6 +13965,19 @@ class Api extends CI_Controller
       $baris_pesanan['total_tagihan'] =
         (int) $baris_pesanan['total_harga'] +
         (int) $baris_pesanan['ongkir'];
+
+      $baris_pesanan['id_escrow'] =
+        $baris_pesanan['id_escrow'] !== null
+          ? (int) $baris_pesanan['id_escrow']
+          : null;
+      $baris_pesanan['dana_escrow'] =
+        $baris_pesanan['dana_escrow'] !== null
+          ? (int) $baris_pesanan['dana_escrow']
+          : null;
+      $baris_pesanan['id_kewajiban'] =
+        $baris_pesanan['id_kewajiban'] !== null
+          ? (int) $baris_pesanan['id_kewajiban']
+          : null;
 
       $baris_pesanan['items'] =
         $detail_per_pesanan[$id_baris] ?? [];
@@ -14385,6 +14458,8 @@ class Api extends CI_Controller
         p.invoice_pesanan,
         p.id_pembeli,
         p.id_toko,
+        p.cabang_pembeli_id,
+        p.cabang_toko_id,
         p.total_harga,
         p.ongkir,
         p.status_pesanan,
@@ -14638,6 +14713,37 @@ class Api extends CI_Controller
       return;
     }
 
+    $escrow = $this->db->query(
+      "SELECT * FROM tb_escrow_marketplace
+       WHERE id_pesanan = ? LIMIT 1 FOR UPDATE",
+      [$id_pesanan]
+    )->row();
+
+    $escrow_valid = $escrow &&
+      (int) $escrow->id_pembeli === $id_pembeli &&
+      (int) $escrow->id_penjual === (int) $pesanan->id_penjual &&
+      (int) $escrow->cabang_pembeli_id ===
+        (int) $pesanan->cabang_pembeli_id &&
+      (int) $escrow->cabang_penjual_id ===
+        (int) $pesanan->cabang_penjual_id &&
+      (int) $escrow->nominal_barang === $total_harga &&
+      (int) $escrow->ongkir === $ongkir &&
+      (int) $escrow->total_dana === $total_pencairan &&
+      (int) $escrow->id_transaksi_pembayaran ===
+        (int) $transaksi_pembayaran->id &&
+      (string) $escrow->status === 'Ditahan' &&
+      empty($escrow->id_transaksi_pencairan) &&
+      empty($escrow->id_transaksi_refund);
+
+    if (!$escrow_valid) {
+      $this->db->trans_rollback();
+      $this->api_response([
+        'status' => false,
+        'message' => 'Dana escrow tidak ditemukan, sedang disengketakan, atau datanya tidak konsisten.'
+      ], 409);
+      return;
+    }
+
     /*
    * Detail diperlukan untuk memperbarui jumlah terjual.
    */
@@ -14706,6 +14812,67 @@ class Api extends CI_Controller
 
     $id_transaksi_pencairan =
       (int) $this->db->insert_id();
+
+    $lintas_cabang = (int) $escrow->cabang_pembeli_id !==
+      (int) $escrow->cabang_penjual_id;
+    $id_kewajiban = null;
+    $kode_kewajiban = null;
+
+    if ($lintas_cabang) {
+      $kode_kewajiban = 'KWA-MKT-' . str_pad(
+        (string) $id_pesanan, 10, '0', STR_PAD_LEFT
+      );
+      $kewajiban_disimpan = $this->db->insert(
+        'tb_kewajiban_antar_cabang',
+        [
+          'kode_kewajiban'   => $kode_kewajiban,
+          'jenis_sumber'     => 'Marketplace',
+          'referensi_id'     => $id_pesanan,
+          'cabang_asal_id'   => (int) $escrow->cabang_pembeli_id,
+          'cabang_tujuan_id' => (int) $escrow->cabang_penjual_id,
+          'nominal'          => $total_pencairan,
+          'status'           => 'Terbuka',
+          'dibuat_oleh'      => $id_pembeli,
+          'catatan_status'   => 'Dibuat otomatis dari pencairan escrow ' .
+            $pesanan->invoice_pesanan
+        ]
+      );
+      $id_kewajiban = (int) $this->db->insert_id();
+
+      if (!$kewajiban_disimpan || $id_kewajiban <= 0) {
+        $this->db->trans_rollback();
+        $this->api_response([
+          'status' => false,
+          'message' => 'Pencairan dibatalkan karena kewajiban antar-cabang gagal dicatat.'
+        ], 500);
+        return;
+      }
+    }
+
+    $status_escrow_baru = $lintas_cabang ? 'MenungguSettlement' : 'Cair';
+    $this->db
+      ->where('id_escrow', (int) $escrow->id_escrow)
+      ->where('status', 'Ditahan')
+      ->where('id_transaksi_pencairan IS NULL', null, false)
+      ->where('id_transaksi_refund IS NULL', null, false)
+      ->update('tb_escrow_marketplace', [
+        'id_transaksi_pencairan' => $id_transaksi_pencairan,
+        'id_kewajiban'           => $id_kewajiban,
+        'status'                 => $status_escrow_baru,
+        'dicairkan_pada'         => $waktu_pencairan,
+        'catatan'                => $lintas_cabang
+          ? 'Dana dicairkan; menunggu settlement ' . $kode_kewajiban
+          : 'Dana dicairkan dalam cabang yang sama'
+      ]);
+
+    if ($this->db->affected_rows() !== 1) {
+      $this->db->trans_rollback();
+      $this->api_response([
+        'status' => false,
+        'message' => 'Status escrow telah berubah. Pencairan dibatalkan.'
+      ], 409);
+      return;
+    }
 
     /*
    * Status hanya diperbarui apabila masih Dikirim.
@@ -14841,13 +15008,194 @@ class Api extends CI_Controller
         'total_harga'            => $total_harga,
         'ongkir'                 => $ongkir,
         'total_dicairkan'        => $total_pencairan,
+        'id_escrow'              => (int) $escrow->id_escrow,
+        'status_escrow'          => $status_escrow_baru,
+        'lintas_cabang'          => $lintas_cabang,
+        'kewajiban_settlement'   => $lintas_cabang
+          ? [
+            'id_kewajiban'   => $id_kewajiban,
+            'kode_kewajiban' => $kode_kewajiban,
+            'status'          => 'Terbuka'
+          ]
+          : null,
         'dicairkan_pada'         => $waktu_pencairan,
         'idempotent'             => false
       ]
     ]);
   }
 
-  // 10. Endpoint Batalkan Pesanan (Sistem Nego Ongkir)
+  // 10. Endpoint Ajukan Sengketa Escrow (Oleh Pembeli)
+  public function ajukan_sengketa_pesanan()
+  {
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Access-Control-Allow-Methods: POST');
+
+    if ($this->input->method(TRUE) !== 'POST') {
+      $this->api_response(['status' => false,
+        'message' => 'Metode request tidak diizinkan.'], 405);
+      return;
+    }
+
+    $auth = $this->authenticate_api();
+    if (!$auth) {
+      return;
+    }
+    if ($auth->level !== 'Nasabah') {
+      $this->api_response(['status' => false,
+        'message' => 'Sengketa hanya dapat diajukan oleh pembeli.'], 403);
+      return;
+    }
+
+    $request = json_decode($this->input->raw_input_stream, true);
+    if (!is_array($request)) {
+      $this->api_response(['status' => false,
+        'message' => 'Format JSON tidak valid.'], 400);
+      return;
+    }
+
+    $id_pesanan = filter_var($request['id_pesanan'] ?? null,
+      FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+    $alasan = trim((string) ($request['alasan'] ?? ''));
+
+    if ($id_pesanan === false) {
+      $this->api_response(['status' => false,
+        'message' => 'ID pesanan tidak valid.'], 422);
+      return;
+    }
+    if (mb_strlen($alasan) < 10 || mb_strlen($alasan) > 500) {
+      $this->api_response(['status' => false,
+        'message' => 'Alasan sengketa harus terdiri dari 10 sampai 500 karakter.'], 422);
+      return;
+    }
+
+    $id_pesanan = (int) $id_pesanan;
+    $id_pembeli = (int) $auth->id_user;
+    $this->db->trans_begin();
+
+    $pesanan = $this->db->query(
+      "SELECT p.id_pesanan, p.invoice_pesanan, p.id_pembeli,
+              p.status_pesanan, p.id_transaksi_pembayaran,
+              toko.id_user AS id_penjual,
+              penjual.expo_token AS expo_token_penjual
+       FROM tb_pesanan AS p
+       INNER JOIN tb_toko AS toko ON toko.id_toko = p.id_toko
+       INNER JOIN tb_user AS penjual ON penjual.id = toko.id_user
+       WHERE p.id_pesanan = ? AND p.id_pembeli = ?
+       LIMIT 1 FOR UPDATE",
+      [$id_pesanan, $id_pembeli]
+    )->row();
+
+    if (!$pesanan) {
+      $this->db->trans_rollback();
+      $this->api_response(['status' => false,
+        'message' => 'Pesanan tidak ditemukan atau bukan milik Anda.'], 404);
+      return;
+    }
+
+    $escrow = $this->db->query(
+      "SELECT * FROM tb_escrow_marketplace
+       WHERE id_pesanan = ? LIMIT 1 FOR UPDATE",
+      [$id_pesanan]
+    )->row();
+
+    if (!$escrow) {
+      $this->db->trans_rollback();
+      $this->api_response(['status' => false,
+        'message' => 'Dana escrow pesanan tidak ditemukan.'], 409);
+      return;
+    }
+
+    if ((string) $escrow->status === 'Sengketa') {
+      $this->db->trans_commit();
+      $this->api_response([
+        'status' => true,
+        'message' => 'Sengketa untuk pesanan ini sudah pernah diajukan.',
+        'data' => [
+          'id_pesanan' => $id_pesanan,
+          'id_escrow' => (int) $escrow->id_escrow,
+          'status_escrow' => 'Sengketa',
+          'idempotent' => true
+        ]
+      ]);
+      return;
+    }
+
+    if (!in_array((string) $pesanan->status_pesanan,
+        ['Diproses', 'Dikirim'], true) ||
+        (string) $escrow->status !== 'Ditahan' ||
+        !empty($escrow->id_transaksi_pencairan) ||
+        !empty($escrow->id_transaksi_refund)) {
+      $this->db->trans_rollback();
+      $this->api_response(['status' => false,
+        'message' => 'Pesanan tidak berada pada kondisi yang dapat disengketakan.'], 409);
+      return;
+    }
+
+    $sekarang = date('Y-m-d H:i:s');
+    $this->db
+      ->where('id_escrow', (int) $escrow->id_escrow)
+      ->where('status', 'Ditahan')
+      ->update('tb_escrow_marketplace', [
+        'status'                 => 'Sengketa',
+        'sengketa_diajukan_oleh' => $id_pembeli,
+        'sengketa_pada'          => $sekarang,
+        'alasan_sengketa'        => $alasan,
+        'catatan'                => 'Sengketa diajukan pembeli: ' . $alasan
+      ]);
+
+    if ($this->db->affected_rows() !== 1) {
+      $this->db->trans_rollback();
+      $this->api_response(['status' => false,
+        'message' => 'Status escrow telah berubah. Sengketa gagal diajukan.'], 409);
+      return;
+    }
+
+    $judul = "\u{26A0}\u{FE0F} Sengketa Pesanan";
+    $pesan = 'Pembeli mengajukan sengketa untuk pesanan ' .
+      $pesanan->invoice_pesanan .
+      '. Dana tetap ditahan sampai ditangani Administrator.';
+    $this->db->insert('tb_notifikasi', [
+      'id_user' => (int) $pesanan->id_penjual,
+      'judul' => $judul,
+      'pesan' => $pesan,
+      'is_read' => 0,
+      'tanggal' => $sekarang
+    ]);
+
+    if ($this->db->trans_status() === false) {
+      $this->db->trans_rollback();
+      $this->api_response(['status' => false,
+        'message' => 'Sengketa gagal disimpan.'], 500);
+      return;
+    }
+    $this->db->trans_commit();
+
+    try {
+      if (!empty($pesanan->expo_token_penjual)) {
+        $this->send_expo_push_notification(
+          $pesanan->expo_token_penjual, $judul, $pesan
+        );
+      }
+    } catch (Throwable $e) {
+      log_message('error', 'Push sengketa gagal: ' . $e->getMessage());
+    }
+
+    $this->api_response([
+      'status' => true,
+      'message' => 'Sengketa berhasil diajukan. Dana tetap ditahan.',
+      'data' => [
+        'id_pesanan' => $id_pesanan,
+        'invoice' => $pesanan->invoice_pesanan,
+        'id_escrow' => (int) $escrow->id_escrow,
+        'status_escrow' => 'Sengketa',
+        'diajukan_pada' => $sekarang,
+        'idempotent' => false
+      ]
+    ]);
+  }
+
+  // 11. Endpoint Batalkan Pesanan (Sistem Nego Ongkir)
   public function batalkan_pesanan()
   {
     header('Access-Control-Allow-Origin: *');
@@ -16199,6 +16547,12 @@ class Api extends CI_Controller
       ]
     )->row();
 
+    $escrow = $this->db->query(
+      "SELECT * FROM tb_escrow_marketplace
+       WHERE id_pesanan = ? LIMIT 1 FOR UPDATE",
+      [$id_pesanan]
+    )->row();
+
     /*
    * Pesanan yang sudah selesai dan sudah dicairkan kepada
    * penjual tidak boleh langsung dibatalkan.
@@ -16240,6 +16594,32 @@ class Api extends CI_Controller
       (int) $pembayaran->referensi_id ===
       $id_pesanan;
 
+    if ($pesanan->status_pesanan !== 'Dibatalkan' && $pembayaran_valid) {
+      $escrow_aktif_valid = $escrow &&
+        (int) $escrow->id_pembeli === (int) $pesanan->id_pembeli &&
+        (int) $escrow->id_penjual === (int) $pesanan->id_penjual &&
+        (int) $escrow->total_dana === $total_tagihan &&
+        (int) $escrow->id_transaksi_pembayaran === (int) $pembayaran->id &&
+        in_array((string) $escrow->status, ['Ditahan', 'Sengketa'], true) &&
+        empty($escrow->id_transaksi_pencairan) &&
+        empty($escrow->id_transaksi_refund);
+
+      if (!$escrow_aktif_valid) {
+        $this->db->trans_rollback();
+        $this->api_response(['status' => false,
+          'message' => 'Dana escrow pesanan tidak ditemukan atau tidak dapat direfund.'], 409);
+        return;
+      }
+    }
+
+    if ($pesanan->status_pesanan !== 'Dibatalkan' &&
+        !$memiliki_data_pembayaran && $escrow) {
+      $this->db->trans_rollback();
+      $this->api_response(['status' => false,
+        'message' => 'Ditemukan escrow tanpa pembayaran pesanan yang sah.'], 409);
+      return;
+    }
+
     /*
    * Idempotensi pembatalan admin.
    */
@@ -16270,6 +16650,12 @@ class Api extends CI_Controller
           (string) $refund_lama->jenis === 'Masuk' &&
           (string) $refund_lama->status_konfirmasi ===
           'Sukses';
+
+        if ($refund_valid && $escrow &&
+            ((string) $escrow->status !== 'Dikembalikan' ||
+             (int) $escrow->id_transaksi_refund !== (int) $refund_lama->id)) {
+          $refund_valid = false;
+        }
 
         if (!$refund_valid) {
           $this->db->trans_rollback();
@@ -16503,6 +16889,28 @@ class Api extends CI_Controller
         (int) $this->db->insert_id();
 
       $nominal_refund = $total_tagihan;
+
+      $this->db
+        ->where('id_escrow', (int) $escrow->id_escrow)
+        ->where_in('status', ['Ditahan', 'Sengketa'])
+        ->where('id_transaksi_pencairan IS NULL', null, false)
+        ->where('id_transaksi_refund IS NULL', null, false)
+        ->update('tb_escrow_marketplace', [
+          'id_transaksi_refund' => $id_transaksi_refund,
+          'status'              => 'Dikembalikan',
+          'dikembalikan_pada'   => $waktu_sekarang,
+          'catatan'             => 'Dana dikembalikan oleh Administrator. Alasan: ' .
+            $alasan,
+          'diselesaikan_oleh'   => $id_admin,
+          'diselesaikan_pada'   => $waktu_sekarang
+        ]);
+
+      if ($this->db->affected_rows() !== 1) {
+        $this->db->trans_rollback();
+        $this->api_response(['status' => false,
+          'message' => 'Status escrow berubah. Refund dibatalkan.'], 409);
+        return;
+      }
     }
 
     $data_update = [

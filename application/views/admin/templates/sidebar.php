@@ -91,10 +91,24 @@ $isSuperAdmin = ($userLevel === 'super admin');
                     <a href="<?= base_url('admin/settlement') ?>">
                         <i class="fa fa-exchange"></i>
                         <span>Settlement Cabang</span>
-                        <?php if ($settlementNotification['total'] > 0): ?>
+                        <?php if ($settlementNotification['total_settlement'] > 0): ?>
                             <span class="pull-right-container">
                                 <small class="label pull-right bg-yellow">
-                                    <?= (int) $settlementNotification['total'] ?>
+                                    <?= (int) $settlementNotification['total_settlement'] ?>
+                                </small>
+                            </span>
+                        <?php endif; ?>
+                    </a>
+                </li>
+
+                <li class="<?= $this->uri->segment(2) === 'escrow' ? 'active' : '' ?>">
+                    <a href="<?= base_url('admin/escrow') ?>">
+                        <i class="fa fa-shield"></i>
+                        <span>Escrow Marketplace</span>
+                        <?php if ($settlementNotification['sengketa_escrow'] > 0): ?>
+                            <span class="pull-right-container">
+                                <small class="label pull-right bg-red">
+                                    <?= (int) $settlementNotification['sengketa_escrow'] ?>
                                 </small>
                             </span>
                         <?php endif; ?>
