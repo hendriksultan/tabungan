@@ -7,6 +7,9 @@ $classes = [
     'Sengketa' => 'label-danger',
     'Dibatalkan' => 'label-default'
 ];
+$statusLabels = [
+    'MenungguSettlement' => 'Menunggu'
+];
 $rows = $escrow->result_array();
 $ditahan = 0;
 $sengketa = 0;
@@ -101,7 +104,7 @@ foreach ($rows as $item) {
                             </td>
                             <td>
                                 <span class="label <?= $classes[$row['status']] ?? 'label-default' ?>">
-                                    <?= html_escape($row['status']) ?>
+                                    <?= html_escape($statusLabels[$row['status']] ?? $row['status']) ?>
                                 </span>
                                 <?php if (!empty($row['alasan_sengketa'])): ?>
                                     <br><small class="text-danger"><?= html_escape($row['alasan_sengketa']) ?></small>
