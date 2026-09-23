@@ -51,6 +51,7 @@ $userId = (int) $this->session->userdata('id');
 
                                 <?php if (
                                     $userLevel === 'administrator' ||
+                                    $userLevel === 'koordinator' ||
                                     $userLevel === 'super admin'
                                 ): ?>
                                     <th>Nominal</th>
@@ -158,6 +159,7 @@ $userId = (int) $this->session->userdata('id');
 
                                     <?php if (
                                         $userLevel === 'administrator' ||
+                                        $userLevel === 'koordinator' ||
                                         $userLevel === 'super admin'
                                     ): ?>
                                         <td>
@@ -448,6 +450,7 @@ $userId = (int) $this->session->userdata('id');
 <?php endif; ?>
 
 <!-- Modal transfer -->
+<?php if ($userLevel === 'nasabah'): ?>
 <div
     class="modal fade"
     id="tambahData"
@@ -562,3 +565,4 @@ $userId = (int) $this->session->userdata('id');
         </div>
     </div>
 </div>
+<?php endif; ?>

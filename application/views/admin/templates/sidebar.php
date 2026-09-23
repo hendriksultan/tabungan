@@ -14,6 +14,13 @@ if (empty($kodeCabang)) {
 }
 
 $isSuperAdmin = ($userLevel === 'super admin');
+$isKoordinator = ($userLevel === 'koordinator');
+
+if ($isKoordinator) {
+    $jumlahCabangScope = count($this->cabang_scope->cabangIds());
+    $namaCabang = $jumlahCabangScope . ' Cabang Ditugaskan';
+    $kodeCabang = 'KOORD';
+}
 ?>
 
 <aside class="main-sidebar">
@@ -48,6 +55,8 @@ $isSuperAdmin = ($userLevel === 'super admin');
 
                     <?php if ($isSuperAdmin): ?>
                         Pusat • Semua Cabang
+                    <?php elseif ($isKoordinator): ?>
+                        Koordinator • Lintas Cabang
                     <?php else: ?>
                         <?= html_escape($kodeCabang) ?>
                     <?php endif; ?>
@@ -57,7 +66,13 @@ $isSuperAdmin = ($userLevel === 'super admin');
 
         <ul class="sidebar-menu" data-widget="tree">
             <li class="header">
-                <?= $isSuperAdmin ? 'NAVIGASI PUSAT' : 'NAVIGASI CABANG' ?>
+                <?php if ($isSuperAdmin): ?>
+                    NAVIGASI PUSAT
+                <?php elseif ($isKoordinator): ?>
+                    NAVIGASI KOORDINATOR
+                <?php else: ?>
+                    NAVIGASI CABANG
+                <?php endif; ?>
             </li>
 
             <li>
@@ -118,6 +133,7 @@ $isSuperAdmin = ($userLevel === 'super admin');
 
             <?php if (
                 $userLevel === 'administrator' ||
+                $userLevel === 'koordinator' ||
                 $userLevel === 'super admin'
             ): ?>
 
@@ -129,6 +145,13 @@ $isSuperAdmin = ($userLevel === 'super admin');
                         <span>Laporan</span>
                     </a>
                 </li>
+
+            <?php endif; ?>
+
+            <?php if (
+                $userLevel === 'administrator' ||
+                $userLevel === 'super admin'
+            ): ?>
 
                 <li>
                     <a href="<?= base_url('admin/potongan') ?>">

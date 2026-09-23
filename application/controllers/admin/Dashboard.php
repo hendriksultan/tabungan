@@ -6,7 +6,9 @@ class Dashboard extends CI_Controller
 
 	private $userLevel;
 	private $isSuperAdmin = false;
+	private $isKoordinator = false;
 	private $cabangId = 0;
+	private $cabangIds = [];
 
 	public function __construct()
 	{
@@ -29,10 +31,14 @@ class Dashboard extends CI_Controller
 		$this->isSuperAdmin = (
 			$this->userLevel === 'super admin'
 		);
+		$this->isKoordinator = (
+			$this->userLevel === 'koordinator'
+		);
 
 		$this->cabangId = (int) $this->session->userdata(
 			'cabang_id'
 		);
+		$this->cabangIds = $this->cabang_scope->cabangIds();
 	}
 
 	public function index()
@@ -40,16 +46,19 @@ class Dashboard extends CI_Controller
 		$data['title'] = 'Dashboard';
 		$data['is_pengelola'] = in_array(
 			$this->userLevel,
-			['administrator', 'super admin'],
+			['administrator', 'koordinator', 'super admin'],
 			true
 		);
 
 		$data['nama_scope'] = $this->isSuperAdmin
 			? 'Seluruh Cabang'
-			: (
+			: ($this->isKoordinator
+				? count($this->cabangIds) . ' Cabang Ditugaskan'
+				: (
 				$this->session->userdata('nama_cabang')
-				?: 'Cabang belum ditentukan'
-			);
+					?: 'Cabang belum ditentukan'
+				));
+		$data['is_koordinator'] = $this->isKoordinator;
 
 		if ($data['is_pengelola']) {
 			$this->siapkanDashboardPengelola($data);
@@ -65,10 +74,13 @@ class Dashboard extends CI_Controller
 
 	private function siapkanDashboardPengelola(&$data)
 	{
-		if (!$this->isSuperAdmin && $this->cabangId <= 0) {
+		if (
+			(!$this->isSuperAdmin && !$this->isKoordinator && $this->cabangId <= 0) ||
+			($this->isKoordinator && empty($this->cabangIds))
+		) {
 			$this->session->set_flashdata(
 				'pesanError',
-				'Administrator belum terhubung dengan cabang!'
+				'Akun belum terhubung dengan cakupan cabang aktif!'
 			);
 
 			redirect('home/logout');
@@ -118,7 +130,9 @@ class Dashboard extends CI_Controller
 
 		$data['subtitle'] = $this->isSuperAdmin
 			? 'Ringkasan keuangan seluruh cabang'
-			: 'Ringkasan keuangan cabang';
+			: ($this->isKoordinator
+				? 'Ringkasan audit cabang yang ditugaskan'
+				: 'Ringkasan keuangan cabang');
 	}
 
 	private function siapkanDashboardNasabah(&$data)
@@ -191,9 +205,7 @@ class Dashboard extends CI_Controller
 		$this->db->where('jenis', $jenis);
 		$this->db->where('status_konfirmasi', 'Sukses');
 
-		if (!$this->isSuperAdmin) {
-			$this->db->where('cabang_id', $this->cabangId);
-		}
+		$this->terapkanScopeCabang('cabang_id');
 
 		return (float) $this->db
 			->get('tb_transaksi')
@@ -210,12 +222,7 @@ class Dashboard extends CI_Controller
 
 		$this->db->where('status_transfer', 'Sukses');
 
-		if (!$this->isSuperAdmin) {
-			$this->db->where(
-				$kolomCabang,
-				$this->cabangId
-			);
-		}
+		$this->terapkanScopeCabang($kolomCabang);
 
 		return (float) $this->db
 			->get('tb_transfer')
@@ -238,12 +245,7 @@ class Dashboard extends CI_Controller
 			'left'
 		);
 
-		if (!$this->isSuperAdmin) {
-			$this->db->where(
-				'tb_user.cabang_id',
-				$this->cabangId
-			);
-		}
+		$this->terapkanScopeCabang('tb_user.cabang_id');
 
 		return (float) $this->db
 			->get()
@@ -255,9 +257,7 @@ class Dashboard extends CI_Controller
 	{
 		$this->db->where('status_konfirmasi', 'Sukses');
 
-		if (!$this->isSuperAdmin) {
-			$this->db->where('cabang_id', $this->cabangId);
-		}
+		$this->terapkanScopeCabang('cabang_id');
 
 		return $this->db->count_all_results('tb_transaksi');
 	}
@@ -268,14 +268,13 @@ class Dashboard extends CI_Controller
 
 		if (!$this->isSuperAdmin) {
 			$this->db->group_start();
-			$this->db->where(
-				'cabang_asal_id',
-				$this->cabangId
-			);
-			$this->db->or_where(
-				'cabang_tujuan_id',
-				$this->cabangId
-			);
+			if ($this->isKoordinator) {
+				$this->db->where_in('cabang_asal_id', $this->cabangIds);
+				$this->db->or_where_in('cabang_tujuan_id', $this->cabangIds);
+			} else {
+				$this->db->where('cabang_asal_id', $this->cabangId);
+				$this->db->or_where('cabang_tujuan_id', $this->cabangId);
+			}
 			$this->db->group_end();
 		}
 
@@ -286,9 +285,7 @@ class Dashboard extends CI_Controller
 	{
 		$this->db->where('level', 'Nasabah');
 
-		if (!$this->isSuperAdmin) {
-			$this->db->where('cabang_id', $this->cabangId);
-		}
+		$this->terapkanScopeCabang('cabang_id');
 
 		return $this->db->count_all_results('tb_user');
 	}
@@ -298,9 +295,7 @@ class Dashboard extends CI_Controller
 		$this->db->where('level', 'Nasabah');
 		$this->db->where('jenisKelamin', $gender);
 
-		if (!$this->isSuperAdmin) {
-			$this->db->where('cabang_id', $this->cabangId);
-		}
+		$this->terapkanScopeCabang('cabang_id');
 
 		return $this->db->count_all_results('tb_user');
 	}
@@ -342,9 +337,7 @@ class Dashboard extends CI_Controller
 		$this->db->where('YEAR(tanggal)', date('Y'));
 		$this->db->where('status_konfirmasi', 'Sukses');
 
-		if (!$this->isSuperAdmin) {
-			$this->db->where('cabang_id', $this->cabangId);
-		}
+		$this->terapkanScopeCabang('cabang_id');
 
 		$this->db->group_by('MONTH(tanggal)');
 		$this->db->order_by('MONTH(tanggal)', 'ASC');
@@ -363,5 +356,14 @@ class Dashboard extends CI_Controller
 			'masuk' => array_values($masuk),
 			'keluar' => array_values($keluar)
 		];
+	}
+
+	private function terapkanScopeCabang($kolom)
+	{
+		if ($this->isSuperAdmin) {
+			return;
+		}
+
+		$this->cabang_scope->apply($kolom);
 	}
 }

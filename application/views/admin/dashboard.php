@@ -241,13 +241,19 @@
                                 <?= number_format($total_nasabah) ?>
                             </span>
 
-                            <a
-                                href="<?= base_url('admin/user') ?>"
-                                class="progress-description"
-                                style="color:#fff;">
-                                Lihat nasabah
-                                <i class="fa fa-arrow-circle-right"></i>
-                            </a>
+                            <?php if (!empty($is_koordinator)): ?>
+                                <span class="progress-description">
+                                    Dalam cakupan audit
+                                </span>
+                            <?php else: ?>
+                                <a
+                                    href="<?= base_url('admin/user') ?>"
+                                    class="progress-description"
+                                    style="color:#fff;">
+                                    Lihat nasabah
+                                    <i class="fa fa-arrow-circle-right"></i>
+                                </a>
+                            <?php endif; ?>
                         </div>
                     </div>
                 </div>

@@ -6,7 +6,9 @@ class Transaksi extends CI_Controller
 
     private $userLevel;
     private $isSuperAdmin = false;
+    private $isKoordinator = false;
     private $cabangId = 0;
+    private $cabangIds = [];
 
     public function __construct()
     {
@@ -29,13 +31,18 @@ class Transaksi extends CI_Controller
         $this->isSuperAdmin = (
             $this->userLevel === 'super admin'
         );
+        $this->isKoordinator = (
+            $this->userLevel === 'koordinator'
+        );
 
         $this->cabangId = (int) $this->session->userdata(
             'cabang_id'
         );
+        $this->cabangIds = $this->cabang_scope->cabangIds();
 
         if (
             !$this->isSuperAdmin &&
+            !$this->isKoordinator &&
             $this->userLevel !== 'nasabah' &&
             $this->cabangId <= 0
         ) {
@@ -47,6 +54,15 @@ class Transaksi extends CI_Controller
             redirect('admin/dashboard');
             return;
         }
+
+        if ($this->isKoordinator && empty($this->cabangIds)) {
+            $this->session->set_flashdata(
+                'pesanError',
+                'Koordinator belum memperoleh penugasan cabang!'
+            );
+            redirect('home/logout');
+            return;
+        }
     }
 
     public function index()
@@ -55,7 +71,9 @@ class Transaksi extends CI_Controller
 
         $data['subtitle'] = $this->isSuperAdmin
             ? 'Menampilkan transaksi dari seluruh cabang'
-            : 'Menampilkan transaksi pada cabang Anda';
+            : ($this->isKoordinator
+                ? 'Menampilkan transaksi cabang yang ditugaskan'
+                : 'Menampilkan transaksi pada cabang Anda');
 
         /*
          * Ambil transaksi beserta nasabah dan cabang.
@@ -85,6 +103,11 @@ class Transaksi extends CI_Controller
             $this->db->where(
                 'tb_transaksi.idNasabah',
                 (int) $this->session->userdata('id')
+            );
+        } elseif ($this->isKoordinator) {
+            $this->db->where_in(
+                'tb_transaksi.cabang_id',
+                $this->cabangIds
             );
         } elseif (!$this->isSuperAdmin) {
             $this->db->where(
@@ -128,6 +151,11 @@ class Transaksi extends CI_Controller
                 $this->db->where(
                     'tb_user.id',
                     (int) $this->session->userdata('id')
+                );
+            } elseif ($this->isKoordinator) {
+                $this->db->where_in(
+                    'tb_user.cabang_id',
+                    $this->cabangIds
                 );
             }
         }

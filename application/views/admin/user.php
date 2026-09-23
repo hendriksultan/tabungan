@@ -65,6 +65,12 @@ $userRows = $user->result_array();
                                     strtolower($row['level']) ===
                                     'super admin'
                                 );
+                                $isTargetKoordinator = (
+                                    strtolower($row['level']) ===
+                                    'koordinator'
+                                );
+                                $cabangKoordinator =
+                                    $penugasan_koordinator[$idUser] ?? [];
                                 ?>
 
                                 <tr>
@@ -95,6 +101,13 @@ $userRows = $user->result_array();
                                                     $row['kode_cabang']
                                                 ) ?>
                                             </span>
+                                            <?php if ($isTargetKoordinator): ?>
+                                                <br>
+                                                <small class="text-muted">
+                                                    <?= count($cabangKoordinator) ?>
+                                                    cabang ditugaskan
+                                                </small>
+                                            <?php endif; ?>
                                         <?php else: ?>
                                             <span class="label label-danger">
                                                 Belum ada cabang
@@ -316,10 +329,36 @@ $userRows = $user->result_array();
                                 <option value="Administrator">
                                     Administrator
                                 </option>
+                                <option value="Koordinator">
+                                    Koordinator
+                                </option>
                                 <option value="Nasabah">
                                     Nasabah
                                 </option>
                             </select>
+                        </div>
+
+                        <div
+                            class="form-group js-koordinator-cabang"
+                            style="display:none;">
+                            <label>Penugasan cabang Koordinator</label>
+                            <select
+                                name="koordinator_cabang_ids[]"
+                                class="form-control select2"
+                                multiple
+                                style="width:100%;">
+                                <?php foreach ($cabang as $item): ?>
+                                    <option value="<?= (int) $item['id'] ?>">
+                                        <?= html_escape(
+                                            $item['kode'] . ' - ' .
+                                                $item['nama']
+                                        ) ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                            <small class="text-muted">
+                                Cabang utama otomatis ikut dalam penugasan.
+                            </small>
                         </div>
                     <?php else: ?>
                         <div class="alert alert-info">
@@ -490,6 +529,39 @@ $userRows = $user->result_array();
                                     <?php endforeach; ?>
                                 </select>
                             </div>
+
+                            <?php if (strtolower($edit['level']) === 'koordinator'): ?>
+                                <div class="form-group">
+                                    <label>Penugasan cabang Koordinator</label>
+                                    <select
+                                        name="koordinator_cabang_ids[]"
+                                        class="form-control select2"
+                                        multiple
+                                        style="width:100%;">
+                                        <?php
+                                        $cabangTerpilih =
+                                            $penugasan_koordinator[$idEdit] ?? [];
+                                        ?>
+                                        <?php foreach ($cabang as $item): ?>
+                                            <option
+                                                value="<?= (int) $item['id'] ?>"
+                                                <?= in_array(
+                                                    (int) $item['id'],
+                                                    $cabangTerpilih,
+                                                    true
+                                                ) ? 'selected' : '' ?>>
+                                                <?= html_escape(
+                                                    $item['kode'] . ' - ' .
+                                                        $item['nama']
+                                                ) ?>
+                                            </option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                    <small class="text-muted">
+                                        Cabang utama otomatis ikut dalam penugasan.
+                                    </small>
+                                </div>
+                            <?php endif; ?>
                         <?php endif; ?>
 
                         <div class="row">
@@ -656,3 +728,29 @@ $userRows = $user->result_array();
         </div>
     </div>
 <?php endforeach; ?>
+
+<?php if ($is_super_admin): ?>
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            var level = document.querySelector(
+                '#tambahData select[name="level"]'
+            );
+            var penugasan = document.querySelector(
+                '#tambahData .js-koordinator-cabang'
+            );
+
+            if (!level || !penugasan) {
+                return;
+            }
+
+            function togglePenugasanKoordinator() {
+                penugasan.style.display = level.value === 'Koordinator'
+                    ? 'block'
+                    : 'none';
+            }
+
+            level.addEventListener('change', togglePenugasanKoordinator);
+            togglePenugasanKoordinator();
+        });
+    </script>
+<?php endif; ?>

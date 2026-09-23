@@ -10,6 +10,7 @@ class Home extends CI_Controller
 
         if (
             $level === 'administrator' ||
+            $level === 'koordinator' ||
             $level === 'nasabah' ||
             $level === 'super admin'
         ) {
@@ -140,6 +141,7 @@ class Home extends CI_Controller
 
         $allowedLevels = [
             'administrator',
+            'koordinator',
             'nasabah',
             'super admin'
         ];
@@ -154,10 +156,41 @@ class Home extends CI_Controller
             return;
         }
 
-        /*
-         * Selain Super Admin, user harus mempunyai cabang aktif.
-         */
-        if ($userLevel !== 'super admin') {
+        $jumlahCabangScope = 0;
+
+        if ($userLevel === 'koordinator') {
+            if (!$this->db->table_exists('tb_koordinator_cabang')) {
+                $this->session->set_flashdata(
+                    'pesan',
+                    'Fitur Koordinator belum diaktifkan pada database!'
+                );
+
+                redirect('home');
+                return;
+            }
+
+            $jumlahCabangScope = $this->db
+                ->from('tb_koordinator_cabang AS kc')
+                ->join(
+                    'tb_cabang AS c',
+                    'c.id = kc.cabang_id',
+                    'inner'
+                )
+                ->where('kc.id_koordinator', (int) $user['id'])
+                ->where('kc.status', 'Aktif')
+                ->where('c.status', 'Aktif')
+                ->count_all_results();
+
+            if ($jumlahCabangScope <= 0) {
+                $this->session->set_flashdata(
+                    'pesan',
+                    'Koordinator belum memperoleh penugasan cabang aktif!'
+                );
+
+                redirect('home');
+                return;
+            }
+        } elseif ($userLevel !== 'super admin') {
             if (empty($user['cabang_id'])) {
                 $this->session->set_flashdata(
                     'pesan',
@@ -209,7 +242,8 @@ class Home extends CI_Controller
              */
             'cabang_id'     => $user['cabang_id'],
             'kode_cabang'   => $user['kode_cabang'] ?? null,
-            'nama_cabang'   => $user['nama_cabang'] ?? null
+            'nama_cabang'   => $user['nama_cabang'] ?? null,
+            'jumlah_cabang_scope' => $jumlahCabangScope
         ];
 
         $this->session->set_userdata($dataUser);

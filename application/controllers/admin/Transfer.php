@@ -6,7 +6,9 @@ class Transfer extends CI_Controller
 
     private $userLevel;
     private $isSuperAdmin = false;
+    private $isKoordinator = false;
     private $cabangId = 0;
+    private $cabangIds = [];
 
     public function __construct()
     {
@@ -29,10 +31,23 @@ class Transfer extends CI_Controller
         $this->isSuperAdmin = (
             $this->userLevel === 'super admin'
         );
+        $this->isKoordinator = (
+            $this->userLevel === 'koordinator'
+        );
 
         $this->cabangId = (int) $this->session->userdata(
             'cabang_id'
         );
+        $this->cabangIds = $this->cabang_scope->cabangIds();
+
+        if ($this->isKoordinator && empty($this->cabangIds)) {
+            $this->session->set_flashdata(
+                'pesanError',
+                'Koordinator belum memperoleh penugasan cabang!'
+            );
+            redirect('home/logout');
+            return;
+        }
     }
 
     public function index()
@@ -41,6 +56,8 @@ class Transfer extends CI_Controller
 
         if ($this->isSuperAdmin) {
             $data['subtitle'] = 'Transfer dari seluruh cabang';
+        } elseif ($this->isKoordinator) {
+            $data['subtitle'] = 'Transfer cabang yang ditugaskan';
         } elseif ($this->userLevel === 'administrator') {
             $data['subtitle'] = 'Transfer yang berkaitan dengan cabang Anda';
         } else {
@@ -70,6 +87,9 @@ class Transfer extends CI_Controller
         $this->db->where('tb_user.login', 'Ya');
         $this->db->where('tb_user.id !=', (int) $this->session->userdata('id'));
         $this->db->where('tb_cabang.status', 'Aktif');
+        if ($this->userLevel !== 'nasabah') {
+            $this->db->where('1 = 0', null, false);
+        }
         $this->db->order_by('tb_user.nama', 'ASC');
 
         $data['nasabah'] = $this->db->get();
@@ -135,6 +155,17 @@ class Transfer extends CI_Controller
             $this->db->group_start();
             $this->db->where('tb_transfer.idPengirim', $userId);
             $this->db->or_where('tb_transfer.idPenerima', $userId);
+            $this->db->group_end();
+        } elseif ($this->isKoordinator) {
+            $this->db->group_start();
+            $this->db->where_in(
+                'tb_transfer.cabang_asal_id',
+                $this->cabangIds
+            );
+            $this->db->or_where_in(
+                'tb_transfer.cabang_tujuan_id',
+                $this->cabangIds
+            );
             $this->db->group_end();
         } elseif (!$this->isSuperAdmin) {
             if ($this->cabangId <= 0) {

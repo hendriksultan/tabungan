@@ -114,7 +114,7 @@
                                 <th width="10px">#</th>
                                 <th>Nasabah</th>
 
-                                <?php if ($userLevel == 'super admin'): ?>
+                                <?php if (in_array($userLevel, ['super admin', 'koordinator'], true)): ?>
                                     <th>Cabang</th>
                                 <?php endif; ?>
 
@@ -174,7 +174,7 @@
                                         ) ?>
                                     </td>
 
-                                    <?php if ($userLevel == 'super admin'): ?>
+                                    <?php if (in_array($userLevel, ['super admin', 'koordinator'], true)): ?>
                                         <td>
                                             <?php if (!empty($row['nama_cabang'])): ?>
                                                 <?= html_escape($row['nama_cabang']) ?>

@@ -5,7 +5,9 @@ class Laporan extends CI_Controller
 {
     private $userLevel;
     private $isSuperAdmin = false;
+    private $isKoordinator = false;
     private $cabangId = 0;
+    private $cabangIds = [];
 
     public function __construct()
     {
@@ -28,15 +30,18 @@ class Laporan extends CI_Controller
         $this->isSuperAdmin = (
             $this->userLevel === 'super admin'
         );
+        $this->isKoordinator = (
+            $this->userLevel === 'koordinator'
+        );
 
         if (!in_array(
             $this->userLevel,
-            ['administrator', 'super admin'],
+            ['administrator', 'koordinator', 'super admin'],
             true
         )) {
             $this->session->set_flashdata(
                 'pesanError',
-                'Akses laporan hanya untuk Administrator dan Super Admin!'
+                'Akses laporan hanya untuk pengelola yang berwenang!'
             );
 
             redirect('admin/dashboard');
@@ -46,11 +51,15 @@ class Laporan extends CI_Controller
         $this->cabangId = (int) $this->session->userdata(
             'cabang_id'
         );
+        $this->cabangIds = $this->cabang_scope->cabangIds();
 
-        if (!$this->isSuperAdmin && $this->cabangId <= 0) {
+        if (
+            (!$this->isSuperAdmin && !$this->isKoordinator && $this->cabangId <= 0) ||
+            ($this->isKoordinator && empty($this->cabangIds))
+        ) {
             $this->session->set_flashdata(
                 'pesanError',
-                'Administrator belum terhubung dengan cabang!'
+                'Akun belum terhubung dengan cakupan cabang aktif!'
             );
 
             redirect('home/logout');
@@ -69,17 +78,17 @@ class Laporan extends CI_Controller
             'title' => 'Laporan Keuangan',
             'subtitle' => $this->isSuperAdmin
                 ? 'Laporan transaksi dan transfer seluruh cabang'
-                : 'Laporan transaksi dan transfer cabang Anda',
+                : ($this->isKoordinator
+                    ? 'Laporan cabang yang ditugaskan'
+                    : 'Laporan transaksi dan transfer cabang Anda'),
             'isSuperAdmin' => $this->isSuperAdmin,
+            'canSelectBranch' => $this->isSuperAdmin || $this->isKoordinator,
             'filter' => $filter,
             'ringkasan' => $ringkasan,
             'transaksi' => $transaksi,
             'transfer' => $transfer,
-            'cabang' => $this->isSuperAdmin
-                ? $this->db
-                ->order_by('nama', 'ASC')
-                ->get('tb_cabang')
-                ->result_array()
+            'cabang' => ($this->isSuperAdmin || $this->isKoordinator)
+                ? $this->cabang_scope->cabangOptions()
                 : [],
             'namaScope' => $filter['nama_cabang'],
             'queryExport' => http_build_query([
@@ -568,9 +577,11 @@ class Laporan extends CI_Controller
         }
 
         $cabangId = null;
-        $namaCabang = 'Seluruh Cabang';
+        $namaCabang = $this->isKoordinator
+            ? 'Seluruh Cabang Ditugaskan'
+            : 'Seluruh Cabang';
 
-        if ($this->isSuperAdmin) {
+        if ($this->isSuperAdmin || $this->isKoordinator) {
             $cabangInput = trim(
                 (string) $this->input->get('cabang_id', true)
             );
@@ -584,6 +595,12 @@ class Laporan extends CI_Controller
 
                 if ($cabangValid === false) {
                     $this->filterTidakValid('Pilihan cabang tidak valid.');
+                }
+
+                if (!$this->cabang_scope->canAccess((int) $cabangValid)) {
+                    $this->filterTidakValid(
+                        'Cabang berada di luar cakupan penugasan Anda.'
+                    );
                 }
 
                 $cabang = $this->db
@@ -808,6 +825,11 @@ class Laporan extends CI_Controller
                 'tb_transaksi.cabang_id',
                 $filter['cabang_id']
             );
+        } elseif ($this->isKoordinator) {
+            $this->db->where_in(
+                'tb_transaksi.cabang_id',
+                $this->cabangIds
+            );
         }
 
         $this->db->order_by('tb_transaksi.tanggal', 'DESC');
@@ -1015,6 +1037,17 @@ class Laporan extends CI_Controller
                 $filter['cabang_id']
             );
             $this->db->group_end();
+        } elseif ($this->isKoordinator) {
+            $this->db->group_start();
+            $this->db->where_in(
+                'tb_transfer.cabang_asal_id',
+                $this->cabangIds
+            );
+            $this->db->or_where_in(
+                'tb_transfer.cabang_tujuan_id',
+                $this->cabangIds
+            );
+            $this->db->group_end();
         }
 
         $this->db->order_by('tb_transfer.terdaftar', 'DESC');
@@ -1023,7 +1056,7 @@ class Laporan extends CI_Controller
         $rows = $this->db->get()->result_array();
 
         foreach ($rows as &$row) {
-            if ($filter['cabang_id'] === null) {
+            if ($filter['cabang_id'] === null && !$this->isKoordinator) {
                 $row['masuk_scope'] = true;
                 $row['keluar_scope'] = true;
                 $row['arah_scope'] =
@@ -1031,6 +1064,25 @@ class Laporan extends CI_Controller
                     (int) $row['cabang_tujuan_id']
                     ? 'Internal cabang'
                     : 'Antar cabang';
+            } elseif ($filter['cabang_id'] === null) {
+                $row['masuk_scope'] = in_array(
+                    (int) $row['cabang_tujuan_id'],
+                    $this->cabangIds,
+                    true
+                );
+                $row['keluar_scope'] = in_array(
+                    (int) $row['cabang_asal_id'],
+                    $this->cabangIds,
+                    true
+                );
+
+                if ($row['masuk_scope'] && $row['keluar_scope']) {
+                    $row['arah_scope'] = 'Internal penugasan';
+                } elseif ($row['masuk_scope']) {
+                    $row['arah_scope'] = 'Masuk';
+                } else {
+                    $row['arah_scope'] = 'Keluar';
+                }
             } else {
                 $row['masuk_scope'] = (
                     (int) $row['cabang_tujuan_id'] ===

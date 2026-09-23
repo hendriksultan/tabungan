@@ -200,6 +200,15 @@ class Api extends CI_Controller
       return null;
     }
 
+    if ($auth->level === 'Koordinator') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Akun Koordinator hanya tersedia pada aplikasi web.'
+      ], 403);
+
+      return null;
+    }
+
     if (empty($auth->cabang_id)) {
       $this->api_response([
         'status'  => false,
@@ -522,6 +531,15 @@ class Api extends CI_Controller
       $this->api_response([
         'status'  => false,
         'message' => $message
+      ], 403);
+
+      return;
+    }
+
+    if ($user->level === 'Koordinator') {
+      $this->api_response([
+        'status'  => false,
+        'message' => 'Akun Koordinator hanya dapat masuk melalui aplikasi web.'
       ], 403);
 
       return;

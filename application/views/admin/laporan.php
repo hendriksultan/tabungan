@@ -346,7 +346,7 @@ $formatRupiah = function ($nominal) {
                             </div>
                         </div>
 
-                        <?php if ($isSuperAdmin): ?>
+                        <?php if ($canSelectBranch): ?>
                             <div class="col-md-3 col-sm-6">
                                 <div class="form-group">
                                     <label>Cabang</label>
@@ -355,7 +355,9 @@ $formatRupiah = function ($nominal) {
                                         class="form-control select2"
                                         style="width:100%;">
                                         <option value="all">
-                                            Seluruh Cabang
+                                            <?= !empty($isSuperAdmin)
+                                                ? 'Seluruh Cabang'
+                                                : 'Seluruh Cabang Ditugaskan' ?>
                                         </option>
 
                                         <?php foreach ($cabang as $item): ?>

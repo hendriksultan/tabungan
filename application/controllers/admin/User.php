@@ -81,6 +81,11 @@ class User extends CI_Controller
 				'LOWER(tb_user.level) !=',
 				'super admin'
 			);
+
+			$this->db->where(
+				'LOWER(tb_user.level) !=',
+				'koordinator'
+			);
 		}
 
 		$this->db->order_by('tb_user.id', 'DESC');
@@ -94,6 +99,22 @@ class User extends CI_Controller
 		$data['cabang'] = $this->db
 			->get('tb_cabang')
 			->result_array();
+
+		$data['penugasan_koordinator'] = [];
+
+		if ($this->db->table_exists('tb_koordinator_cabang')) {
+			$penugasan = $this->db
+				->select('id_koordinator, cabang_id')
+				->where('status', 'Aktif')
+				->get('tb_koordinator_cabang')
+				->result_array();
+
+			foreach ($penugasan as $item) {
+				$idKoordinator = (int) $item['id_koordinator'];
+				$data['penugasan_koordinator'][$idKoordinator][] =
+					(int) $item['cabang_id'];
+			}
+		}
 
 		$data['is_super_admin'] = $this->isSuperAdmin;
 
@@ -194,7 +215,7 @@ class User extends CI_Controller
 
 			if (!in_array(
 				$level,
-				['Administrator', 'Nasabah'],
+				['Administrator', 'Koordinator', 'Nasabah'],
 				true
 			)) {
 				$this->gagal('Level user tidak valid!');
@@ -208,6 +229,19 @@ class User extends CI_Controller
 		if (!$this->cabangAktif($cabangId)) {
 			$this->gagal('Cabang yang dipilih tidak valid atau nonaktif!');
 			return;
+		}
+
+		$cabangKoordinator = [];
+
+		if ($level === 'Koordinator') {
+			$cabangKoordinator = $this->normalisasiCabangKoordinator(
+				$this->input->post('koordinator_cabang_ids'),
+				$cabangId
+			);
+
+			if (empty($cabangKoordinator)) {
+				return;
+			}
 		}
 
 		$data = [
@@ -230,12 +264,34 @@ class User extends CI_Controller
 			'terdaftar'     => date('Y-m-d H:i:s')
 		];
 
-		if ($this->db->insert('tb_user', $data)) {
+		$this->db->trans_begin();
+		$this->db->insert('tb_user', $data);
+		$idUserBaru = (int) $this->db->insert_id();
+
+		if (
+			$idUserBaru > 0 &&
+			$level === 'Koordinator' &&
+			!$this->simpanCabangKoordinator(
+				$idUserBaru,
+				$cabangKoordinator
+			)
+		) {
+			$this->db->trans_rollback();
+			$this->gagal('Penugasan cabang Koordinator gagal disimpan!');
+			return;
+		}
+
+		if (
+			$idUserBaru > 0 &&
+			$this->db->trans_status() !== false
+		) {
+			$this->db->trans_commit();
 			$this->session->set_flashdata(
 				'pesan',
 				'Account berhasil dibuat!'
 			);
 		} else {
+			$this->db->trans_rollback();
 			$this->session->set_flashdata(
 				'pesanError',
 				'Account gagal dibuat!'
@@ -331,6 +387,19 @@ class User extends CI_Controller
 			}
 		}
 
+		$cabangKoordinator = [];
+
+		if (strtolower((string) $target['level']) === 'koordinator') {
+			$cabangKoordinator = $this->normalisasiCabangKoordinator(
+				$this->input->post('koordinator_cabang_ids'),
+				$cabangId
+			);
+
+			if (empty($cabangKoordinator)) {
+				return;
+			}
+		}
+
 		$data = [
 			'cabang_id'     => $cabangId,
 			'nama'          => $nama,
@@ -342,14 +411,30 @@ class User extends CI_Controller
 			'alamat'        => $alamat
 		];
 
+		$this->db->trans_begin();
 		$this->db->where('id', (int) $target['id']);
+		$this->db->update('tb_user', $data);
 
-		if ($this->db->update('tb_user', $data)) {
+		if (
+			strtolower((string) $target['level']) === 'koordinator' &&
+			!$this->simpanCabangKoordinator(
+				(int) $target['id'],
+				$cabangKoordinator
+			)
+		) {
+			$this->db->trans_rollback();
+			$this->gagal('Penugasan cabang Koordinator gagal diperbarui!');
+			return;
+		}
+
+		if ($this->db->trans_status() !== false) {
+			$this->db->trans_commit();
 			$this->session->set_flashdata(
 				'pesan',
 				'Account berhasil diubah!'
 			);
 		} else {
+			$this->db->trans_rollback();
 			$this->session->set_flashdata(
 				'pesanError',
 				'Account gagal diubah!'
@@ -621,6 +706,14 @@ class User extends CI_Controller
 
 		if (
 			!$this->isSuperAdmin &&
+			strtolower((string) $target['level']) === 'koordinator'
+		) {
+			$this->gagal('Akun Koordinator hanya dapat dikelola Super Admin!');
+			return false;
+		}
+
+		if (
+			!$this->isSuperAdmin &&
 			(int) $target['cabang_id'] !== $this->cabangId
 		) {
 			$this->gagal(
@@ -640,6 +733,81 @@ class User extends CI_Controller
 				'status' => 'Aktif'
 			])
 			->num_rows() > 0;
+	}
+
+	private function normalisasiCabangKoordinator($input, $cabangUtama)
+	{
+		if (!$this->isSuperAdmin) {
+			$this->gagal('Penugasan Koordinator hanya untuk Super Admin!');
+			return [];
+		}
+
+		if (!$this->db->table_exists('tb_koordinator_cabang')) {
+			$this->gagal('Migrasi Koordinator Cabang belum dijalankan!');
+			return [];
+		}
+
+		$ids = is_array($input) ? $input : [];
+		$ids[] = (int) $cabangUtama;
+		$hasil = [];
+
+		foreach ($ids as $id) {
+			$id = (int) $id;
+			if ($id > 0) {
+				$hasil[$id] = $id;
+			}
+		}
+
+		$hasil = array_values($hasil);
+
+		if (empty($hasil)) {
+			$this->gagal('Koordinator wajib memperoleh minimal satu cabang!');
+			return [];
+		}
+
+		$jumlahValid = $this->db
+			->where_in('id', $hasil)
+			->where('status', 'Aktif')
+			->count_all_results('tb_cabang');
+
+		if ($jumlahValid !== count($hasil)) {
+			$this->gagal('Terdapat penugasan cabang yang tidak valid!');
+			return [];
+		}
+
+		sort($hasil, SORT_NUMERIC);
+		return $hasil;
+	}
+
+	private function simpanCabangKoordinator($idKoordinator, array $cabangIds)
+	{
+		$this->db->where('id_koordinator', (int) $idKoordinator);
+		$this->db->delete('tb_koordinator_cabang');
+
+		$rows = [];
+		$sekarang = date('Y-m-d H:i:s');
+
+		foreach ($cabangIds as $cabangId) {
+			$rows[] = [
+				'id_koordinator'  => (int) $idKoordinator,
+				'cabang_id'       => (int) $cabangId,
+				'status'           => 'Aktif',
+				'ditugaskan_oleh' =>
+					(int) $this->session->userdata('id'),
+				'ditugaskan_pada' => $sekarang
+			];
+		}
+
+		if (empty($rows)) {
+			return false;
+		}
+
+		$disimpan = $this->db->insert_batch(
+			'tb_koordinator_cabang',
+			$rows
+		);
+
+		return $disimpan !== false && $this->db->trans_status() !== false;
 	}
 
 	private function pastikanPost()
