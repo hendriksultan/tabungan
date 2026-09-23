@@ -11,10 +11,15 @@ class Backupdatabase extends CI_Controller {
 			redirect('home');
 		} 
         
-        // PERBAIKAN: Izinkan Administrator DAN Super Admin
-        $userLevel = strtolower($this->session->userdata('level'));
-        if ($userLevel != 'administrator' && $userLevel != 'super admin') {
-			redirect('home');
+        // Backup database hanya boleh dikelola oleh Super Admin.
+        $userLevel = strtolower(trim((string) $this->session->userdata('level')));
+        if ($userLevel !== 'super admin') {
+            $this->session->set_flashdata(
+                'pesanError',
+                'Menu Backup Database hanya dapat diakses oleh Super Admin!'
+            );
+			redirect('admin/dashboard');
+            return;
         }
 	}
 

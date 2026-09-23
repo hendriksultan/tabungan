@@ -11,10 +11,15 @@ class Aplikasi extends CI_Controller {
 			redirect('home');
 		} 
         
-        // PERBAIKAN 1: Izinkan Administrator DAN Super Admin
-        $userLevel = strtolower($this->session->userdata('level'));
-        if ($userLevel != 'administrator' && $userLevel != 'super admin') {
-			redirect('home');
+        // Pengaturan aplikasi hanya boleh dikelola oleh Super Admin.
+        $userLevel = strtolower(trim((string) $this->session->userdata('level')));
+        if ($userLevel !== 'super admin') {
+            $this->session->set_flashdata(
+                'pesanError',
+                'Menu Tentang Aplikasi hanya dapat diakses oleh Super Admin!'
+            );
+			redirect('admin/dashboard');
+            return;
         }
 	}
 

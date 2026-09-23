@@ -13,11 +13,11 @@
     <?php $userLevel = strtolower($this->session->userdata('level')); ?>
 
     <section class="content">
-        <?php if (!empty($isKoordinator)): ?>
+        <?php if (!empty($isReadOnly)): ?>
             <div class="alert alert-info">
                 <i class="fa fa-eye"></i>
-                Mode audit: log hanya menampilkan pengguna dari cabang yang
-                ditugaskan dan tidak dapat dihapus.
+                Mode hanya baca: log aktivitas dapat dilihat, tetapi tidak
+                dapat dihapus.
             </div>
         <?php endif; ?>
 
@@ -35,7 +35,7 @@
                                 <th>Sebagai</th>
                                 <th>Status</th>
                                 <th>Waktu</th>
-                                <?php if (empty($isKoordinator)) { ?>
+                                <?php if (empty($isReadOnly)) { ?>
                                     <th>Opsi</th>
                                 <?php } ?>
                             </tr>
@@ -77,7 +77,7 @@
                                     </td>
                                     <td><?= date('d F Y H:i:s', strtotime($row['terdaftar'])) ?></td>
                                     
-                                    <?php if (empty($isKoordinator)) { ?>
+                                    <?php if (empty($isReadOnly)) { ?>
                                         <td>
                                             <a href="<?= base_url('admin/log/delete/').$row['id'] ?>" class="btn btn-danger btn-xs tombol-yakin" data-isidata="Ingin menghapus data ini?">
                                                 <div class="fa fa-trash"></div> Delete

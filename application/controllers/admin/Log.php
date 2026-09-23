@@ -61,6 +61,7 @@ class Log extends CI_Controller
                 ? 'Aktivitas pengguna pada cabang yang ditugaskan'
                 : 'Aktivitas pengguna pada cabang Anda');
         $data['isKoordinator'] = $this->isKoordinator;
+        $data['isReadOnly'] = !$this->isSuperAdmin;
 
         $this->db->select([
             'l.*',
@@ -91,10 +92,10 @@ class Log extends CI_Controller
 
     public function delete($id)
     {
-        if ($this->isKoordinator) {
+        if (!$this->isSuperAdmin) {
             $this->session->set_flashdata(
                 'pesanError',
-                'Koordinator tidak dapat menghapus log audit!'
+                'Log audit hanya dapat dihapus oleh Super Admin!'
             );
             redirect('admin/log');
             return;
@@ -108,18 +109,6 @@ class Log extends CI_Controller
 
         if (!$log) {
             $this->session->set_flashdata('pesanError', 'Log tidak ditemukan!');
-            redirect('admin/log');
-            return;
-        }
-
-        if (
-            !$this->isSuperAdmin &&
-            (int) $log['cabang_id'] !== $this->cabangId
-        ) {
-            $this->session->set_flashdata(
-                'pesanError',
-                'Anda tidak dapat menghapus log cabang lain!'
-            );
             redirect('admin/log');
             return;
         }

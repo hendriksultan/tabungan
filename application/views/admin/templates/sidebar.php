@@ -223,19 +223,21 @@ if ($isKoordinator) {
                             </li>
                         <?php endif; ?>
 
-                        <li>
-                            <a href="<?= base_url('admin/aplikasi') ?>">
-                                <i class="fa fa-info-circle"></i>
-                                Tentang Aplikasi
-                            </a>
-                        </li>
+                        <?php if ($isSuperAdmin): ?>
+                            <li>
+                                <a href="<?= base_url('admin/aplikasi') ?>">
+                                    <i class="fa fa-info-circle"></i>
+                                    Tentang Aplikasi
+                                </a>
+                            </li>
 
-                        <li>
-                            <a href="<?= base_url('admin/backupdatabase') ?>">
-                                <i class="fa fa-database"></i>
-                                Backup Database
-                            </a>
-                        </li>
+                            <li>
+                                <a href="<?= base_url('admin/backupdatabase') ?>">
+                                    <i class="fa fa-database"></i>
+                                    Backup Database
+                                </a>
+                            </li>
+                        <?php endif; ?>
 
                         <li>
                             <a href="<?= base_url('admin/log') ?>">
