@@ -141,10 +141,27 @@
                                     empty($row['request_key'])
                                 );
 
+                                $waktuTransaksi = !empty($row['terdaftar'])
+                                    ? strtotime($row['terdaftar'])
+                                    : false;
+
+                                $masihDalamBatasPerubahan = (
+                                    $waktuTransaksi !== false &&
+                                    time() <= $waktuTransaksi + (24 * 60 * 60)
+                                );
+
                                 $canManageTransaction = (
                                     $isManualTransaction &&
                                     $row['status_konfirmasi'] === 'Sukses' &&
-                                    empty($row['dibatalkan_pada'])
+                                    empty($row['dibatalkan_pada']) &&
+                                    $masihDalamBatasPerubahan
+                                );
+
+                                $batasPerubahanBerakhir = (
+                                    $isManualTransaction &&
+                                    $row['status_konfirmasi'] === 'Sukses' &&
+                                    empty($row['dibatalkan_pada']) &&
+                                    !$masihDalamBatasPerubahan
                                 );
                             ?>
                                 <tr>
@@ -222,6 +239,10 @@
                                                 <button class="btn btn-danger btn-xs" data-toggle="modal" data-target="#batalkanTransaksi<?= $row['id'] ?>" style="border-radius: 4px;">
                                                     <div class="fa fa-undo"></div> Batalkan
                                                 </button>
+                                            <?php elseif ($batasPerubahanBerakhir): ?>
+                                                <small class="text-muted">
+                                                    Batas 24 jam berakhir
+                                                </small>
                                             <?php else: ?>
                                                 <span class="text-muted">Dilindungi</span>
                                             <?php endif; ?>
@@ -300,10 +321,20 @@
         empty($edt->request_key)
     );
 
+    $waktuTransaksi = !empty($edt->terdaftar)
+        ? strtotime($edt->terdaftar)
+        : false;
+
+    $masihDalamBatasPerubahan = (
+        $waktuTransaksi !== false &&
+        time() <= $waktuTransaksi + (24 * 60 * 60)
+    );
+
     if (
         !$isManualTransaction ||
         $edt->status_konfirmasi !== 'Sukses' ||
-        !empty($edt->dibatalkan_pada)
+        !empty($edt->dibatalkan_pada) ||
+        !$masihDalamBatasPerubahan
     ) {
         continue;
     }
@@ -354,10 +385,20 @@
         empty($batal->request_key)
     );
 
+    $waktuTransaksi = !empty($batal->terdaftar)
+        ? strtotime($batal->terdaftar)
+        : false;
+
+    $masihDalamBatasPerubahan = (
+        $waktuTransaksi !== false &&
+        time() <= $waktuTransaksi + (24 * 60 * 60)
+    );
+
     if (
         !$isManualTransaction ||
         $batal->status_konfirmasi !== 'Sukses' ||
-        !empty($batal->dibatalkan_pada)
+        !empty($batal->dibatalkan_pada) ||
+        !$masihDalamBatasPerubahan
     ) {
         continue;
     }

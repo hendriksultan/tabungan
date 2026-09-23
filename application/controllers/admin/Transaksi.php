@@ -381,6 +381,25 @@ class Transaksi extends CI_Controller
             return;
         }
 
+        $waktuTransaksi = strtotime((string) $transaksi['terdaftar']);
+
+        if ($waktuTransaksi === false) {
+            $this->batalkanTransaksiDatabase(
+                'Waktu transaksi tidak valid. Perubahan otomatis dihentikan.'
+            );
+            return;
+        }
+
+        $batasPerubahan = $waktuTransaksi + (24 * 60 * 60);
+
+        if (time() > $batasPerubahan) {
+            $this->batalkanTransaksiDatabase(
+                'Batas edit transaksi 1x24 jam telah berakhir pada ' .
+                    date('d-m-Y H:i:s', $batasPerubahan) . '.'
+            );
+            return;
+        }
+
         $idNasabah = (int) $transaksi['idNasabah'];
 
         $this->db->query(
@@ -495,6 +514,25 @@ class Transaksi extends CI_Controller
         ) {
             $this->batalkanTransaksiDatabase(
                 'Transaksi sudah dibatalkan atau tidak lagi berstatus sukses.'
+            );
+            return;
+        }
+
+        $waktuTransaksi = strtotime((string) $transaksi['terdaftar']);
+
+        if ($waktuTransaksi === false) {
+            $this->batalkanTransaksiDatabase(
+                'Waktu transaksi tidak valid. Pembatalan otomatis dihentikan.'
+            );
+            return;
+        }
+
+        $batasPembatalan = $waktuTransaksi + (24 * 60 * 60);
+
+        if (time() > $batasPembatalan) {
+            $this->batalkanTransaksiDatabase(
+                'Batas pembatalan 1x24 jam telah berakhir pada ' .
+                    date('d-m-Y H:i:s', $batasPembatalan) . '.'
             );
             return;
         }
