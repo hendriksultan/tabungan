@@ -5,7 +5,9 @@ class Settlement extends CI_Controller
 {
     private $userLevel = '';
     private $isSuperAdmin = false;
+    private $isKoordinator = false;
     private $cabangId = 0;
+    private $cabangIds = [];
     private $userId = 0;
 
     public function __construct()
@@ -26,20 +28,33 @@ class Settlement extends CI_Controller
             (string) $this->session->userdata('level')
         ));
         $this->isSuperAdmin = $this->userLevel === 'super admin';
+        $this->isKoordinator = $this->userLevel === 'koordinator';
         $this->cabangId = (int) $this->session->userdata('cabang_id');
+        $this->cabangIds = $this->cabang_scope->cabangIds();
         $this->userId = (int) $this->session->userdata('id');
 
         if (!in_array(
             $this->userLevel,
-            ['administrator', 'super admin'],
+            ['administrator', 'koordinator', 'super admin'],
             true
         )) {
-            $this->gagal('Akses settlement hanya untuk Administrator.');
+            $this->session->set_flashdata(
+                'pesanError',
+                'Akses settlement ditolak.'
+            );
+            redirect('admin/dashboard');
             return;
         }
 
-        if (!$this->isSuperAdmin && $this->cabangId <= 0) {
-            $this->gagal('Administrator belum terhubung dengan cabang.');
+        if (
+            (!$this->isSuperAdmin && !$this->isKoordinator && $this->cabangId <= 0) ||
+            ($this->isKoordinator && empty($this->cabangIds))
+        ) {
+            $this->session->set_flashdata(
+                'pesanError',
+                'Akun belum terhubung dengan cakupan cabang aktif.'
+            );
+            redirect('admin/dashboard');
             return;
         }
     }
@@ -49,15 +64,24 @@ class Settlement extends CI_Controller
         $data['title'] = 'Settlement Antar Cabang';
         $data['subtitle'] = $this->isSuperAdmin
             ? 'Pantau pemindahan dana fisik seluruh cabang'
-            : 'Proses dan verifikasi pemindahan dana cabang Anda';
+            : ($this->isKoordinator
+                ? 'Pantau settlement cabang yang ditugaskan'
+                : 'Proses dan verifikasi pemindahan dana cabang Anda');
         $data['isSuperAdmin'] = $this->isSuperAdmin;
+        $data['canManageSettlement'] = (
+            $this->userLevel === 'administrator'
+        );
         $data['cabangId'] = $this->cabangId;
 
         $data['kewajibanTerbuka'] = $this->ambilKewajibanTerbuka();
-        $data['rekeningAsal'] = $this->ambilRekeningAktif(
-            $this->isSuperAdmin ? null : $this->cabangId
-        );
-        $data['rekeningTujuan'] = $this->ambilRekeningAktif(null);
+        $data['rekeningAsal'] = $this->isKoordinator
+            ? []
+            : $this->ambilRekeningAktif(
+                $this->isSuperAdmin ? null : $this->cabangId
+            );
+        $data['rekeningTujuan'] = $this->isKoordinator
+            ? []
+            : $this->ambilRekeningAktif(null);
         $data['settlement'] = $this->ambilSettlement();
 
         $this->load->view('admin/templates/header', $data);
@@ -520,7 +544,12 @@ class Settlement extends CI_Controller
         $this->db->join('tb_cabang AS tujuan', 'tujuan.id = k.cabang_tujuan_id');
         $this->db->where('k.status', 'Terbuka');
 
-        if (!$this->isSuperAdmin) {
+        if ($this->isKoordinator) {
+            $this->db->group_start();
+            $this->db->where_in('k.cabang_asal_id', $this->cabangIds);
+            $this->db->or_where_in('k.cabang_tujuan_id', $this->cabangIds);
+            $this->db->group_end();
+        } elseif (!$this->isSuperAdmin) {
             $this->db->where('k.cabang_asal_id', $this->cabangId);
         }
 
@@ -553,7 +582,12 @@ class Settlement extends CI_Controller
         $this->db->join('tb_settlement_detail AS d', 'd.id_settlement = s.id_settlement', 'left');
         $this->db->join('tb_kewajiban_antar_cabang AS k', 'k.id_kewajiban = d.id_kewajiban', 'left');
 
-        if (!$this->isSuperAdmin) {
+        if ($this->isKoordinator) {
+            $this->db->group_start();
+            $this->db->where_in('s.cabang_asal_id', $this->cabangIds);
+            $this->db->or_where_in('s.cabang_tujuan_id', $this->cabangIds);
+            $this->db->group_end();
+        } elseif (!$this->isSuperAdmin) {
             $this->db->group_start();
             $this->db->where('s.cabang_asal_id', $this->cabangId);
             $this->db->or_where('s.cabang_tujuan_id', $this->cabangId);
@@ -717,7 +751,14 @@ class Settlement extends CI_Controller
             $this->gagal('Super Admin hanya dapat memantau settlement.');
             return false;
         }
-        return $this->userLevel === 'administrator';
+        if ($this->userLevel !== 'administrator') {
+            $this->gagal(
+                'Akses Koordinator hanya untuk memantau settlement.'
+            );
+            return false;
+        }
+
+        return true;
     }
 
     private function pastikanPost()

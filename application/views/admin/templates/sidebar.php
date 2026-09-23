@@ -82,6 +82,17 @@ if ($isKoordinator) {
                 </a>
             </li>
 
+            <?php if ($isKoordinator): ?>
+                <li class="<?= $this->uri->segment(2) === 'user'
+                    ? 'active'
+                    : '' ?>">
+                    <a href="<?= base_url('admin/user') ?>">
+                        <i class="fa fa-users"></i>
+                        <span>Data Nasabah</span>
+                    </a>
+                </li>
+            <?php endif; ?>
+
             <li>
                 <a href="<?= base_url('admin/transaksi') ?>">
                     <i class="fa fa-book"></i>
@@ -98,6 +109,7 @@ if ($isKoordinator) {
 
             <?php if (
                 $userLevel === 'administrator' ||
+                $userLevel === 'koordinator' ||
                 $userLevel === 'super admin'
             ): ?>
                 <li class="<?= $this->uri->segment(2) === 'settlement'
@@ -106,7 +118,10 @@ if ($isKoordinator) {
                     <a href="<?= base_url('admin/settlement') ?>">
                         <i class="fa fa-exchange"></i>
                         <span>Settlement Cabang</span>
-                        <?php if ($settlementNotification['total_settlement'] > 0): ?>
+                        <?php if (
+                            !$isKoordinator &&
+                            $settlementNotification['total_settlement'] > 0
+                        ): ?>
                             <span class="pull-right-container">
                                 <small class="label pull-right bg-yellow">
                                     <?= (int) $settlementNotification['total_settlement'] ?>
@@ -120,7 +135,10 @@ if ($isKoordinator) {
                     <a href="<?= base_url('admin/escrow') ?>">
                         <i class="fa fa-shield"></i>
                         <span>Escrow Marketplace</span>
-                        <?php if ($settlementNotification['sengketa_escrow'] > 0): ?>
+                        <?php if (
+                            !$isKoordinator &&
+                            $settlementNotification['sengketa_escrow'] > 0
+                        ): ?>
                             <span class="pull-right-container">
                                 <small class="label pull-right bg-red">
                                     <?= (int) $settlementNotification['sengketa_escrow'] ?>
@@ -145,6 +163,17 @@ if ($isKoordinator) {
                         <span>Laporan</span>
                     </a>
                 </li>
+
+                <?php if ($isKoordinator): ?>
+                    <li class="<?= $this->uri->segment(2) === 'log'
+                        ? 'active'
+                        : '' ?>">
+                        <a href="<?= base_url('admin/log') ?>">
+                            <i class="fa fa-history"></i>
+                            <span>Audit Aktivitas</span>
+                        </a>
+                    </li>
+                <?php endif; ?>
 
             <?php endif; ?>
 

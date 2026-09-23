@@ -1,5 +1,6 @@
 <?php
 $userRows = $user->result_array();
+$isKoordinator = !empty($is_koordinator);
 ?>
 
 <div class="content-wrapper">
@@ -15,12 +16,21 @@ $userRows = $user->result_array();
                     <i class="fa fa-dashboard"></i> Dashboard
                 </a>
             </li>
-            <li class="active">Manajemen User</li>
+            <li class="active"><?= html_escape($title) ?></li>
         </ol>
     </section>
 
     <section class="content">
+        <?php if ($isKoordinator): ?>
+            <div class="alert alert-info">
+                <i class="fa fa-eye"></i>
+                Mode audit: data hanya berasal dari cabang yang ditugaskan.
+                Penambahan dan perubahan nasabah dinonaktifkan.
+            </div>
+        <?php endif; ?>
+
         <div class="box box-primary">
+            <?php if (!$isKoordinator): ?>
             <div class="box-header with-border">
                 <button
                     class="btn btn-primary"
@@ -30,6 +40,7 @@ $userRows = $user->result_array();
                     Tambah User
                 </button>
             </div>
+            <?php endif; ?>
 
             <div class="box-body">
                 <div class="table-responsive">
@@ -46,7 +57,9 @@ $userRows = $user->result_array();
                                 <th>Login</th>
                                 <th>Level</th>
                                 <th>Terdaftar</th>
-                                <th width="270">Tindakan</th>
+                                <?php if (!$isKoordinator): ?>
+                                    <th width="270">Tindakan</th>
+                                <?php endif; ?>
                             </tr>
                         </thead>
 
@@ -147,9 +160,10 @@ $userRows = $user->result_array();
                                         <?= date(
                                             'd-m-Y H:i',
                                             strtotime($row['terdaftar'])
-                                        ) ?>
+	                                        ) ?>
                                     </td>
 
+                                    <?php if (!$isKoordinator): ?>
                                     <td>
                                         <?php if ($isCurrentUser): ?>
                                             <a
@@ -210,6 +224,7 @@ $userRows = $user->result_array();
                                             <?php endif; ?>
                                         <?php endif; ?>
                                     </td>
+                                    <?php endif; ?>
                                 </tr>
                             <?php endforeach; ?>
                         </tbody>
@@ -220,6 +235,7 @@ $userRows = $user->result_array();
     </section>
 </div>
 
+<?php if (!$isKoordinator): ?>
 <!-- Modal tambah user -->
 <div class="modal fade" id="tambahData" tabindex="-1" role="dialog">
     <div class="modal-dialog" role="document">
@@ -753,4 +769,5 @@ $userRows = $user->result_array();
             togglePenugasanKoordinator();
         });
     </script>
+<?php endif; ?>
 <?php endif; ?>

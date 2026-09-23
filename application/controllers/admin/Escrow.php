@@ -5,7 +5,9 @@ class Escrow extends CI_Controller
 {
     private $level = '';
     private $isSuperAdmin = false;
+    private $isKoordinator = false;
     private $cabangId = 0;
+    private $cabangIds = [];
     private $userId = 0;
 
     public function __construct()
@@ -20,15 +22,33 @@ class Escrow extends CI_Controller
 
         $this->level = strtolower(trim((string) $this->session->userdata('level')));
         $this->isSuperAdmin = $this->level === 'super admin';
+        $this->isKoordinator = $this->level === 'koordinator';
         $this->cabangId = (int) $this->session->userdata('cabang_id');
+        $this->cabangIds = $this->cabang_scope->cabangIds();
         $this->userId = (int) $this->session->userdata('id');
 
-        if (!in_array($this->level, ['administrator', 'super admin'], true)) {
-            $this->gagal('Akses escrow hanya untuk Administrator.');
+        if (!in_array(
+            $this->level,
+            ['administrator', 'koordinator', 'super admin'],
+            true
+        )) {
+            $this->session->set_flashdata(
+                'pesanError',
+                'Akses escrow ditolak.'
+            );
+            redirect('admin/dashboard');
             return;
         }
-        if (!$this->isSuperAdmin && $this->cabangId <= 0) {
-            $this->gagal('Administrator belum terhubung dengan cabang.');
+        if (
+            (!$this->isSuperAdmin && !$this->isKoordinator && $this->cabangId <= 0) ||
+            ($this->isKoordinator && empty($this->cabangIds))
+        ) {
+            $this->session->set_flashdata(
+                'pesanError',
+                'Akun belum terhubung dengan cakupan cabang aktif.'
+            );
+            redirect('admin/dashboard');
+            return;
         }
     }
 
@@ -37,8 +57,11 @@ class Escrow extends CI_Controller
         $data['title'] = 'Escrow Marketplace';
         $data['subtitle'] = $this->isSuperAdmin
             ? 'Pantau dan tangani dana marketplace seluruh cabang'
-            : 'Pantau dana marketplace yang melibatkan cabang Anda';
+            : ($this->isKoordinator
+                ? 'Pantau escrow cabang yang ditugaskan'
+                : 'Pantau dana marketplace yang melibatkan cabang Anda');
         $data['isSuperAdmin'] = $this->isSuperAdmin;
+        $data['isKoordinator'] = $this->isKoordinator;
         $data['escrow'] = $this->ambilEscrow();
 
         $this->load->view('admin/templates/header', $data);
@@ -314,7 +337,18 @@ class Escrow extends CI_Controller
         $this->db->join('tb_kewajiban_antar_cabang AS k',
             'k.id_kewajiban = e.id_kewajiban', 'left');
 
-        if (!$this->isSuperAdmin) {
+        if ($this->isKoordinator) {
+            $this->db->group_start();
+            $this->db->where_in(
+                'e.cabang_pembeli_id',
+                $this->cabangIds
+            );
+            $this->db->or_where_in(
+                'e.cabang_penjual_id',
+                $this->cabangIds
+            );
+            $this->db->group_end();
+        } elseif (!$this->isSuperAdmin) {
             $this->db->group_start();
             $this->db->where('e.cabang_pembeli_id', $this->cabangId);
             $this->db->or_where('e.cabang_penjual_id', $this->cabangId);

@@ -5,7 +5,9 @@ class User extends CI_Controller
 {
 
 	private $isSuperAdmin = false;
+	private $isKoordinator = false;
 	private $cabangId = null;
+	private $cabangIds = [];
 
 	public function __construct()
 	{
@@ -25,7 +27,11 @@ class User extends CI_Controller
 			trim((string) $this->session->userdata('level'))
 		);
 
-		if (!in_array($level, ['administrator', 'super admin'], true)) {
+		if (!in_array(
+			$level,
+			['administrator', 'koordinator', 'super admin'],
+			true
+		)) {
 			$this->session->set_flashdata(
 				'pesanError',
 				'Akses ditolak!'
@@ -36,9 +42,14 @@ class User extends CI_Controller
 		}
 
 		$this->isSuperAdmin = ($level === 'super admin');
+		$this->isKoordinator = ($level === 'koordinator');
 		$this->cabangId = (int) $this->session->userdata('cabang_id');
+		$this->cabangIds = $this->cabang_scope->cabangIds();
 
-		if (!$this->isSuperAdmin && $this->cabangId <= 0) {
+		if (
+			(!$this->isSuperAdmin && !$this->isKoordinator && $this->cabangId <= 0) ||
+			($this->isKoordinator && empty($this->cabangIds))
+		) {
 			$this->session->set_flashdata(
 				'pesanError',
 				'Administrator belum terhubung dengan cabang!'
@@ -51,10 +62,14 @@ class User extends CI_Controller
 
 	public function index()
 	{
-		$data['title'] = 'Manajemen User';
+		$data['title'] = $this->isKoordinator
+			? 'Data Nasabah'
+			: 'Manajemen User';
 		$data['subtitle'] = $this->isSuperAdmin
 			? 'Kelola pengguna dari seluruh cabang'
-			: 'Kelola nasabah pada cabang Anda';
+			: ($this->isKoordinator
+				? 'Pantau nasabah pada cabang yang ditugaskan'
+				: 'Kelola nasabah pada cabang Anda');
 
 		$this->db->select([
 			'tb_user.*',
@@ -71,7 +86,13 @@ class User extends CI_Controller
 			'left'
 		);
 
-		if (!$this->isSuperAdmin) {
+		if ($this->isKoordinator) {
+			$this->db->where('LOWER(tb_user.level)', 'nasabah');
+			$this->db->where_in(
+				'tb_user.cabang_id',
+				$this->cabangIds
+			);
+		} elseif (!$this->isSuperAdmin) {
 			$this->db->where(
 				'tb_user.cabang_id',
 				$this->cabangId
@@ -92,13 +113,14 @@ class User extends CI_Controller
 
 		$data['user'] = $this->db->get();
 
-		$this->db->where('status', 'Aktif');
-		$this->db->order_by('is_pusat', 'DESC');
-		$this->db->order_by('nama', 'ASC');
-
-		$data['cabang'] = $this->db
-			->get('tb_cabang')
-			->result_array();
+		$data['cabang'] = $this->isKoordinator
+			? $this->cabang_scope->cabangOptions()
+			: $this->db
+				->where('status', 'Aktif')
+				->order_by('is_pusat', 'DESC')
+				->order_by('nama', 'ASC')
+				->get('tb_cabang')
+				->result_array();
 
 		$data['penugasan_koordinator'] = [];
 
@@ -117,6 +139,7 @@ class User extends CI_Controller
 		}
 
 		$data['is_super_admin'] = $this->isSuperAdmin;
+		$data['is_koordinator'] = $this->isKoordinator;
 
 		$this->load->view('admin/templates/header', $data);
 		$this->load->view('admin/templates/sidebar');
@@ -126,6 +149,7 @@ class User extends CI_Controller
 
 	public function insert()
 	{
+		$this->pastikanBolehMengubah();
 		$this->pastikanPost();
 
 		date_default_timezone_set('Asia/Jakarta');
@@ -303,6 +327,7 @@ class User extends CI_Controller
 
 	public function update($id)
 	{
+		$this->pastikanBolehMengubah();
 		$this->pastikanPost();
 
 		$target = $this->ambilUserYangBolehDikelola($id);
@@ -446,6 +471,7 @@ class User extends CI_Controller
 
 	public function resetpassword($id)
 	{
+		$this->pastikanBolehMengubah();
 		$this->pastikanPost();
 
 		$target = $this->ambilUserYangBolehDikelola($id);
@@ -488,6 +514,7 @@ class User extends CI_Controller
 
 	public function delete($id)
 	{
+		$this->pastikanBolehMengubah();
 		$this->pastikanPost();
 
 		if (!$this->isSuperAdmin) {
@@ -820,6 +847,20 @@ class User extends CI_Controller
 
 			exit;
 		}
+	}
+
+	private function pastikanBolehMengubah()
+	{
+		if (!$this->isKoordinator) {
+			return;
+		}
+
+		$this->session->set_flashdata(
+			'pesanError',
+			'Akses Koordinator hanya untuk melihat data nasabah.'
+		);
+		redirect('admin/user');
+		exit;
 	}
 
 	private function gagal($pesan)

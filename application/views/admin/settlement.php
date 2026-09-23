@@ -37,6 +37,12 @@ function formatRupiahSettlement($nominal)
                 Super Admin memantau kewajiban dan settlement seluruh cabang.
                 Pengiriman dan verifikasi dilakukan Administrator cabang terkait.
             </div>
+        <?php elseif (!$canManageSettlement): ?>
+            <div class="alert alert-info">
+                <i class="fa fa-eye"></i>
+                Koordinator hanya memantau kewajiban dan settlement cabang
+                yang ditugaskan. Seluruh tindakan operasional dinonaktifkan.
+            </div>
         <?php else: ?>
             <div class="alert alert-info">
                 <i class="fa fa-info-circle"></i>
@@ -112,7 +118,7 @@ function formatRupiahSettlement($nominal)
                 </h3>
             </div>
 
-            <?php if (!$isSuperAdmin): ?>
+            <?php if ($canManageSettlement): ?>
                 <form
                     id="formKirimSettlement"
                     action="<?= base_url('admin/settlement/kirim') ?>"
@@ -125,7 +131,7 @@ function formatRupiahSettlement($nominal)
             <?php endif; ?>
 
             <div class="box-body">
-                <?php if (!$isSuperAdmin): ?>
+                <?php if ($canManageSettlement): ?>
                     <div class="form-group">
                         <button
                             type="button"
@@ -148,7 +154,7 @@ function formatRupiahSettlement($nominal)
                     <table class="table table-bordered table-striped table-hover dataTable">
                         <thead>
                             <tr>
-                                <?php if (!$isSuperAdmin): ?>
+                                <?php if ($canManageSettlement): ?>
                                     <th style="width: 35px;"></th>
                                 <?php endif; ?>
                                 <th>Kode</th>
@@ -163,7 +169,7 @@ function formatRupiahSettlement($nominal)
                         <tbody>
                             <?php foreach ($kewajibanTerbuka->result_array() as $row): ?>
                                 <tr>
-                                    <?php if (!$isSuperAdmin): ?>
+                                    <?php if ($canManageSettlement): ?>
                                         <td class="text-center">
                                             <input
                                                 type="checkbox"
@@ -208,7 +214,7 @@ function formatRupiahSettlement($nominal)
                 <?php endif; ?>
             </div>
 
-            <?php if (!$isSuperAdmin): ?>
+            <?php if ($canManageSettlement): ?>
                 <div class="modal fade" id="modalKirimSettlement" tabindex="-1" role="dialog">
                     <div class="modal-dialog" role="document">
                         <div class="modal-content">
@@ -466,7 +472,7 @@ function formatRupiahSettlement($nominal)
                                     </td>
                                     <td>
                                         <?php if (
-                                            !$isSuperAdmin &&
+                                            $canManageSettlement &&
                                             (int) $row['cabang_tujuan_id'] === (int) $cabangId &&
                                             $row['status'] === 'MenungguVerifikasi'
                                         ): ?>
@@ -491,7 +497,7 @@ function formatRupiahSettlement($nominal)
                                                 <i class="fa fa-times"></i> Tolak
                                             </button>
                                         <?php elseif (
-                                            !$isSuperAdmin &&
+                                            $canManageSettlement &&
                                             (int) $row['cabang_asal_id'] === (int) $cabangId &&
                                             $row['status'] === 'Ditolak'
                                         ): ?>
@@ -522,7 +528,7 @@ function formatRupiahSettlement($nominal)
     </section>
 </div>
 
-<?php if (!$isSuperAdmin): ?>
+<?php if ($canManageSettlement): ?>
     <?php foreach ($settlement->result_array() as $row): ?>
         <?php if (
             (int) $row['cabang_tujuan_id'] === (int) $cabangId &&
@@ -634,7 +640,7 @@ function formatRupiahSettlement($nominal)
     <?php endforeach; ?>
 <?php endif; ?>
 
-<?php if (!$isSuperAdmin): ?>
+<?php if ($canManageSettlement): ?>
 <style>
 .settlement-account-list {
     display: grid;

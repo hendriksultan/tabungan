@@ -36,8 +36,13 @@ foreach ($rows as $item) {
     <section class="content">
         <div class="alert alert-info">
             <i class="fa fa-shield"></i>
-            Dana ditahan sampai pesanan diterima. Keputusan sengketa hanya dapat
-            dilakukan Super Admin.
+            <?php if (!empty($isKoordinator)): ?>
+                Mode audit: Koordinator hanya dapat melihat escrow cabang yang
+                ditugaskan. Seluruh tindakan penyelesaian dinonaktifkan.
+            <?php else: ?>
+                Dana ditahan sampai pesanan diterima. Keputusan sengketa hanya
+                dapat dilakukan Super Admin.
+            <?php endif; ?>
         </div>
         <div class="row">
             <div class="col-md-4 col-sm-6">
