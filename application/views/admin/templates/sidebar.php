@@ -15,6 +15,20 @@ if (empty($kodeCabang)) {
 
 $isSuperAdmin = ($userLevel === 'super admin');
 $isKoordinator = ($userLevel === 'koordinator');
+$currentMenu = strtolower((string) $this->uri->segment(2));
+$pengaturanMenus = [
+    'user',
+    'rekening',
+    'cabang',
+    'aplikasi',
+    'backupdatabase',
+    'log'
+];
+$isPengaturanActive = in_array(
+    $currentMenu,
+    $pengaturanMenus,
+    true
+);
 
 if ($isKoordinator) {
     $jumlahCabangScope = count($this->cabang_scope->cabangIds());
@@ -75,7 +89,7 @@ if ($isKoordinator) {
                 <?php endif; ?>
             </li>
 
-            <li>
+            <li class="<?= $currentMenu === 'dashboard' ? 'active' : '' ?>">
                 <a href="<?= base_url('admin/dashboard') ?>">
                     <i class="fa fa-tachometer"></i>
                     <span>Dashboard</span>
@@ -83,7 +97,7 @@ if ($isKoordinator) {
             </li>
 
             <?php if ($isKoordinator): ?>
-                <li class="<?= $this->uri->segment(2) === 'user'
+                <li class="<?= $currentMenu === 'user'
                     ? 'active'
                     : '' ?>">
                     <a href="<?= base_url('admin/user') ?>">
@@ -93,14 +107,14 @@ if ($isKoordinator) {
                 </li>
             <?php endif; ?>
 
-            <li>
+            <li class="<?= $currentMenu === 'transaksi' ? 'active' : '' ?>">
                 <a href="<?= base_url('admin/transaksi') ?>">
                     <i class="fa fa-book"></i>
                     <span>Data Transaksi</span>
                 </a>
             </li>
 
-            <li>
+            <li class="<?= $currentMenu === 'transfer' ? 'active' : '' ?>">
                 <a href="<?= base_url('admin/transfer') ?>">
                     <i class="fa fa-send"></i>
                     <span>Data Transfer</span>
@@ -112,7 +126,7 @@ if ($isKoordinator) {
                 $userLevel === 'koordinator' ||
                 $userLevel === 'super admin'
             ): ?>
-                <li class="<?= $this->uri->segment(2) === 'settlement'
+                <li class="<?= $currentMenu === 'settlement'
                     ? 'active'
                     : '' ?>">
                     <a href="<?= base_url('admin/settlement') ?>">
@@ -131,7 +145,7 @@ if ($isKoordinator) {
                     </a>
                 </li>
 
-                <li class="<?= $this->uri->segment(2) === 'escrow' ? 'active' : '' ?>">
+                <li class="<?= $currentMenu === 'escrow' ? 'active' : '' ?>">
                     <a href="<?= base_url('admin/escrow') ?>">
                         <i class="fa fa-shield"></i>
                         <span>Escrow Marketplace</span>
@@ -155,7 +169,7 @@ if ($isKoordinator) {
                 $userLevel === 'super admin'
             ): ?>
 
-                <li class="<?= $this->uri->segment(2) === 'laporan'
+                <li class="<?= $currentMenu === 'laporan'
                     ? 'active'
                     : '' ?>">
                     <a href="<?= base_url('admin/laporan') ?>">
@@ -165,7 +179,7 @@ if ($isKoordinator) {
                 </li>
 
                 <?php if ($isKoordinator): ?>
-                    <li class="<?= $this->uri->segment(2) === 'log'
+                    <li class="<?= $currentMenu === 'log'
                         ? 'active'
                         : '' ?>">
                         <a href="<?= base_url('admin/log') ?>">
@@ -182,14 +196,16 @@ if ($isKoordinator) {
                 $userLevel === 'super admin'
             ): ?>
 
-                <li>
+                <li class="<?= $currentMenu === 'potongan' ? 'active' : '' ?>">
                     <a href="<?= base_url('admin/potongan') ?>">
                         <i class="fa fa-minus-circle"></i>
                         <span>Data Potongan</span>
                     </a>
                 </li>
 
-                <li class="treeview">
+                <li class="treeview<?= $isPengaturanActive
+                    ? ' active menu-open'
+                    : '' ?>">
                     <a href="#">
                         <i class="fa fa-cogs"></i>
                         <span>Pengaturan</span>
@@ -200,14 +216,14 @@ if ($isKoordinator) {
                     </a>
 
                     <ul class="treeview-menu">
-                        <li>
+                        <li class="<?= $currentMenu === 'user' ? 'active' : '' ?>">
                             <a href="<?= base_url('admin/user') ?>">
                                 <i class="fa fa-users"></i>
                                 Manajemen User
                             </a>
                         </li>
 
-                        <li>
+                        <li class="<?= $currentMenu === 'rekening' ? 'active' : '' ?>">
                             <a href="<?= base_url('admin/rekening') ?>">
                                 <i class="fa fa-credit-card"></i>
                                 Rekening Penampungan
@@ -215,7 +231,7 @@ if ($isKoordinator) {
                         </li>
 
                         <?php if ($isSuperAdmin): ?>
-                            <li>
+                            <li class="<?= $currentMenu === 'cabang' ? 'active' : '' ?>">
                                 <a href="<?= base_url('admin/cabang') ?>">
                                     <i class="fa fa-building"></i>
                                     Manajemen Cabang
@@ -224,14 +240,14 @@ if ($isKoordinator) {
                         <?php endif; ?>
 
                         <?php if ($isSuperAdmin): ?>
-                            <li>
+                            <li class="<?= $currentMenu === 'aplikasi' ? 'active' : '' ?>">
                                 <a href="<?= base_url('admin/aplikasi') ?>">
                                     <i class="fa fa-info-circle"></i>
                                     Tentang Aplikasi
                                 </a>
                             </li>
 
-                            <li>
+                            <li class="<?= $currentMenu === 'backupdatabase' ? 'active' : '' ?>">
                                 <a href="<?= base_url('admin/backupdatabase') ?>">
                                     <i class="fa fa-database"></i>
                                     Backup Database
@@ -239,7 +255,7 @@ if ($isKoordinator) {
                             </li>
                         <?php endif; ?>
 
-                        <li>
+                        <li class="<?= $currentMenu === 'log' ? 'active' : '' ?>">
                             <a href="<?= base_url('admin/log') ?>">
                                 <i class="fa fa-file"></i>
                                 Log Status
@@ -250,7 +266,7 @@ if ($isKoordinator) {
 
             <?php endif; ?>
 
-            <li>
+            <li class="<?= $currentMenu === 'profil' ? 'active' : '' ?>">
                 <a href="<?= base_url('admin/profil') ?>">
                     <i class="fa fa-user"></i>
                     <span>Profil</span>
