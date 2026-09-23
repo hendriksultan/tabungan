@@ -26,7 +26,7 @@
                                 // HANYA HITUNG YANG SUKSES
                                 foreach ($this->db->query('SELECT SUM(nominal) AS totalTabunganMasuk FROM tb_transaksi WHERE idNasabah="' . $this->session->userdata('id') . '" AND jenis="Masuk" AND status_konfirmasi="Sukses"')->result() as $tbMsk) {
                                 }
-                                foreach ($this->db->query('SELECT SUM(nominal) AS totalTransferMasuk FROM tb_transfer WHERE idPenerima="' . $this->session->userdata('id') . '"')->result() as $tfMsk) {
+                                foreach ($this->db->query('SELECT SUM(nominal) AS totalTransferMasuk FROM tb_transfer WHERE idPenerima="' . $this->session->userdata('id') . '" AND status_transfer="Sukses"')->result() as $tfMsk) {
                                 }
 
                                 $totalMasuk = $tbMsk->totalTabunganMasuk + $tfMsk->totalTransferMasuk;
@@ -55,7 +55,7 @@
                                 // HANYA HITUNG YANG SUKSES
                                 foreach ($this->db->query('SELECT SUM(nominal) AS totalTabunganKeluar FROM tb_transaksi WHERE idNasabah="' . $this->session->userdata('id') . '" AND jenis="Keluar" AND status_konfirmasi="Sukses"')->result() as $tbKlr) {
                                 }
-                                foreach ($this->db->query('SELECT SUM(nominal) AS totalTransferKeluar FROM tb_transfer WHERE idPengirim="' . $this->session->userdata('id') . '"')->result() as $tfKlr) {
+                                foreach ($this->db->query('SELECT SUM(nominal) AS totalTransferKeluar FROM tb_transfer WHERE idPengirim="' . $this->session->userdata('id') . '" AND status_transfer="Sukses"')->result() as $tfKlr) {
                                 }
 
                                 $totalKeluar = $tbKlr->totalTabunganKeluar + $tfKlr->totalTransferKeluar;
@@ -134,6 +134,18 @@
                             <?php
                             $no = 1;
                             foreach ($transaksi->result_array() as $row) {
+                                $isManualTransaction = (
+                                    empty($row['referensi_tipe']) &&
+                                    (int) $row['idPotongan'] <= 0 &&
+                                    (float) $row['gram_emas'] == 0 &&
+                                    empty($row['request_key'])
+                                );
+
+                                $canManageTransaction = (
+                                    $isManualTransaction &&
+                                    $row['status_konfirmasi'] === 'Sukses' &&
+                                    empty($row['dibatalkan_pada'])
+                                );
                             ?>
                                 <tr>
                                     <td><?= $no++ ?></td>
@@ -168,10 +180,20 @@
                                         <td></td>
                                         <td>Rp. <?= number_format($row['nominal'], 0, ',', '.') ?></td>
                                     <?php } ?>
-                                    <td><?= $row['keterangan'] ?></td>
+                                    <td><?= html_escape($row['keterangan']) ?></td>
 
                                     <td>
-                                        <?php if ($row['status_konfirmasi'] == 'Pending') { ?>
+                                        <?php if (!empty($row['dibatalkan_pada'])) { ?>
+                                            <span class="label label-danger">
+                                                Dibatalkan
+                                            </span>
+                                            <br>
+                                            <small class="text-muted">
+                                                <?= html_escape(
+                                                    $row['alasan_pembatalan']
+                                                ) ?>
+                                            </small>
+                                        <?php } elseif ($row['status_konfirmasi'] == 'Pending') { ?>
                                             <span class="label label-warning">Pending</span>
                                         <?php } elseif ($row['status_konfirmasi'] == 'Sukses') { ?>
                                             <span class="label label-success">Sukses</span>
@@ -193,14 +215,16 @@
                                     <td><?= date('H:i:s', strtotime($row['terdaftar'])) ?></td>
                                     <?php if ($userLevel == 'administrator' || $userLevel == 'super admin') { ?>
                                         <td>
-                                            <?php $row['idPotongan']  ?>
-                                            <button class="btn btn-warning btn-xs" data-toggle="modal" data-target="#editData<?= $row['id'] ?>" style="border-radius: 4px;">
-                                                <div class="fa fa-edit"></div> Edit
-                                            </button>
-                                            <a href="<?= base_url('admin/transaksi/delete/') . $row['id'] ?>" class="btn btn-danger btn-xs tombol-yakin" data-isidata="Ingin menghapus data ini?" style="border-radius: 4px;">
-                                                <div class="fa fa-trash"></div> Delete
-                                            </a>
-                                            <?php  ?>
+                                            <?php if ($canManageTransaction): ?>
+                                                <button class="btn btn-warning btn-xs" data-toggle="modal" data-target="#editData<?= $row['id'] ?>" style="border-radius: 4px;">
+                                                    <div class="fa fa-edit"></div> Edit
+                                                </button>
+                                                <button class="btn btn-danger btn-xs" data-toggle="modal" data-target="#batalkanTransaksi<?= $row['id'] ?>" style="border-radius: 4px;">
+                                                    <div class="fa fa-undo"></div> Batalkan
+                                                </button>
+                                            <?php else: ?>
+                                                <span class="text-muted">Dilindungi</span>
+                                            <?php endif; ?>
                                         </td>
                                     <?php } ?>
                                 </tr>
@@ -268,6 +292,22 @@
 </div>
 
 <?php foreach ($transaksi->result() as $edt) { ?>
+    <?php
+    $isManualTransaction = (
+        empty($edt->referensi_tipe) &&
+        (int) $edt->idPotongan <= 0 &&
+        (float) $edt->gram_emas == 0 &&
+        empty($edt->request_key)
+    );
+
+    if (
+        !$isManualTransaction ||
+        $edt->status_konfirmasi !== 'Sukses' ||
+        !empty($edt->dibatalkan_pada)
+    ) {
+        continue;
+    }
+    ?>
     <div class="modal fade" id="editData<?= $edt->id ?>" tabindex="-1" role="dialog" aria-labelledby="myModalLabel">
         <div class="modal-dialog" role="document">
             <div class="modal-content" style="border-radius: 5px">
@@ -297,6 +337,101 @@
                         </button>
                         <button type="submit" class="btn btn-primary" style="border-radius: 4px">
                             <div class="fa fa-save"></div> Update
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+<?php } ?>
+
+<?php foreach ($transaksi->result() as $batal) { ?>
+    <?php
+    $isManualTransaction = (
+        empty($batal->referensi_tipe) &&
+        (int) $batal->idPotongan <= 0 &&
+        (float) $batal->gram_emas == 0 &&
+        empty($batal->request_key)
+    );
+
+    if (
+        !$isManualTransaction ||
+        $batal->status_konfirmasi !== 'Sukses' ||
+        !empty($batal->dibatalkan_pada)
+    ) {
+        continue;
+    }
+    ?>
+
+    <div
+        class="modal fade"
+        id="batalkanTransaksi<?= (int) $batal->id ?>"
+        tabindex="-1"
+        role="dialog">
+        <div class="modal-dialog" role="document">
+            <div class="modal-content">
+                <form
+                    action="<?= base_url(
+                                'admin/transaksi/batalkan/' .
+                                    (int) $batal->id
+                            ) ?>"
+                    method="post">
+                    <input
+                        type="hidden"
+                        name="<?= $this->security->get_csrf_token_name() ?>"
+                        value="<?= $this->security->get_csrf_hash() ?>">
+
+                    <div class="modal-header">
+                        <button
+                            type="button"
+                            class="close"
+                            data-dismiss="modal">
+                            <span>&times;</span>
+                        </button>
+
+                        <h4 class="modal-title">
+                            Batalkan Transaksi
+                        </h4>
+                    </div>
+
+                    <div class="modal-body">
+                        <div class="alert alert-warning">
+                            Transaksi <?= html_escape($batal->jenis) ?> sebesar
+                            Rp <?= number_format(
+                                (float) $batal->nominal,
+                                0,
+                                ',',
+                                '.'
+                            ) ?> akan dibatalkan. Riwayat tetap disimpan.
+                        </div>
+
+                        <div class="form-group">
+                            <label>Alasan pembatalan</label>
+                            <textarea
+                                name="alasan_pembatalan"
+                                class="form-control"
+                                rows="4"
+                                minlength="10"
+                                maxlength="500"
+                                required></textarea>
+                            <small class="text-muted">
+                                Minimal 10 karakter dan akan disimpan
+                                sebagai catatan audit.
+                            </small>
+                        </div>
+                    </div>
+
+                    <div class="modal-footer">
+                        <button
+                            type="button"
+                            class="btn btn-default"
+                            data-dismiss="modal">
+                            Kembali
+                        </button>
+
+                        <button type="submit" class="btn btn-danger">
+                            <i class="fa fa-undo"></i>
+                            Konfirmasi Pembatalan
                         </button>
                     </div>
                 </form>

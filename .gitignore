@@ -22,5 +22,7 @@ Thumbs.db
 
 # Backup dan database asli
 *.sql
+!database/migrations/
+!database/migrations/*.sql
 *.zip
 *.bak

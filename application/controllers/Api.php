@@ -1051,8 +1051,11 @@ class Api extends CI_Controller
       foreach ($transaksi_query->result_array() as $row) {
         $jenis = $row['jenis'] ?? '';
         $is_masuk = $jenis === 'Masuk';
+        $is_dibatalkan = !empty($row['dibatalkan_pada']);
 
-        $color  = $is_masuk ? '#10b981' : '#ef4444';
+        $color  = $is_dibatalkan
+          ? '#6b7280'
+          : ($is_masuk ? '#10b981' : '#ef4444');
         $prefix = $is_masuk ? '+ Rp ' : '- Rp ';
 
         $nama_nasabah = $row['nama_nasabah']
@@ -1103,8 +1106,14 @@ class Api extends CI_Controller
           ),
           'nominal_raw'    => (int) ($row['nominal'] ?? 0),
           'color'          => $color,
-          'status'         => $row['status_konfirmasi']
-            ?? 'Pending',
+          'status'         => $is_dibatalkan
+            ? 'Dibatalkan'
+            : ($row['status_konfirmasi'] ?? 'Pending'),
+          'dibatalkan_oleh' => !empty($row['dibatalkan_oleh'])
+            ? (int) $row['dibatalkan_oleh']
+            : null,
+          'dibatalkan_pada' => $row['dibatalkan_pada'] ?? null,
+          'alasan_pembatalan' => $row['alasan_pembatalan'] ?? null,
           'bukti'          => $row['bukti_transfer'] ?? null,
           'kode_cabang'    => $row['kode_cabang'] ?? null,
           'nama_cabang'    => $row['nama_cabang'] ?? null,
@@ -1193,6 +1202,10 @@ class Api extends CI_Controller
 
       if ($transfer_query->num_rows() > 0) {
         foreach ($transfer_query->result_array() as $row) {
+          $is_dibatalkan = (
+            ($row['status_transfer'] ?? '') === 'Dibatalkan'
+          );
+
           $is_sender = (
             $level === 'Nasabah' &&
             (int) $row['idPengirim'] === $id_user
@@ -1234,6 +1247,10 @@ class Api extends CI_Controller
               ')';
           }
 
+          if ($is_dibatalkan) {
+            $color = '#6b7280';
+          }
+
           $waktu_lengkap = !empty($row['terdaftar'])
             ? $row['terdaftar']
             : date('Y-m-d H:i:s');
@@ -1270,6 +1287,11 @@ class Api extends CI_Controller
             'color'                 => $color,
             'status'                => $row['status_transfer']
               ?? 'Sukses',
+            'dibatalkan_oleh'       => !empty($row['dibatalkan_oleh'])
+              ? (int) $row['dibatalkan_oleh']
+              : null,
+            'dibatalkan_pada'       => $row['dibatalkan_pada'] ?? null,
+            'alasan_pembatalan'     => $row['alasan_pembatalan'] ?? null,
             'bukti'                 => null,
             'kode_cabang_asal'      => $row['kode_cabang_asal']
               ?? null,

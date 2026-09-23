@@ -258,6 +258,11 @@ class Transaksi extends CI_Controller
 
         $this->db->trans_begin();
 
+        $this->db->query(
+            'SELECT id FROM tb_user WHERE id = ? FOR UPDATE',
+            [$idNasabah]
+        );
+
         if ($jenis === 'Keluar') {
             $saldo = $this->hitungSaldoNasabah($idNasabah);
 
@@ -313,12 +318,6 @@ class Transaksi extends CI_Controller
         $this->pastikanPengelola();
         $this->pastikanPost();
 
-        $transaksi = $this->ambilTransaksiYangBolehDikelola($id);
-
-        if (!$transaksi) {
-            return;
-        }
-
         $tanggal = trim(
             (string) $this->input->post('tanggal', true)
         );
@@ -343,52 +342,212 @@ class Transaksi extends CI_Controller
             return;
         }
 
+        $this->db->trans_begin();
+
+        $transaksi = $this->db->query(
+            'SELECT * FROM tb_transaksi WHERE id = ? FOR UPDATE',
+            [(int) $id]
+        )->row_array();
+
+        if (!$transaksi) {
+            $this->batalkanTransaksiDatabase('Transaksi tidak ditemukan!');
+            return;
+        }
+
+        if (
+            !$this->isSuperAdmin &&
+            (int) $transaksi['cabang_id'] !== $this->cabangId
+        ) {
+            $this->batalkanTransaksiDatabase(
+                'Anda tidak dapat mengelola transaksi cabang lain!'
+            );
+            return;
+        }
+
+        if (!$this->transaksiManual($transaksi)) {
+            $this->batalkanTransaksiDatabase(
+                'Transaksi sistem tidak dapat diubah dari menu ini!'
+            );
+            return;
+        }
+
+        if (
+            $transaksi['status_konfirmasi'] !== 'Sukses' ||
+            !empty($transaksi['dibatalkan_pada'])
+        ) {
+            $this->batalkanTransaksiDatabase(
+                'Hanya transaksi sukses yang belum dibatalkan yang dapat diubah.'
+            );
+            return;
+        }
+
+        $idNasabah = (int) $transaksi['idNasabah'];
+
+        $this->db->query(
+            'SELECT id FROM tb_user WHERE id = ? FOR UPDATE',
+            [$idNasabah]
+        );
+
+        $saldoSaatIni = $this->hitungSaldoNasabah($idNasabah);
+        $nominalLama = (int) $transaksi['nominal'];
+
+        if ($transaksi['jenis'] === 'Masuk') {
+            $saldoSetelahPerubahan =
+                $saldoSaatIni - $nominalLama + $nominal;
+        } else {
+            $saldoSetelahPerubahan =
+                $saldoSaatIni + $nominalLama - $nominal;
+        }
+
+        if ($saldoSetelahPerubahan < 0) {
+            $this->batalkanTransaksiDatabase(
+                'Perubahan ditolak karena akan membuat saldo nasabah menjadi negatif.'
+            );
+            return;
+        }
+
         $data = [
             'tanggal'    => $tanggal,
             'nominal'    => $nominal,
             'keterangan' => $keterangan
         ];
 
-        $this->db->where('id', (int) $transaksi['id']);
+        $this->db
+            ->where('id', (int) $transaksi['id'])
+            ->where('status_konfirmasi', 'Sukses')
+            ->where('dibatalkan_pada IS NULL', null, false)
+            ->update('tb_transaksi', $data);
 
-        if ($this->db->update('tb_transaksi', $data)) {
-            $this->session->set_flashdata(
-                'pesan',
-                'Data transaksi berhasil diubah!'
-            );
-        } else {
-            $this->session->set_flashdata(
-                'pesanError',
+        if ($this->db->trans_status() === false) {
+            $this->batalkanTransaksiDatabase(
                 'Data transaksi gagal diubah!'
             );
+            return;
         }
+
+        $this->db->trans_commit();
+
+        $this->session->set_flashdata(
+            'pesan',
+            'Data transaksi berhasil diubah!'
+        );
 
         redirect('admin/transaksi');
     }
 
     public function delete($id)
     {
+        show_error(
+            'Penghapusan transaksi keuangan dinonaktifkan. Gunakan pembatalan.',
+            405
+        );
+    }
+
+    public function batalkan($id)
+    {
         $this->pastikanPengelola();
+        $this->pastikanPost();
 
-        $transaksi = $this->ambilTransaksiYangBolehDikelola($id);
+        $alasan = trim(
+            (string) $this->input->post('alasan_pembatalan', true)
+        );
 
-        if (!$transaksi) {
+        if (strlen($alasan) < 10 || strlen($alasan) > 500) {
+            $this->gagal(
+                'Alasan pembatalan wajib diisi antara 10 sampai 500 karakter.'
+            );
             return;
         }
 
-        $this->db->where('id', (int) $transaksi['id']);
+        $this->db->trans_begin();
 
-        if ($this->db->delete('tb_transaksi')) {
-            $this->session->set_flashdata(
-                'pesan',
-                'Data transaksi berhasil dihapus!'
-            );
-        } else {
-            $this->session->set_flashdata(
-                'pesanError',
-                'Data transaksi gagal dihapus!'
-            );
+        $transaksi = $this->db->query(
+            'SELECT * FROM tb_transaksi WHERE id = ? FOR UPDATE',
+            [(int) $id]
+        )->row_array();
+
+        if (!$transaksi) {
+            $this->batalkanTransaksiDatabase('Transaksi tidak ditemukan!');
+            return;
         }
+
+        if (
+            !$this->isSuperAdmin &&
+            (int) $transaksi['cabang_id'] !== $this->cabangId
+        ) {
+            $this->batalkanTransaksiDatabase(
+                'Anda tidak dapat membatalkan transaksi cabang lain!'
+            );
+            return;
+        }
+
+        if (!$this->transaksiManual($transaksi)) {
+            $this->batalkanTransaksiDatabase(
+                'Transaksi sistem, marketplace, target, potongan, atau emas ' .
+                    'tidak dapat dibatalkan dari menu ini.'
+            );
+            return;
+        }
+
+        if (
+            $transaksi['status_konfirmasi'] !== 'Sukses' ||
+            !empty($transaksi['dibatalkan_pada'])
+        ) {
+            $this->batalkanTransaksiDatabase(
+                'Transaksi sudah dibatalkan atau tidak lagi berstatus sukses.'
+            );
+            return;
+        }
+
+        $idNasabah = (int) $transaksi['idNasabah'];
+
+        $this->db->query(
+            'SELECT id FROM tb_user WHERE id = ? FOR UPDATE',
+            [$idNasabah]
+        );
+
+        if ($transaksi['jenis'] === 'Masuk') {
+            $saldo = $this->hitungSaldoNasabah($idNasabah);
+
+            if ($saldo < (int) $transaksi['nominal']) {
+                $this->batalkanTransaksiDatabase(
+                    'Pembatalan ditolak karena dana transaksi masuk sudah digunakan. ' .
+                        'Lakukan rekonsiliasi manual terlebih dahulu.'
+                );
+                return;
+            }
+        }
+
+        $this->db
+            ->where('id', (int) $transaksi['id'])
+            ->where('status_konfirmasi', 'Sukses')
+            ->where('dibatalkan_pada IS NULL', null, false)
+            ->update('tb_transaksi', [
+                'status_konfirmasi' => 'Ditolak',
+                'dibatalkan_oleh'   =>
+                    (int) $this->session->userdata('id'),
+                'dibatalkan_pada'   => date('Y-m-d H:i:s'),
+                'alasan_pembatalan' => $alasan
+            ]);
+
+        if (
+            $this->db->affected_rows() !== 1 ||
+            $this->db->trans_status() === false
+        ) {
+            $this->batalkanTransaksiDatabase(
+                'Transaksi gagal dibatalkan atau sudah diproses sebelumnya.'
+            );
+            return;
+        }
+
+        $this->db->trans_commit();
+
+        $this->session->set_flashdata(
+            'pesan',
+            $transaksi['jenis'] === 'Keluar'
+                ? 'Transaksi keluar berhasil dibatalkan dan saldo dikembalikan.'
+                : 'Transaksi masuk berhasil dibatalkan dan saldo disesuaikan.'
+        );
 
         redirect('admin/transaksi');
     }
@@ -669,29 +828,35 @@ class Transaksi extends CI_Controller
         return $nasabah;
     }
 
-    private function ambilTransaksiYangBolehDikelola($id)
+    private function transaksiManual(array $transaksi)
     {
-        $transaksi = $this->db
-            ->get_where('tb_transaksi', ['id' => (int) $id])
-            ->row_array();
+        $referensiTipe = isset($transaksi['referensi_tipe'])
+            ? trim((string) $transaksi['referensi_tipe'])
+            : '';
 
-        if (!$transaksi) {
-            $this->gagal('Transaksi tidak ditemukan!');
-            return false;
-        }
+        $idPotongan = isset($transaksi['idPotongan'])
+            ? (int) $transaksi['idPotongan']
+            : 0;
 
-        if (
-            !$this->isSuperAdmin &&
-            (int) $transaksi['cabang_id'] !== $this->cabangId
-        ) {
-            $this->gagal(
-                'Anda tidak dapat mengelola transaksi cabang lain!'
-            );
+        $gramEmas = isset($transaksi['gram_emas'])
+            ? (float) $transaksi['gram_emas']
+            : 0;
 
-            return false;
-        }
+        $requestKey = isset($transaksi['request_key'])
+            ? trim((string) $transaksi['request_key'])
+            : '';
 
-        return $transaksi;
+        return
+            $referensiTipe === '' &&
+            $idPotongan <= 0 &&
+            abs($gramEmas) < 0.00000001 &&
+            $requestKey === '';
+    }
+
+    private function batalkanTransaksiDatabase($pesan)
+    {
+        $this->db->trans_rollback();
+        $this->gagal($pesan);
     }
 
     private function pastikanPengelola()

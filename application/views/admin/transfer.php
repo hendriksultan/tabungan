@@ -62,6 +62,13 @@ $userId = (int) $this->session->userdata('id');
                                 <th>Keterangan</th>
                                 <th>Status</th>
                                 <th>Waktu</th>
+
+                                <?php if (
+                                    $userLevel === 'administrator' ||
+                                    $userLevel === 'super admin'
+                                ): ?>
+                                    <th width="110">Aksi</th>
+                                <?php endif; ?>
                             </tr>
                         </thead>
 
@@ -71,6 +78,20 @@ $userId = (int) $this->session->userdata('id');
                             <?php foreach (
                                 $transfer->result_array() as $row
                             ): ?>
+                                <?php
+                                $canCancelTransfer = (
+                                    $row['status_transfer'] === 'Sukses' &&
+                                    empty($row['dibatalkan_pada']) &&
+                                    (
+                                        $userLevel === 'super admin' ||
+                                        (
+                                            $userLevel === 'administrator' &&
+                                            (int) $row['cabang_asal_id'] ===
+                                            (int) $this->session->userdata('cabang_id')
+                                        )
+                                    )
+                                );
+                                ?>
                                 <tr>
                                     <td><?= $no++ ?></td>
 
@@ -176,6 +197,17 @@ $userId = (int) $this->session->userdata('id');
                                             <span class="label label-danger">
                                                 Dibatalkan
                                             </span>
+
+                                            <?php if (!empty(
+                                                $row['alasan_pembatalan']
+                                            )): ?>
+                                                <br>
+                                                <small class="text-muted">
+                                                    <?= html_escape(
+                                                        $row['alasan_pembatalan']
+                                                    ) ?>
+                                                </small>
+                                            <?php endif; ?>
                                         <?php endif; ?>
                                     </td>
 
@@ -185,6 +217,26 @@ $userId = (int) $this->session->userdata('id');
                                             strtotime($row['terdaftar'])
                                         ) ?>
                                     </td>
+
+                                    <?php if (
+                                        $userLevel === 'administrator' ||
+                                        $userLevel === 'super admin'
+                                    ): ?>
+                                        <td>
+                                            <?php if ($canCancelTransfer): ?>
+                                                <button
+                                                    type="button"
+                                                    class="btn btn-danger btn-xs"
+                                                    data-toggle="modal"
+                                                    data-target="#batalkanTransfer<?= (int) $row['id'] ?>">
+                                                    <i class="fa fa-undo"></i>
+                                                    Batalkan
+                                                </button>
+                                            <?php else: ?>
+                                                <span class="text-muted">-</span>
+                                            <?php endif; ?>
+                                        </td>
+                                    <?php endif; ?>
                                 </tr>
                             <?php endforeach; ?>
                         </tbody>
@@ -194,6 +246,113 @@ $userId = (int) $this->session->userdata('id');
         </div>
     </section>
 </div>
+
+<?php if (
+    $userLevel === 'administrator' ||
+    $userLevel === 'super admin'
+): ?>
+    <?php foreach ($transfer->result_array() as $row): ?>
+        <?php
+        $canCancelTransfer = (
+            $row['status_transfer'] === 'Sukses' &&
+            empty($row['dibatalkan_pada']) &&
+            (
+                $userLevel === 'super admin' ||
+                (
+                    $userLevel === 'administrator' &&
+                    (int) $row['cabang_asal_id'] ===
+                    (int) $this->session->userdata('cabang_id')
+                )
+            )
+        );
+
+        if (!$canCancelTransfer) {
+            continue;
+        }
+        ?>
+
+        <div
+            class="modal fade"
+            id="batalkanTransfer<?= (int) $row['id'] ?>"
+            tabindex="-1"
+            role="dialog">
+            <div class="modal-dialog" role="document">
+                <div class="modal-content">
+                    <form
+                        action="<?= base_url(
+                                    'admin/transfer/batalkan/' .
+                                        (int) $row['id']
+                                ) ?>"
+                        method="post">
+                        <input
+                            type="hidden"
+                            name="<?= $this->security->get_csrf_token_name() ?>"
+                            value="<?= $this->security->get_csrf_hash() ?>">
+
+                        <div class="modal-header">
+                            <button
+                                type="button"
+                                class="close"
+                                data-dismiss="modal">
+                                <span>&times;</span>
+                            </button>
+
+                            <h4 class="modal-title">
+                                Batalkan Transfer
+                                <?= html_escape($row['kode_transfer']) ?>
+                            </h4>
+                        </div>
+
+                        <div class="modal-body">
+                            <div class="alert alert-warning">
+                                Saldo Rp
+                                <?= number_format(
+                                    (float) $row['nominal'],
+                                    0,
+                                    ',',
+                                    '.'
+                                ) ?>
+                                akan dikembalikan kepada pengirim dan
+                                dikurangi dari penerima.
+                            </div>
+
+                            <div class="form-group">
+                                <label>Alasan pembatalan</label>
+                                <textarea
+                                    name="alasan_pembatalan"
+                                    class="form-control"
+                                    rows="4"
+                                    minlength="10"
+                                    maxlength="500"
+                                    required></textarea>
+                                <small class="text-muted">
+                                    Minimal 10 karakter dan akan disimpan
+                                    sebagai catatan audit.
+                                </small>
+                            </div>
+                        </div>
+
+                        <div class="modal-footer">
+                            <button
+                                type="button"
+                                class="btn btn-default"
+                                data-dismiss="modal">
+                                Kembali
+                            </button>
+
+                            <button
+                                type="submit"
+                                class="btn btn-danger">
+                                <i class="fa fa-undo"></i>
+                                Konfirmasi Pembatalan
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    <?php endforeach; ?>
+<?php endif; ?>
 
 <!-- Modal transfer -->
 <div

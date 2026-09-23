@@ -136,6 +136,7 @@
                                         <th>Masuk</th>
                                         <th>Keluar</th>
                                         <th>Keterangan</th>
+                                        <th>Status</th>
                                         <th>Waktu</th>
                                     </tr>
                                 </thead>
@@ -162,7 +163,22 @@
                                                 <td></td>
                                                 <td>Rp. <?= number_format($row['nominal'],0,',','.') ?></td>
                                             <?php } ?>
-                                            <td><?= $row['keterangan'] ?></td>
+                                            <td><?= html_escape($row['keterangan']) ?></td>
+                                            <td>
+                                                <?php if (!empty($row['dibatalkan_pada'])): ?>
+                                                    <span class="label label-danger">
+                                                        Dibatalkan
+                                                    </span>
+                                                <?php elseif ($row['status_konfirmasi'] === 'Sukses'): ?>
+                                                    <span class="label label-success">
+                                                        Sukses
+                                                    </span>
+                                                <?php else: ?>
+                                                    <span class="label label-default">
+                                                        <?= html_escape($row['status_konfirmasi']) ?>
+                                                    </span>
+                                                <?php endif; ?>
+                                            </td>
                                             <td><?= date('d M Y H:i:s', strtotime($row['terdaftar'])) ?></td>
                                         </tr>
                                     <?php } ?>
@@ -190,6 +206,7 @@
                                 <th>Masuk</th>
                                 <th>Keluar</th>
                                 <th>Keterangan</th>
+                                <th>Status</th>
                                 <th>Waktu</th>
                             </tr>
                         </thead>
@@ -223,7 +240,18 @@
                                         <td>Rp. <?= number_format($dTf['nominal'],0,',','.') ?></td>
                                         <td></td>
                                     <?php } ?>
-                                    <td><?= $dTf['keterangan'] ?></td>
+                                    <td><?= html_escape($dTf['keterangan']) ?></td>
+                                    <td>
+                                        <?php if ($dTf['status_transfer'] === 'Sukses'): ?>
+                                            <span class="label label-success">
+                                                Sukses
+                                            </span>
+                                        <?php else: ?>
+                                            <span class="label label-danger">
+                                                Dibatalkan
+                                            </span>
+                                        <?php endif; ?>
+                                    </td>
                                     <td><?= date('d M Y H:i:s', strtotime($dTf['terdaftar'])) ?></td>
                                 </tr>
                             <?php } ?>

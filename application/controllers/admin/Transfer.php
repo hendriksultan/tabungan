@@ -301,6 +301,7 @@ class Transfer extends CI_Controller
         $data = [
             'idPengirim'       => $idPengirim,
             'idPenerima'       => $idPenerima,
+            'dibuat_oleh'      => $idPengirim,
             'cabang_asal_id'   => (int) $pengirim['cabang_id'],
             'cabang_tujuan_id' => (int) $penerima['cabang_id'],
             'kode_transfer'    => $kodeTransfer,
@@ -313,6 +314,8 @@ class Transfer extends CI_Controller
         $this->db->insert('tb_transfer', $data);
         $berhasilDisimpan = $this->db->affected_rows() === 1;
 
+        $idTransfer = (int) $this->db->insert_id();
+
         if (
             !$berhasilDisimpan ||
             $this->db->trans_status() === false
@@ -323,6 +326,27 @@ class Transfer extends CI_Controller
             return;
         }
 
+        if (
+            (int) $pengirim['cabang_id'] !==
+            (int) $penerima['cabang_id']
+        ) {
+            if (!$this->buatKewajibanAntarCabang(
+                $idTransfer,
+                $kodeTransfer,
+                $nominal,
+                (int) $pengirim['cabang_id'],
+                (int) $penerima['cabang_id'],
+                $idPengirim
+            )) {
+                $this->db->trans_rollback();
+
+                $this->gagal(
+                    'Transfer lintas cabang gagal mencatat kewajiban settlement!'
+                );
+                return;
+            }
+        }
+
         $this->db->trans_commit();
 
         $this->session->set_flashdata(
@@ -331,6 +355,251 @@ class Transfer extends CI_Controller
         );
 
         redirect('admin/transfer');
+    }
+
+    public function batalkan($id)
+    {
+        $this->pastikanPengelola();
+        $this->pastikanPost();
+
+        $alasan = trim(
+            (string) $this->input->post('alasan_pembatalan', true)
+        );
+
+        if (strlen($alasan) < 10 || strlen($alasan) > 500) {
+            $this->gagal(
+                'Alasan pembatalan wajib diisi antara 10 sampai 500 karakter.'
+            );
+            return;
+        }
+
+        $this->db->trans_begin();
+
+        $transfer = $this->db->query(
+            'SELECT * FROM tb_transfer WHERE id = ? FOR UPDATE',
+            [(int) $id]
+        )->row_array();
+
+        if (!$transfer) {
+            $this->batalkanTransaksi('Transfer tidak ditemukan!');
+            return;
+        }
+
+        if (
+            !$this->isSuperAdmin &&
+            (int) $transfer['cabang_asal_id'] !== $this->cabangId
+        ) {
+            $this->batalkanTransaksi(
+                'Hanya Administrator cabang pengirim yang dapat membatalkan transfer!'
+            );
+            return;
+        }
+
+        if (
+            $transfer['status_transfer'] !== 'Sukses' ||
+            !empty($transfer['dibatalkan_pada'])
+        ) {
+            $this->batalkanTransaksi(
+                'Transfer sudah dibatalkan atau tidak lagi berstatus sukses.'
+            );
+            return;
+        }
+
+        $idPengirim = (int) $transfer['idPengirim'];
+        $idPenerima = (int) $transfer['idPenerima'];
+        $nominal = (int) $transfer['nominal'];
+
+        $this->kunciAkunTransfer($idPengirim, $idPenerima);
+
+        $saldoPenerima = $this->hitungSaldoNasabah($idPenerima);
+
+        if ($saldoPenerima < $nominal) {
+            $this->batalkanTransaksi(
+                'Pembatalan otomatis ditolak karena saldo penerima sudah tidak mencukupi. ' .
+                    'Lakukan rekonsiliasi manual terlebih dahulu.'
+            );
+            return;
+        }
+
+        if (
+            (int) $transfer['cabang_asal_id'] !==
+            (int) $transfer['cabang_tujuan_id']
+        ) {
+            $kewajiban = $this->db->query(
+                "SELECT * FROM tb_kewajiban_antar_cabang
+                 WHERE jenis_sumber = 'TransferNasabah'
+                   AND referensi_id = ?
+                 FOR UPDATE",
+                [(int) $transfer['id']]
+            )->row_array();
+
+            if (!$kewajiban) {
+                $this->batalkanTransaksi(
+                    'Kewajiban settlement transfer tidak ditemukan. ' .
+                        'Pembatalan dihentikan untuk mencegah selisih antar cabang.'
+                );
+                return;
+            }
+
+            if ($kewajiban['status'] !== 'Terbuka') {
+                $this->batalkanTransaksi(
+                    'Transfer sudah masuk proses settlement. ' .
+                        'Gunakan prosedur reversal settlement.'
+                );
+                return;
+            }
+
+            $this->db
+                ->where('id_kewajiban', (int) $kewajiban['id_kewajiban'])
+                ->where('status', 'Terbuka')
+                ->update('tb_kewajiban_antar_cabang', [
+                    'status'            => 'Dibatalkan',
+                    'dibatalkan_pada'   => date('Y-m-d H:i:s'),
+                    'catatan_status'    =>
+                        'Dibatalkan bersama transfer ' .
+                        $transfer['kode_transfer'] . ': ' . $alasan,
+                    'diperbarui_pada'   => date('Y-m-d H:i:s')
+                ]);
+
+            if ($this->db->affected_rows() !== 1) {
+                $this->batalkanTransaksi(
+                    'Status kewajiban settlement berubah. Pembatalan dihentikan.'
+                );
+                return;
+            }
+        }
+
+        $sekarang = date('Y-m-d H:i:s');
+
+        $this->db
+            ->where('id', (int) $transfer['id'])
+            ->where('status_transfer', 'Sukses')
+            ->where('dibatalkan_pada IS NULL', null, false)
+            ->update('tb_transfer', [
+                'status_transfer'   => 'Dibatalkan',
+                'dibatalkan_oleh'   =>
+                    (int) $this->session->userdata('id'),
+                'dibatalkan_pada'   => $sekarang,
+                'alasan_pembatalan' => $alasan
+            ]);
+
+        if (
+            $this->db->affected_rows() !== 1 ||
+            $this->db->trans_status() === false
+        ) {
+            $this->batalkanTransaksi(
+                'Transfer gagal dibatalkan atau sudah diproses sebelumnya.'
+            );
+            return;
+        }
+
+        $this->db->trans_commit();
+
+        $this->simpanNotifikasiPembatalan(
+            $idPengirim,
+            $idPenerima,
+            $nominal,
+            $transfer['kode_transfer'],
+            $alasan
+        );
+
+        $this->session->set_flashdata(
+            'pesan',
+            'Transfer ' . $transfer['kode_transfer'] .
+                ' berhasil dibatalkan dan saldo dikembalikan otomatis.'
+        );
+
+        redirect('admin/transfer');
+    }
+
+    private function buatKewajibanAntarCabang(
+        $idTransfer,
+        $kodeTransfer,
+        $nominal,
+        $cabangAsalId,
+        $cabangTujuanId,
+        $dibuatOleh
+    ) {
+        if (!$this->db->table_exists('tb_kewajiban_antar_cabang')) {
+            return false;
+        }
+
+        $kodeKewajiban = 'KWA-TRF-' . str_pad(
+            (string) $idTransfer,
+            10,
+            '0',
+            STR_PAD_LEFT
+        );
+
+        $berhasil = $this->db->insert(
+            'tb_kewajiban_antar_cabang',
+            [
+                'kode_kewajiban'   => $kodeKewajiban,
+                'jenis_sumber'     => 'TransferNasabah',
+                'referensi_id'     => (int) $idTransfer,
+                'cabang_asal_id'   => (int) $cabangAsalId,
+                'cabang_tujuan_id' => (int) $cabangTujuanId,
+                'nominal'          => (int) $nominal,
+                'status'           => 'Terbuka',
+                'dibuat_oleh'      => (int) $dibuatOleh,
+                'catatan_status'   =>
+                    'Dibuat otomatis dari transfer web ' . $kodeTransfer
+            ]
+        );
+
+        return $berhasil && $this->db->affected_rows() === 1;
+    }
+
+    private function kunciAkunTransfer($idPengirim, $idPenerima)
+    {
+        $ids = [(int) $idPengirim, (int) $idPenerima];
+        sort($ids, SORT_NUMERIC);
+
+        $this->db->query(
+            'SELECT id FROM tb_user WHERE id IN (?, ?) ORDER BY id FOR UPDATE',
+            $ids
+        );
+    }
+
+    private function batalkanTransaksi($pesan)
+    {
+        $this->db->trans_rollback();
+        $this->gagal($pesan);
+    }
+
+    private function simpanNotifikasiPembatalan(
+        $idPengirim,
+        $idPenerima,
+        $nominal,
+        $kodeTransfer,
+        $alasan
+    ) {
+        if (!$this->db->table_exists('tb_notifikasi')) {
+            return;
+        }
+
+        $nominalFormat = 'Rp ' . number_format($nominal, 0, ',', '.');
+        $tanggal = date('Y-m-d H:i:s');
+        $alasanSingkat = substr($alasan, 0, 150);
+
+        $this->db->insert_batch('tb_notifikasi', [
+            [
+                'id_user' => (int) $idPengirim,
+                'judul'   => 'Transfer Dibatalkan',
+                'pesan'   => 'Transfer ' . $kodeTransfer . ' sebesar ' .
+                    $nominalFormat . ' dibatalkan. Saldo telah dikembalikan. ' .
+                    'Alasan: ' . $alasanSingkat,
+                'tanggal' => $tanggal
+            ],
+            [
+                'id_user' => (int) $idPenerima,
+                'judul'   => 'Transfer Dibatalkan',
+                'pesan'   => 'Transfer ' . $kodeTransfer . ' sebesar ' .
+                    $nominalFormat . ' dibatalkan. Saldo penerimaan disesuaikan. ' .
+                    'Alasan: ' . $alasanSingkat,
+                'tanggal' => $tanggal
+            ]
+        ]);
     }
 
     private function hitungSaldoNasabah($idNasabah)
@@ -399,6 +668,20 @@ class Transfer extends CI_Controller
         } while ($sudahAda);
 
         return $kode;
+    }
+
+    private function pastikanPengelola()
+    {
+        if (
+            !in_array(
+                $this->userLevel,
+                ['administrator', 'super admin'],
+                true
+            )
+        ) {
+            $this->gagal('Akses pembatalan transfer ditolak!');
+            exit;
+        }
     }
 
     private function pastikanPost()
