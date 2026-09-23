@@ -79,17 +79,36 @@ $userId = (int) $this->session->userdata('id');
                                 $transfer->result_array() as $row
                             ): ?>
                                 <?php
+                                $waktuTransfer = !empty($row['terdaftar'])
+                                    ? strtotime($row['terdaftar'])
+                                    : false;
+
+                                $masihDalamBatasPembatalan = (
+                                    $waktuTransfer !== false &&
+                                    time() <= $waktuTransfer + (24 * 60 * 60)
+                                );
+
+                                $punyaHakPembatalan = (
+                                    $userLevel === 'super admin' ||
+                                    (
+                                        $userLevel === 'administrator' &&
+                                        (int) $row['cabang_asal_id'] ===
+                                        (int) $this->session->userdata('cabang_id')
+                                    )
+                                );
+
                                 $canCancelTransfer = (
                                     $row['status_transfer'] === 'Sukses' &&
                                     empty($row['dibatalkan_pada']) &&
-                                    (
-                                        $userLevel === 'super admin' ||
-                                        (
-                                            $userLevel === 'administrator' &&
-                                            (int) $row['cabang_asal_id'] ===
-                                            (int) $this->session->userdata('cabang_id')
-                                        )
-                                    )
+                                    $punyaHakPembatalan &&
+                                    $masihDalamBatasPembatalan
+                                );
+
+                                $batasPembatalanBerakhir = (
+                                    $row['status_transfer'] === 'Sukses' &&
+                                    empty($row['dibatalkan_pada']) &&
+                                    $punyaHakPembatalan &&
+                                    !$masihDalamBatasPembatalan
                                 );
                                 ?>
                                 <tr>
@@ -290,6 +309,12 @@ $userId = (int) $this->session->userdata('id');
                                                     <i class="fa fa-undo"></i>
                                                     Batalkan
                                                 </button>
+                                            <?php elseif (
+                                                $batasPembatalanBerakhir
+                                            ): ?>
+                                                <small class="text-muted">
+                                                    Batas 24 jam berakhir
+                                                </small>
                                             <?php else: ?>
                                                 <span class="text-muted">-</span>
                                             <?php endif; ?>
@@ -311,9 +336,19 @@ $userId = (int) $this->session->userdata('id');
 ): ?>
     <?php foreach ($transfer->result_array() as $row): ?>
         <?php
+        $waktuTransfer = !empty($row['terdaftar'])
+            ? strtotime($row['terdaftar'])
+            : false;
+
+        $masihDalamBatasPembatalan = (
+            $waktuTransfer !== false &&
+            time() <= $waktuTransfer + (24 * 60 * 60)
+        );
+
         $canCancelTransfer = (
             $row['status_transfer'] === 'Sukses' &&
             empty($row['dibatalkan_pada']) &&
+            $masihDalamBatasPembatalan &&
             (
                 $userLevel === 'super admin' ||
                 (

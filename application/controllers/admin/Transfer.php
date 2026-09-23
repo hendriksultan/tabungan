@@ -421,6 +421,25 @@ class Transfer extends CI_Controller
             return;
         }
 
+        $waktuTransfer = strtotime((string) $transfer['terdaftar']);
+
+        if ($waktuTransfer === false) {
+            $this->batalkanTransaksi(
+                'Waktu transfer tidak valid. Pembatalan otomatis dihentikan.'
+            );
+            return;
+        }
+
+        $batasPembatalan = $waktuTransfer + (24 * 60 * 60);
+
+        if (time() > $batasPembatalan) {
+            $this->batalkanTransaksi(
+                'Batas pembatalan 1x24 jam telah berakhir pada ' .
+                    date('d-m-Y H:i:s', $batasPembatalan) . '.'
+            );
+            return;
+        }
+
         $idPengirim = (int) $transfer['idPengirim'];
         $idPenerima = (int) $transfer['idPenerima'];
         $nominal = (int) $transfer['nominal'];
