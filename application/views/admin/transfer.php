@@ -208,6 +208,64 @@ $userId = (int) $this->session->userdata('id');
                                                     ) ?>
                                                 </small>
                                             <?php endif; ?>
+
+                                            <br>
+                                            <small class="text-muted">
+                                                <i class="fa fa-user"></i>
+                                                Oleh:
+                                                <?php if (!empty(
+                                                    $row['nama_pembatal']
+                                                )): ?>
+                                                    <strong>
+                                                        <?= html_escape(
+                                                            $row['nama_pembatal']
+                                                        ) ?>
+                                                    </strong>
+
+                                                    <?php if (!empty(
+                                                        $row['level_pembatal']
+                                                    )): ?>
+                                                        (<?= html_escape(
+                                                            $row['level_pembatal']
+                                                        ) ?>)
+                                                    <?php endif; ?>
+
+                                                    <?php if (!empty(
+                                                        $row['kode_cabang_pembatal']
+                                                    )): ?>
+                                                        &mdash;
+                                                        <?= html_escape(
+                                                            $row['kode_cabang_pembatal']
+                                                        ) ?>
+
+                                                        <?php if (!empty(
+                                                            $row['nama_cabang_pembatal']
+                                                        )): ?>
+                                                            &middot;
+                                                            <?= html_escape(
+                                                                $row['nama_cabang_pembatal']
+                                                            ) ?>
+                                                        <?php endif; ?>
+                                                    <?php endif; ?>
+                                                <?php else: ?>
+                                                    <em>Tidak tercatat</em>
+                                                <?php endif; ?>
+                                            </small>
+
+                                            <?php if (!empty(
+                                                $row['dibatalkan_pada']
+                                            )): ?>
+                                                <br>
+                                                <small class="text-muted">
+                                                    <i class="fa fa-clock-o"></i>
+                                                    <?= date(
+                                                        'd-m-Y H:i:s',
+                                                        strtotime(
+                                                            $row['dibatalkan_pada']
+                                                        )
+                                                    ) ?>
+                                                </small>
+                                            <?php endif; ?>
                                         <?php endif; ?>
                                     </td>
 

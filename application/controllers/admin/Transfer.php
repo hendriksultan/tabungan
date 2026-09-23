@@ -81,10 +81,14 @@ class Transfer extends CI_Controller
             'tb_transfer.*',
             'pengirim.nama AS nama_pengirim',
             'penerima.nama AS nama_penerima',
+            'pembatal.nama AS nama_pembatal',
+            'pembatal.level AS level_pembatal',
             'cabang_asal.kode AS kode_cabang_asal',
             'cabang_asal.nama AS nama_cabang_asal',
             'cabang_tujuan.kode AS kode_cabang_tujuan',
-            'cabang_tujuan.nama AS nama_cabang_tujuan'
+            'cabang_tujuan.nama AS nama_cabang_tujuan',
+            'cabang_pembatal.kode AS kode_cabang_pembatal',
+            'cabang_pembatal.nama AS nama_cabang_pembatal'
         ]);
 
         $this->db->from('tb_transfer');
@@ -102,6 +106,12 @@ class Transfer extends CI_Controller
         );
 
         $this->db->join(
+            'tb_user AS pembatal',
+            'pembatal.id = tb_transfer.dibatalkan_oleh',
+            'left'
+        );
+
+        $this->db->join(
             'tb_cabang AS cabang_asal',
             'cabang_asal.id = tb_transfer.cabang_asal_id',
             'left'
@@ -110,6 +120,12 @@ class Transfer extends CI_Controller
         $this->db->join(
             'tb_cabang AS cabang_tujuan',
             'cabang_tujuan.id = tb_transfer.cabang_tujuan_id',
+            'left'
+        );
+
+        $this->db->join(
+            'tb_cabang AS cabang_pembatal',
+            'cabang_pembatal.id = pembatal.cabang_id',
             'left'
         );
 
