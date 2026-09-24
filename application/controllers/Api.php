@@ -4211,6 +4211,133 @@ class Api extends CI_Controller
     return true;
   }
 
+  /**
+   * Mengirim push Expo secara batch agar endpoint yang melakukan broadcast
+   * tidak membuka satu koneksi HTTP untuk setiap pengguna. Expo menerima
+   * maksimal 100 pesan dalam satu request.
+   *
+   * @return array{diminta:int,berhasil:int,gagal:int}
+   */
+  private function send_expo_push_notifications_batch($notifications)
+  {
+    $hasil = [
+      'diminta'  => 0,
+      'berhasil' => 0,
+      'gagal'    => 0
+    ];
+
+    if (!is_array($notifications) || count($notifications) === 0) {
+      return $hasil;
+    }
+
+    $messages = [];
+
+    foreach ($notifications as $notification) {
+      $token = trim((string) ($notification['token'] ?? ''));
+
+      if ($token === '') {
+        continue;
+      }
+
+      $messages[] = [
+        'to'    => $token,
+        'title' => (string) ($notification['title'] ?? ''),
+        'body'  => (string) ($notification['body'] ?? ''),
+        'sound' => 'default'
+      ];
+    }
+
+    $hasil['diminta'] = count($messages);
+
+    foreach (array_chunk($messages, 100) as $chunk) {
+      $ch = curl_init('https://exp.host/--/api/v2/push/send');
+      curl_setopt($ch, CURLOPT_HTTPHEADER, [
+        'Accept: application/json',
+        'Content-Type: application/json'
+      ]);
+      curl_setopt($ch, CURLOPT_POST, 1);
+      curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($chunk));
+      curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+      curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 3);
+      curl_setopt($ch, CURLOPT_TIMEOUT, 8);
+      curl_setopt($ch, CURLOPT_NOSIGNAL, true);
+
+      $response = curl_exec($ch);
+      $curl_error = curl_error($ch);
+      $http_status = (int) curl_getinfo(
+        $ch,
+        CURLINFO_HTTP_CODE
+      );
+      curl_close($ch);
+
+      if (
+        $response === false ||
+        $curl_error !== '' ||
+        $http_status < 200 ||
+        $http_status >= 300
+      ) {
+        $hasil['gagal'] += count($chunk);
+
+        log_message(
+          'error',
+          'Pengiriman batch notifikasi Expo gagal dengan HTTP ' .
+            $http_status
+        );
+
+        continue;
+      }
+
+      $payload = json_decode($response, true);
+      $tickets = is_array($payload)
+        ? ($payload['data'] ?? null)
+        : null;
+
+      if (!is_array($tickets)) {
+        $hasil['gagal'] += count($chunk);
+
+        log_message(
+          'error',
+          'Respons batch notifikasi Expo tidak valid.'
+        );
+
+        continue;
+      }
+
+      foreach ($chunk as $index => $message) {
+        $ticket = $tickets[$index] ?? null;
+        $ticket_status = is_array($ticket)
+          ? (string) ($ticket['status'] ?? '')
+          : '';
+
+        if ($ticket_status === 'ok') {
+          $hasil['berhasil']++;
+          continue;
+        }
+
+        $hasil['gagal']++;
+        $error_code = is_array($ticket)
+          ? (string) (
+            $ticket['details']['error'] ?? 'UnknownError'
+          )
+          : 'InvalidTicket';
+
+        if ($error_code === 'DeviceNotRegistered') {
+          $this->db->where('expo_token', $message['to']);
+          $this->db->update('tb_user', [
+            'expo_token' => null
+          ]);
+        }
+
+        log_message(
+          'error',
+          'Ticket batch notifikasi Expo gagal: ' . $error_code
+        );
+      }
+    }
+
+    return $hasil;
+  }
+
   // ==========================================
   // FITUR PENGATURAN APLIKASI
   // ==========================================
@@ -19530,22 +19657,27 @@ class Api extends CI_Controller
      * Push dikirim setelah transaksi database berhasil.
      * Kegagalan push tidak membatalkan banner.
      */
-    $jumlah_push_berhasil = 0;
+    $push_notifications = [];
 
     if ($kirim_notifikasi) {
       foreach ($nasabah as $row) {
-        if (
-          !empty($row->expo_token) &&
-          $this->send_expo_push_notification(
-            $row->expo_token,
-            $judul_notif,
-            $pesan_notif
-          )
-        ) {
-          $jumlah_push_berhasil++;
+        if (!empty($row->expo_token)) {
+          $push_notifications[] = [
+            'token' => $row->expo_token,
+            'title' => $judul_notif,
+            'body'  => $pesan_notif
+          ];
         }
       }
     }
+
+    $hasil_push =
+      $this->send_expo_push_notifications_batch(
+        $push_notifications
+      );
+
+    $jumlah_push_berhasil =
+      (int) $hasil_push['berhasil'];
 
     $message = $kirim_notifikasi
       ? 'Banner berhasil dipublikasikan dan notifikasi telah dibuat.'
@@ -19575,6 +19707,9 @@ class Api extends CI_Controller
 
         'jumlah_push_berhasil' =>
         $jumlah_push_berhasil,
+
+        'jumlah_push_gagal' =>
+        (int) $hasil_push['gagal'],
 
         'dipublikasikan_oleh' =>
         (int) $auth->id_user,
