@@ -2823,26 +2823,46 @@ class Api extends CI_Controller
       }
     }
 
+    /*
+     * Penerima mendapat notifikasi untuk transfer biasa maupun QR.
+     * Catatan disimpan bersama transfer supaya tidak hilang saat
+     * layanan push atau koneksi perangkat bermasalah.
+     */
+    $nominal_format = 'Rp ' . number_format($nominal, 0, ',', '.');
+    $judul_notifikasi = $is_qr_transfer
+      ? 'QR Transfer Diterima'
+      : 'Transfer Diterima';
+    $isi_notifikasi = 'Anda menerima ' . $nominal_format .
+      ' dari ' . $pengirim->nama . '.';
+
+    $this->db->insert('tb_notifikasi', [
+      'id_user' => $id_penerima,
+      'judul' => $judul_notifikasi,
+      'pesan' => $isi_notifikasi,
+      'is_read' => 0,
+      'tanggal' => date('Y-m-d H:i:s')
+    ]);
+
+    if ($this->db->trans_status() === false) {
+      $this->db->trans_rollback();
+      $this->api_response([
+        'status' => false,
+        'message' => 'Notifikasi transfer gagal dicatat. Transfer dibatalkan.'
+      ], 500);
+      return;
+    }
+
     $this->db->trans_commit();
 
-    if ($is_qr_transfer) {
-      $nominal_format = 'Rp ' . number_format($nominal, 0, ',', '.');
-      $judul_notifikasi = 'QR Transfer Diterima';
-      $isi_notifikasi = 'Anda menerima ' . $nominal_format .
-        ' dari ' . $pengirim->nama . '.';
-
-      $this->db->insert('tb_notifikasi', [
-        'id_user' => $id_penerima,
-        'judul' => $judul_notifikasi,
-        'pesan' => $isi_notifikasi,
-        'tanggal' => date('Y-m-d H:i:s')
-      ]);
-      if (!empty($penerima->expo_token)) {
+    if (!empty($penerima->expo_token)) {
+      try {
         $this->send_expo_push_notification(
           $penerima->expo_token,
           $judul_notifikasi,
           $isi_notifikasi
         );
+      } catch (Throwable $e) {
+        log_message('error', 'Push transfer gagal: ' . $e->getMessage());
       }
     }
 
