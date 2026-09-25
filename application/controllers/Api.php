@@ -9883,24 +9883,41 @@ class Api extends CI_Controller
     }
 
     $status_sebelumnya = $toko->status_toko;
+    $judul_notifikasi = $status_baru === 'Aktif'
+      ? "\u{2705} Toko Diaktifkan"
+      : "\u{26D4} Toko Dinonaktifkan";
+    $pesan_notifikasi = 'Status toko ' .
+      $toko->nama_toko . ' sekarang ' . $status_baru . '.';
+
+    $this->db->insert('tb_notifikasi', [
+      'id_user' => (int) $toko->id_user,
+      'judul' => $judul_notifikasi,
+      'pesan' => $pesan_notifikasi,
+      'is_read' => 0,
+      'tanggal' => $waktu_sekarang
+    ]);
+
+    if ($this->db->trans_status() === false) {
+      $this->db->trans_rollback();
+      $this->api_response([
+        'status' => false,
+        'message' => 'Notifikasi status toko gagal dicatat. Perubahan dibatalkan.'
+      ], 500);
+      return;
+    }
 
     $this->db->trans_commit();
 
-    // Beri tahu pemilik toko apabila memiliki Expo token.
     if (!empty($toko->expo_token)) {
-      $judul_notifikasi = $status_baru === 'Aktif'
-        ? "\u{2705} Toko Diaktifkan"
-        : "\u{26D4} Toko Dinonaktifkan";
-
-      $pesan_notifikasi = 'Status toko ' .
-        $toko->nama_toko . ' sekarang ' .
-        $status_baru . '.';
-
-      $this->send_expo_push_notification(
-        $toko->expo_token,
-        $judul_notifikasi,
-        $pesan_notifikasi
-      );
+      try {
+        $this->send_expo_push_notification(
+          $toko->expo_token,
+          $judul_notifikasi,
+          $pesan_notifikasi
+        );
+      } catch (Throwable $e) {
+        log_message('error', 'Push status toko gagal: ' . $e->getMessage());
+      }
     }
 
     $this->api_response([
@@ -10139,6 +10156,25 @@ class Api extends CI_Controller
       return;
     }
 
+    $judul_notifikasi = "\u{1F5D1}\u{FE0F} Toko Dihapus";
+    $pesan_notifikasi = 'Toko ' . $toko->nama_toko .
+      ' telah dihapus oleh Administrator.';
+    $this->db->insert('tb_notifikasi', [
+      'id_user' => (int) $toko->id_user,
+      'judul' => $judul_notifikasi,
+      'pesan' => $pesan_notifikasi,
+      'is_read' => 0,
+      'tanggal' => date('Y-m-d H:i:s')
+    ]);
+    if ($this->db->trans_status() === false) {
+      $this->db->trans_rollback();
+      $this->api_response([
+        'status' => false,
+        'message' => 'Notifikasi penghapusan toko gagal dicatat. Penghapusan dibatalkan.'
+      ], 500);
+      return;
+    }
+
     $this->db->trans_commit();
 
     /*
@@ -10234,12 +10270,15 @@ class Api extends CI_Controller
     }
 
     if (!empty($toko->expo_token)) {
-      $this->send_expo_push_notification(
-        $toko->expo_token,
-        "\u{1F5D1}\u{FE0F} Toko Dihapus",
-        'Toko ' . $toko->nama_toko .
-          ' telah dihapus oleh Administrator.'
-      );
+      try {
+        $this->send_expo_push_notification(
+          $toko->expo_token,
+          $judul_notifikasi,
+          $pesan_notifikasi
+        );
+      } catch (Throwable $e) {
+        log_message('error', 'Push penghapusan toko gagal: ' . $e->getMessage());
+      }
     }
 
     $this->api_response([
