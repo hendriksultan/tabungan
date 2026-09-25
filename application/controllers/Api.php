@@ -9883,24 +9883,41 @@ class Api extends CI_Controller
     }
 
     $status_sebelumnya = $toko->status_toko;
+    $judul_notifikasi = $status_baru === 'Aktif'
+      ? "\u{2705} Toko Diaktifkan"
+      : "\u{26D4} Toko Dinonaktifkan";
+    $pesan_notifikasi = 'Status toko ' .
+      $toko->nama_toko . ' sekarang ' . $status_baru . '.';
+
+    $this->db->insert('tb_notifikasi', [
+      'id_user' => (int) $toko->id_user,
+      'judul' => $judul_notifikasi,
+      'pesan' => $pesan_notifikasi,
+      'is_read' => 0,
+      'tanggal' => $waktu_sekarang
+    ]);
+
+    if ($this->db->trans_status() === false) {
+      $this->db->trans_rollback();
+      $this->api_response([
+        'status' => false,
+        'message' => 'Notifikasi status toko gagal dicatat. Perubahan dibatalkan.'
+      ], 500);
+      return;
+    }
 
     $this->db->trans_commit();
 
-    // Beri tahu pemilik toko apabila memiliki Expo token.
     if (!empty($toko->expo_token)) {
-      $judul_notifikasi = $status_baru === 'Aktif'
-        ? "\u{2705} Toko Diaktifkan"
-        : "\u{26D4} Toko Dinonaktifkan";
-
-      $pesan_notifikasi = 'Status toko ' .
-        $toko->nama_toko . ' sekarang ' .
-        $status_baru . '.';
-
-      $this->send_expo_push_notification(
-        $toko->expo_token,
-        $judul_notifikasi,
-        $pesan_notifikasi
-      );
+      try {
+        $this->send_expo_push_notification(
+          $toko->expo_token,
+          $judul_notifikasi,
+          $pesan_notifikasi
+        );
+      } catch (Throwable $e) {
+        log_message('error', 'Push status toko gagal: ' . $e->getMessage());
+      }
     }
 
     $this->api_response([
@@ -10139,6 +10156,25 @@ class Api extends CI_Controller
       return;
     }
 
+    $judul_notifikasi = "\u{1F5D1}\u{FE0F} Toko Dihapus";
+    $pesan_notifikasi = 'Toko ' . $toko->nama_toko .
+      ' telah dihapus oleh Administrator.';
+    $this->db->insert('tb_notifikasi', [
+      'id_user' => (int) $toko->id_user,
+      'judul' => $judul_notifikasi,
+      'pesan' => $pesan_notifikasi,
+      'is_read' => 0,
+      'tanggal' => date('Y-m-d H:i:s')
+    ]);
+    if ($this->db->trans_status() === false) {
+      $this->db->trans_rollback();
+      $this->api_response([
+        'status' => false,
+        'message' => 'Notifikasi penghapusan toko gagal dicatat. Penghapusan dibatalkan.'
+      ], 500);
+      return;
+    }
+
     $this->db->trans_commit();
 
     /*
@@ -10234,12 +10270,15 @@ class Api extends CI_Controller
     }
 
     if (!empty($toko->expo_token)) {
-      $this->send_expo_push_notification(
-        $toko->expo_token,
-        "\u{1F5D1}\u{FE0F} Toko Dihapus",
-        'Toko ' . $toko->nama_toko .
-          ' telah dihapus oleh Administrator.'
-      );
+      try {
+        $this->send_expo_push_notification(
+          $toko->expo_token,
+          $judul_notifikasi,
+          $pesan_notifikasi
+        );
+      } catch (Throwable $e) {
+        log_message('error', 'Push penghapusan toko gagal: ' . $e->getMessage());
+      }
     }
 
     $this->api_response([
@@ -15403,10 +15442,13 @@ class Api extends CI_Controller
       "SELECT p.id_pesanan, p.invoice_pesanan, p.id_pembeli,
               p.status_pesanan, p.id_transaksi_pembayaran,
               toko.id_user AS id_penjual,
-              penjual.expo_token AS expo_token_penjual
+              penjual.expo_token AS expo_token_penjual,
+              penjual.cabang_id AS cabang_penjual,
+              pembeli.cabang_id AS cabang_pembeli
        FROM tb_pesanan AS p
        INNER JOIN tb_toko AS toko ON toko.id_toko = p.id_toko
        INNER JOIN tb_user AS penjual ON penjual.id = toko.id_user
+       INNER JOIN tb_user AS pembeli ON pembeli.id = p.id_pembeli
        WHERE p.id_pesanan = ? AND p.id_pembeli = ?
        LIMIT 1 FOR UPDATE",
       [$id_pesanan, $id_pembeli]
@@ -15481,6 +15523,27 @@ class Api extends CI_Controller
     $pesan = 'Pembeli mengajukan sengketa untuk pesanan ' .
       $pesanan->invoice_pesanan .
       '. Dana tetap ditahan sampai ditangani Administrator.';
+    /*
+     * Sengketa dapat melibatkan dua cabang. Administrator kedua cabang
+     * dan Super Admin mendapat pemberitahuan untuk penanganan escrow.
+     */
+    $query_admin = $this->db->query(
+      "SELECT id, expo_token FROM tb_user
+       WHERE login = 'Ya'
+         AND (
+           level = 'Super Admin'
+           OR (level = 'Administrator' AND cabang_id IN (?, ?))
+         )",
+      [(int) $pesanan->cabang_pembeli, (int) $pesanan->cabang_penjual]
+    );
+    if (!$query_admin) {
+      $this->db->trans_rollback();
+      $this->api_response(['status' => false,
+        'message' => 'Penerima notifikasi sengketa gagal diambil.'], 500);
+      return;
+    }
+    $admins = $query_admin->result();
+
     $this->db->insert('tb_notifikasi', [
       'id_user' => (int) $pesanan->id_penjual,
       'judul' => $judul,
@@ -15488,6 +15551,16 @@ class Api extends CI_Controller
       'is_read' => 0,
       'tanggal' => $sekarang
     ]);
+
+    foreach ($admins as $admin) {
+      $this->db->insert('tb_notifikasi', [
+        'id_user' => (int) $admin->id,
+        'judul' => $judul,
+        'pesan' => $pesan,
+        'is_read' => 0,
+        'tanggal' => $sekarang
+      ]);
+    }
 
     if ($this->db->trans_status() === false) {
       $this->db->trans_rollback();
@@ -15502,6 +15575,13 @@ class Api extends CI_Controller
         $this->send_expo_push_notification(
           $pesanan->expo_token_penjual, $judul, $pesan
         );
+      }
+      foreach ($admins as $admin) {
+        if (!empty($admin->expo_token)) {
+          $this->send_expo_push_notification(
+            $admin->expo_token, $judul, $pesan
+          );
+        }
       }
     } catch (Throwable $e) {
       log_message('error', 'Push sengketa gagal: ' . $e->getMessage());
