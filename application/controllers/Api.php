@@ -6560,49 +6560,92 @@ class Api extends CI_Controller
       return;
     }
 
-    $this->db->trans_commit();
-
-    $saldo_sesudah = $saldo_sebelum - $nominal;
-    $nominal_format = 'Rp ' . number_format($nominal, 0, ',', '.');
-
     /*
-     * Notifikasi hanya dikirim kepada Administrator cabang terkait
-     * dan semua Super Admin yang memiliki Expo token.
+     * Semua Administrator pada cabang Nasabah dan seluruh Super Admin
+     * menerima notifikasi di aplikasi, termasuk yang belum memasang token Expo.
+     * Cabang penerima berasal dari akun Nasabah yang telah diverifikasi.
      */
-    $this->db->group_start();
-    $this->db->where('level', 'Super Admin');
+    $query_admin = $this->db->query(
+      "SELECT id, expo_token
+       FROM tb_user
+       WHERE login = 'Ya'
+         AND (
+           level = 'Super Admin'
+           OR (level = 'Administrator' AND cabang_id = ?)
+         )",
+      [(int) $cabang->id]
+    );
 
-    $this->db->or_group_start();
-    $this->db->where('level', 'Administrator');
-    $this->db->where('cabang_id', (int) $cabang->id);
-    $this->db->group_end();
-    $this->db->group_end();
-
-    $this->db->where('login', 'Ya');
-    $this->db->where('expo_token IS NOT NULL', null, false);
-    $this->db->where('expo_token !=', '');
-
-    $admins = $this->db->get('tb_user')->result();
-
-    foreach ($admins as $admin) {
-      $this->send_expo_push_notification(
-        $admin->expo_token,
-        "\u{1F4B0} Infaq Baru Masuk",
-        "\u{1F64F} Infaq dari " . $nasabah->nama .
-          ' sebesar ' . $nominal_format .
-          ' telah diterima.'
-      );
+    if (!$query_admin) {
+      $this->db->trans_rollback();
+      $this->api_response([
+        'status' => false,
+        'message' => 'Penerima notifikasi infaq gagal diambil.'
+      ], 500);
+      return;
     }
 
-    // Notifikasi apresiasi kepada Nasabah.
-    if (!empty($nasabah->expo_token)) {
-      $this->send_expo_push_notification(
-        $nasabah->expo_token,
-        "\u{2705} Alhamdulillah, Infaq Berhasil",
-        "\u{1F49A} Terima kasih atas infaq sebesar " .
-          $nominal_format .
-          '. Semoga menjadi amal jariyah.'
-      );
+    $admins = $query_admin->result();
+    $saldo_sesudah = $saldo_sebelum - $nominal;
+    $nominal_format = 'Rp ' . number_format($nominal, 0, ',', '.');
+    $judul_admin = "\u{1F4B0} Infaq Baru Masuk";
+    $pesan_admin = "\u{1F64F} Infaq dari " . $nasabah->nama .
+      ' sebesar ' . $nominal_format .
+      ' telah diterima di cabang ' . $cabang->nama . '.';
+    $judul_nasabah = "\u{2705} Alhamdulillah, Infaq Berhasil";
+    $pesan_nasabah = "\u{1F49A} Terima kasih atas infaq sebesar " .
+      $nominal_format . '. Semoga menjadi amal jariyah.';
+
+    foreach ($admins as $admin) {
+      $this->db->insert('tb_notifikasi', [
+        'id_user' => (int) $admin->id,
+        'judul' => $judul_admin,
+        'pesan' => $pesan_admin,
+        'is_read' => 0,
+        'tanggal' => $waktu_sekarang
+      ]);
+    }
+
+    $this->db->insert('tb_notifikasi', [
+      'id_user' => $id_nasabah,
+      'judul' => $judul_nasabah,
+      'pesan' => $pesan_nasabah,
+      'is_read' => 0,
+      'tanggal' => $waktu_sekarang
+    ]);
+
+    if ($this->db->trans_status() === false) {
+      $this->db->trans_rollback();
+      $this->api_response([
+        'status' => false,
+        'message' => 'Gagal menyimpan notifikasi infaq. Transaksi dibatalkan.'
+      ], 500);
+      return;
+    }
+
+    $this->db->trans_commit();
+
+    // Push bersifat tambahan; kegagalannya tidak membatalkan transaksi.
+    try {
+      foreach ($admins as $admin) {
+        if (!empty($admin->expo_token)) {
+          $this->send_expo_push_notification(
+            $admin->expo_token,
+            $judul_admin,
+            $pesan_admin
+          );
+        }
+      }
+
+      if (!empty($nasabah->expo_token)) {
+        $this->send_expo_push_notification(
+          $nasabah->expo_token,
+          $judul_nasabah,
+          $pesan_nasabah
+        );
+      }
+    } catch (Throwable $e) {
+      log_message('error', 'Push infaq gagal: ' . $e->getMessage());
     }
 
     $this->api_response([
