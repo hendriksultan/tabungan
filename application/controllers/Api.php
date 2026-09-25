@@ -15442,10 +15442,13 @@ class Api extends CI_Controller
       "SELECT p.id_pesanan, p.invoice_pesanan, p.id_pembeli,
               p.status_pesanan, p.id_transaksi_pembayaran,
               toko.id_user AS id_penjual,
-              penjual.expo_token AS expo_token_penjual
+              penjual.expo_token AS expo_token_penjual,
+              penjual.cabang_id AS cabang_penjual,
+              pembeli.cabang_id AS cabang_pembeli
        FROM tb_pesanan AS p
        INNER JOIN tb_toko AS toko ON toko.id_toko = p.id_toko
        INNER JOIN tb_user AS penjual ON penjual.id = toko.id_user
+       INNER JOIN tb_user AS pembeli ON pembeli.id = p.id_pembeli
        WHERE p.id_pesanan = ? AND p.id_pembeli = ?
        LIMIT 1 FOR UPDATE",
       [$id_pesanan, $id_pembeli]
@@ -15520,6 +15523,27 @@ class Api extends CI_Controller
     $pesan = 'Pembeli mengajukan sengketa untuk pesanan ' .
       $pesanan->invoice_pesanan .
       '. Dana tetap ditahan sampai ditangani Administrator.';
+    /*
+     * Sengketa dapat melibatkan dua cabang. Administrator kedua cabang
+     * dan Super Admin mendapat pemberitahuan untuk penanganan escrow.
+     */
+    $query_admin = $this->db->query(
+      "SELECT id, expo_token FROM tb_user
+       WHERE login = 'Ya'
+         AND (
+           level = 'Super Admin'
+           OR (level = 'Administrator' AND cabang_id IN (?, ?))
+         )",
+      [(int) $pesanan->cabang_pembeli, (int) $pesanan->cabang_penjual]
+    );
+    if (!$query_admin) {
+      $this->db->trans_rollback();
+      $this->api_response(['status' => false,
+        'message' => 'Penerima notifikasi sengketa gagal diambil.'], 500);
+      return;
+    }
+    $admins = $query_admin->result();
+
     $this->db->insert('tb_notifikasi', [
       'id_user' => (int) $pesanan->id_penjual,
       'judul' => $judul,
@@ -15527,6 +15551,16 @@ class Api extends CI_Controller
       'is_read' => 0,
       'tanggal' => $sekarang
     ]);
+
+    foreach ($admins as $admin) {
+      $this->db->insert('tb_notifikasi', [
+        'id_user' => (int) $admin->id,
+        'judul' => $judul,
+        'pesan' => $pesan,
+        'is_read' => 0,
+        'tanggal' => $sekarang
+      ]);
+    }
 
     if ($this->db->trans_status() === false) {
       $this->db->trans_rollback();
@@ -15541,6 +15575,13 @@ class Api extends CI_Controller
         $this->send_expo_push_notification(
           $pesanan->expo_token_penjual, $judul, $pesan
         );
+      }
+      foreach ($admins as $admin) {
+        if (!empty($admin->expo_token)) {
+          $this->send_expo_push_notification(
+            $admin->expo_token, $judul, $pesan
+          );
+        }
       }
     } catch (Throwable $e) {
       log_message('error', 'Push sengketa gagal: ' . $e->getMessage());
