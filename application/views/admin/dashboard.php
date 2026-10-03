@@ -80,6 +80,61 @@
             .info-box-number {
                 white-space: normal;
             }
+
+            .dashboard-finance-row {
+                display: flex;
+                flex-wrap: wrap;
+            }
+
+            .dashboard-finance-row > div {
+                display: flex;
+                margin-bottom: 20px;
+            }
+
+            .dashboard-finance-row .info-box {
+                display: flex;
+                width: 100%;
+                margin-bottom: 0;
+            }
+
+            .dashboard-finance-row .info-box-icon {
+                flex: 0 0 70px;
+                height: auto;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 36px;
+            }
+
+            .dashboard-finance-row .info-box-content {
+                flex: 1;
+                min-width: 0;
+                margin-left: 0;
+                padding: 10px 12px;
+            }
+
+            .dashboard-finance-row .progress-description {
+                white-space: normal;
+            }
+
+            .dashboard-balance-details {
+                margin-top: 8px;
+                padding-top: 7px;
+                border-top: 1px solid rgba(255, 255, 255, .4);
+                font-size: 12px;
+                line-height: 1.6;
+            }
+
+            .dashboard-balance-details > div {
+                display: flex;
+                flex-wrap: wrap;
+                justify-content: space-between;
+                column-gap: 8px;
+            }
+
+            .dashboard-balance-details strong {
+                white-space: nowrap;
+            }
         </style>
 
         <div class="dashboard-scope">
@@ -89,8 +144,8 @@
         </div>
 
         <?php if ($is_pengelola): ?>
-            <div class="row">
-                <div class="col-md-6 col-sm-6 col-xs-12">
+            <div class="row dashboard-finance-row">
+                <div class="col-md-4 col-sm-6 col-xs-12">
                     <div class="info-box bg-green">
                         <span class="info-box-icon">
                             <i class="fa fa-level-down"></i>
@@ -118,7 +173,7 @@
                     </div>
                 </div>
 
-                <div class="col-md-6 col-sm-6 col-xs-12">
+                <div class="col-md-4 col-sm-6 col-xs-12">
                     <div class="info-box bg-red">
                         <span class="info-box-icon">
                             <i class="fa fa-level-up"></i>
@@ -145,65 +200,6 @@
                         </div>
                     </div>
                 </div>
-            </div>
-
-            <div class="row">
-                <div class="col-md-4 col-sm-6 col-xs-12">
-                    <div class="info-box bg-blue">
-                        <span class="info-box-icon">
-                            <i class="fa fa-bank"></i>
-                        </span>
-
-                        <div class="info-box-content">
-                            <span class="info-box-text">
-                                Saldo Tabungan
-                            </span>
-
-                            <span class="info-box-number">
-                                Rp
-                                <?= number_format(
-                                    $saldo_detail['saldoTabungan'],
-                                    0,
-                                    ',',
-                                    '.'
-                                ) ?>
-                            </span>
-
-                            <span class="progress-description">
-                                Saldo murni tanpa celengan impian
-                            </span>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="col-md-4 col-sm-6 col-xs-12">
-                    <div class="info-box bg-purple">
-                        <span class="info-box-icon">
-                            <i class="fa fa-bullseye"></i>
-                        </span>
-
-                        <div class="info-box-content">
-                            <span class="info-box-text">
-                                Saldo Celengan
-                            </span>
-
-                            <span class="info-box-number">
-                                Rp
-                                <?= number_format(
-                                    $saldo_detail['saldoCelengan'],
-                                    0,
-                                    ',',
-                                    '.'
-                                ) ?>
-                            </span>
-
-                            <span class="progress-description">
-                                Dana tersimpan di celengan impian
-                            </span>
-                        </div>
-                    </div>
-                </div>
-
                 <div class="col-md-4 col-sm-6 col-xs-12">
                     <div class="info-box bg-orange">
                         <span class="info-box-icon">
@@ -225,9 +221,16 @@
                                 ) ?>
                             </span>
 
-                            <span class="progress-description">
-                                Total saldo tabungan dan celengan
-                            </span>
+                            <div class="dashboard-balance-details">
+                                <div>
+                                    <span>Tabungan</span>
+                                    <strong>Rp <?= number_format($saldo_detail['saldoTabungan'], 0, ',', '.') ?></strong>
+                                </div>
+                                <div>
+                                    <span>Celengan</span>
+                                    <strong>Rp <?= number_format($saldo_detail['saldoCelengan'], 0, ',', '.') ?></strong>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -444,23 +447,17 @@
                     labels: [
                         'Total Masuk',
                         'Total Keluar',
-                        'Saldo Tabungan',
-                        'Saldo Celengan',
                         'Saldo Kelolaan'
                     ],
                     datasets: [{
                         data: [
                             <?= (float) $saldo_detail['totalMasuk'] ?>,
                             <?= (float) $saldo_detail['totalKeluar'] ?>,
-                            <?= (float) $saldo_detail['saldoTabungan'] ?>,
-                            <?= (float) $saldo_detail['saldoCelengan'] ?>,
                             <?= (float) $saldo_detail['sisaSaldo'] ?>
                         ],
                         backgroundColor: [
                             'rgba(40, 167, 69, .75)',
                             'rgba(220, 53, 69, .75)',
-                            'rgba(0, 123, 255, .75)',
-                            'rgba(111, 66, 193, .75)',
                             'rgba(253, 126, 20, .75)'
                         ],
                         borderWidth: 1
