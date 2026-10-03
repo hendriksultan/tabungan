@@ -107,27 +107,29 @@
                 box-shadow: 0 2px 6px rgba(24, 39, 58, .1);
             }
 
-            .dashboard-metric-card.metric-green { background: #21885b; }
-            .dashboard-metric-card.metric-red { background: #c34753; }
-            .dashboard-metric-card.metric-orange { background: #b8691d; }
-            .dashboard-metric-card.metric-purple { background: #7251ad; }
-            .dashboard-metric-card.metric-blue { background: #2677ba; }
+            .dashboard-metric-card.metric-green { background: linear-gradient(45deg, #168541, #4dce7a); }
+            .dashboard-metric-card.metric-red { background: linear-gradient(45deg, #bd2d3d, #f26877); }
+            .dashboard-metric-card.metric-orange { background: linear-gradient(45deg, #db7006, #f8ad50); }
+            .dashboard-metric-card.metric-purple { background: linear-gradient(45deg, #6540a7, #ac82e3); }
+            .dashboard-metric-card.metric-blue { background: linear-gradient(45deg, #226aa9, #59a9e3); }
 
             .dashboard-metric-icon {
                 position: absolute;
-                top: 16px;
-                right: 16px;
-                width: 32px;
-                height: 32px;
+                top: 50%;
+                right: 20px;
+                width: 56px;
+                height: 56px;
+                transform: translateY(-50%);
                 display: flex;
                 align-items: center;
                 justify-content: center;
-                font-size: 17px;
-                border-radius: 6px;
-                background: rgba(255, 255, 255, .16);
+                font-size: 52px;
+                color: rgba(255, 255, 255, .24);
+                pointer-events: none;
             }
 
             .dashboard-metric-content {
+                padding-right: 64px;
                 display: flex;
                 flex-direction: column;
                 flex: 1;
@@ -136,12 +138,11 @@
 
             .dashboard-metric-label {
                 display: block;
-                padding-right: 44px;
                 font-size: 12px;
-                font-weight: 600;
+                font-weight: 700;
                 line-height: 16px;
                 text-transform: uppercase;
-                color: rgba(255, 255, 255, .9);
+                color: #fff;
             }
 
             .dashboard-metric-value {
