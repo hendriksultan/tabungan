@@ -90,7 +90,7 @@
 
         <?php if ($is_pengelola): ?>
             <div class="row">
-                <div class="col-md-4 col-sm-6 col-xs-12">
+                <div class="col-md-6 col-sm-6 col-xs-12">
                     <div class="info-box bg-green">
                         <span class="info-box-icon">
                             <i class="fa fa-level-down"></i>
@@ -118,7 +118,7 @@
                     </div>
                 </div>
 
-                <div class="col-md-4 col-sm-6 col-xs-12">
+                <div class="col-md-6 col-sm-6 col-xs-12">
                     <div class="info-box bg-red">
                         <span class="info-box-icon">
                             <i class="fa fa-level-up"></i>
@@ -141,6 +141,64 @@
 
                             <span class="progress-description">
                                 Transaksi dan transfer keluar
+                            </span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="row">
+                <div class="col-md-4 col-sm-6 col-xs-12">
+                    <div class="info-box bg-blue">
+                        <span class="info-box-icon">
+                            <i class="fa fa-bank"></i>
+                        </span>
+
+                        <div class="info-box-content">
+                            <span class="info-box-text">
+                                Saldo Tabungan
+                            </span>
+
+                            <span class="info-box-number">
+                                Rp
+                                <?= number_format(
+                                    $saldo_detail['saldoTabungan'],
+                                    0,
+                                    ',',
+                                    '.'
+                                ) ?>
+                            </span>
+
+                            <span class="progress-description">
+                                Saldo murni tanpa celengan impian
+                            </span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="col-md-4 col-sm-6 col-xs-12">
+                    <div class="info-box bg-purple">
+                        <span class="info-box-icon">
+                            <i class="fa fa-bullseye"></i>
+                        </span>
+
+                        <div class="info-box-content">
+                            <span class="info-box-text">
+                                Saldo Celengan
+                            </span>
+
+                            <span class="info-box-number">
+                                Rp
+                                <?= number_format(
+                                    $saldo_detail['saldoCelengan'],
+                                    0,
+                                    ',',
+                                    '.'
+                                ) ?>
+                            </span>
+
+                            <span class="progress-description">
+                                Dana tersimpan di celengan impian
                             </span>
                         </div>
                     </div>
@@ -168,12 +226,14 @@
                             </span>
 
                             <span class="progress-description">
-                                Saldo termasuk celengan impian
+                                Total saldo tabungan dan celengan
                             </span>
                         </div>
                     </div>
                 </div>
+            </div>
 
+            <div class="row">
                 <div class="col-md-4 col-sm-6 col-xs-12">
                     <div class="info-box bg-red">
                         <span class="info-box-icon">
@@ -384,17 +444,23 @@
                     labels: [
                         'Total Masuk',
                         'Total Keluar',
+                        'Saldo Tabungan',
+                        'Saldo Celengan',
                         'Saldo Kelolaan'
                     ],
                     datasets: [{
                         data: [
                             <?= (float) $saldo_detail['totalMasuk'] ?>,
                             <?= (float) $saldo_detail['totalKeluar'] ?>,
+                            <?= (float) $saldo_detail['saldoTabungan'] ?>,
+                            <?= (float) $saldo_detail['saldoCelengan'] ?>,
                             <?= (float) $saldo_detail['sisaSaldo'] ?>
                         ],
                         backgroundColor: [
                             'rgba(40, 167, 69, .75)',
                             'rgba(220, 53, 69, .75)',
+                            'rgba(0, 123, 255, .75)',
+                            'rgba(111, 66, 193, .75)',
                             'rgba(253, 126, 20, .75)'
                         ],
                         borderWidth: 1

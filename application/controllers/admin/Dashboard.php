@@ -99,17 +99,15 @@ class Dashboard extends CI_Controller
 		);
 
 		$totalTarget = $this->jumlahTarget();
+		$saldoTabungan = $transaksiMasuk + $transferMasuk
+			- $transaksiKeluar - $transferKeluar;
 
 		$data['saldo_detail'] = [
 			'totalMasuk' => $transaksiMasuk + $transferMasuk,
 			'totalKeluar' => $transaksiKeluar + $transferKeluar,
-			'sisaSaldo' => (
-				$transaksiMasuk +
-				$transferMasuk -
-				$transaksiKeluar -
-				$transferKeluar +
-				$totalTarget
-			)
+			'saldoTabungan' => $saldoTabungan,
+			'saldoCelengan' => $totalTarget,
+			'sisaSaldo' => $saldoTabungan + $totalTarget
 		];
 
 		$data['total_transaksi'] = $this->hitungTotalTransaksi();
