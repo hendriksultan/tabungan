@@ -85,7 +85,7 @@
                 display: grid;
                 grid-template-columns: repeat(3, minmax(0, 1fr));
                 grid-auto-rows: 1fr;
-                gap: 18px;
+                gap: 16px;
                 margin: 0 0 20px;
             }
 
@@ -95,98 +95,83 @@
                 padding: 0;
             }
 
-            .dashboard-metrics .info-box {
+            .dashboard-metric-card {
                 position: relative;
-                min-height: 154px;
-                height: 100%;
-                margin: 0;
-                background: #fff !important;
-                color: #243447 !important;
-                border: 1px solid #e4e9ef;
-                border-radius: 10px;
-                box-shadow: 0 2px 6px rgba(24, 39, 58, .05);
                 display: flex;
+                box-sizing: border-box;
+                min-height: 136px;
+                height: 100%;
+                padding: 16px;
+                border-radius: 8px;
+                color: #fff;
+                box-shadow: 0 2px 6px rgba(24, 39, 58, .1);
             }
 
-            .dashboard-metrics .info-box:hover {
-                transform: translateY(-2px);
-                box-shadow: 0 5px 12px rgba(24, 39, 58, .08);
-            }
+            .dashboard-metric-card.metric-green { background: #21885b; }
+            .dashboard-metric-card.metric-red { background: #c34753; }
+            .dashboard-metric-card.metric-orange { background: #b8691d; }
+            .dashboard-metric-card.metric-purple { background: #7251ad; }
+            .dashboard-metric-card.metric-blue { background: #2677ba; }
 
-            .dashboard-metrics .info-box-icon {
+            .dashboard-metric-icon {
                 position: absolute;
                 top: 16px;
                 right: 16px;
-                width: 36px;
-                height: 36px;
-                line-height: 36px;
-                font-size: 18px;
-                border-radius: 8px;
+                width: 32px;
+                height: 32px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 17px;
+                border-radius: 6px;
+                background: rgba(255, 255, 255, .16);
             }
 
-            .dashboard-metrics .bg-green .info-box-icon {
-                color: #21834a;
-                background: #eaf7ee;
-            }
-
-            .dashboard-metrics .bg-red .info-box-icon {
-                color: #c64450;
-                background: #fceef0;
-            }
-
-            .dashboard-metrics .bg-orange .info-box-icon {
-                color: #b66a13;
-                background: #fff3e3;
-            }
-
-            .dashboard-metrics .bg-purple .info-box-icon {
-                color: #7650ba;
-                background: #f2edfb;
-            }
-
-            .dashboard-metrics .bg-blue .info-box-icon {
-                color: #2878c5;
-                background: #eaf3fc;
-            }
-
-            .dashboard-metrics .info-box-content {
+            .dashboard-metric-content {
                 display: flex;
                 flex-direction: column;
                 flex: 1;
                 min-width: 0;
-                margin: 0;
-                padding: 18px;
             }
 
-            .dashboard-metrics .info-box-text {
+            .dashboard-metric-label {
+                display: block;
                 padding-right: 44px;
                 font-size: 12px;
                 font-weight: 600;
-                color: #64748b;
-                white-space: normal;
+                line-height: 16px;
+                text-transform: uppercase;
+                color: rgba(255, 255, 255, .9);
             }
 
-            .dashboard-metrics .info-box-number {
-                margin: 6px 0 12px;
-                font-size: 24px;
+            .dashboard-metric-value {
+                display: block;
+                margin: 4px 0 8px;
+                font-size: 22px;
                 font-weight: 700;
-                line-height: 1.3;
+                line-height: 28px;
                 overflow-wrap: anywhere;
             }
 
-            .dashboard-metrics .progress-description {
+            .dashboard-metric-footer {
+                display: flex;
+                align-items: flex-end;
+                min-height: 36px;
                 margin-top: auto;
                 font-size: 12px;
-                line-height: 1.6;
-                color: #64748b;
-                white-space: normal;
+                line-height: 18px;
+                color: #fff;
             }
 
-            .dashboard-metrics a.progress-description {
-                color: #2878c5;
+            a.dashboard-metric-footer {
+                align-self: flex-start;
+                gap: 4px;
+                text-decoration: none;
             }
 
-            .dashboard-metrics a.progress-description:hover {
+            a.dashboard-metric-footer:hover,
+            a.dashboard-metric-footer:focus {
+                color: #fff;
                 text-decoration: underline;
             }
 
@@ -195,24 +180,20 @@
                 grid-template-columns: repeat(2, minmax(0, 1fr));
                 gap: 12px;
                 margin-top: auto;
-                padding-top: 8px;
-                border-top: 1px solid #edf0f4;
+                padding-top: 6px;
+                border-top: 1px solid rgba(255, 255, 255, .3);
                 font-size: 12px;
-                line-height: 1.5;
+                line-height: 18px;
             }
 
             .dashboard-balance-details > div {
                 min-width: 0;
             }
 
-            .dashboard-balance-details span {
-                display: block;
-                color: #64748b;
-            }
-
+            .dashboard-balance-details span,
             .dashboard-balance-details strong {
                 display: block;
-                color: #334155;
+                color: #fff;
                 overflow-wrap: anywhere;
             }
 
@@ -238,18 +219,18 @@
 
         <?php if ($is_pengelola): ?>
             <div class="dashboard-metrics">
-                <div class="col-md-4 col-sm-6 col-xs-12">
-                    <div class="info-box bg-green">
-                        <span class="info-box-icon">
+                <div class="dashboard-metric-column">
+                    <div class="dashboard-metric-card metric-green">
+                        <span class="dashboard-metric-icon">
                             <i class="fa fa-level-down"></i>
                         </span>
 
-                        <div class="info-box-content">
-                            <span class="info-box-text">
+                        <div class="dashboard-metric-content">
+                            <span class="dashboard-metric-label">
                                 Total Masuk
                             </span>
 
-                            <span class="info-box-number">
+                            <span class="dashboard-metric-value">
                                 Rp
                                 <?= number_format(
                                     $saldo_detail['totalMasuk'],
@@ -259,25 +240,25 @@
                                 ) ?>
                             </span>
 
-                            <span class="progress-description">
+                            <span class="dashboard-metric-footer">
                                 Transaksi dan transfer masuk
                             </span>
                         </div>
                     </div>
                 </div>
 
-                <div class="col-md-4 col-sm-6 col-xs-12">
-                    <div class="info-box bg-red">
-                        <span class="info-box-icon">
+                <div class="dashboard-metric-column">
+                    <div class="dashboard-metric-card metric-red">
+                        <span class="dashboard-metric-icon">
                             <i class="fa fa-level-up"></i>
                         </span>
 
-                        <div class="info-box-content">
-                            <span class="info-box-text">
+                        <div class="dashboard-metric-content">
+                            <span class="dashboard-metric-label">
                                 Total Keluar
                             </span>
 
-                            <span class="info-box-number">
+                            <span class="dashboard-metric-value">
                                 Rp
                                 <?= number_format(
                                     $saldo_detail['totalKeluar'],
@@ -287,24 +268,24 @@
                                 ) ?>
                             </span>
 
-                            <span class="progress-description">
+                            <span class="dashboard-metric-footer">
                                 Transaksi dan transfer keluar
                             </span>
                         </div>
                     </div>
                 </div>
-                <div class="col-md-4 col-sm-6 col-xs-12">
-                    <div class="info-box bg-orange">
-                        <span class="info-box-icon">
+                <div class="dashboard-metric-column">
+                    <div class="dashboard-metric-card metric-orange">
+                        <span class="dashboard-metric-icon">
                             <i class="fa fa-money"></i>
                         </span>
 
-                        <div class="info-box-content">
-                            <span class="info-box-text">
+                        <div class="dashboard-metric-content">
+                            <span class="dashboard-metric-label">
                                 Saldo Kelolaan
                             </span>
 
-                            <span class="info-box-number">
+                            <span class="dashboard-metric-value">
                                 Rp
                                 <?= number_format(
                                     $saldo_detail['sisaSaldo'],
@@ -327,24 +308,24 @@
                         </div>
                     </div>
                 </div>
-                <div class="col-md-4 col-sm-6 col-xs-12">
-                    <div class="info-box bg-red">
-                        <span class="info-box-icon">
+                <div class="dashboard-metric-column">
+                    <div class="dashboard-metric-card metric-red">
+                        <span class="dashboard-metric-icon">
                             <i class="fa fa-book"></i>
                         </span>
 
-                        <div class="info-box-content">
-                            <span class="info-box-text">
+                        <div class="dashboard-metric-content">
+                            <span class="dashboard-metric-label">
                                 Total Transaksi
                             </span>
 
-                            <span class="info-box-number">
+                            <span class="dashboard-metric-value">
                                 <?= number_format($total_transaksi) ?>
                             </span>
 
                             <a
                                 href="<?= base_url('admin/transaksi') ?>"
-                                class="progress-description">
+                                class="dashboard-metric-footer">
                                 Lihat transaksi
                                 <i class="fa fa-arrow-circle-right"></i>
                             </a>
@@ -352,24 +333,24 @@
                     </div>
                 </div>
 
-                <div class="col-md-4 col-sm-6 col-xs-12">
-                    <div class="info-box bg-purple">
-                        <span class="info-box-icon">
+                <div class="dashboard-metric-column">
+                    <div class="dashboard-metric-card metric-purple">
+                        <span class="dashboard-metric-icon">
                             <i class="fa fa-send"></i>
                         </span>
 
-                        <div class="info-box-content">
-                            <span class="info-box-text">
+                        <div class="dashboard-metric-content">
+                            <span class="dashboard-metric-label">
                                 Total Transfer
                             </span>
 
-                            <span class="info-box-number">
+                            <span class="dashboard-metric-value">
                                 <?= number_format($total_transfer) ?>
                             </span>
 
                             <a
                                 href="<?= base_url('admin/transfer') ?>"
-                                class="progress-description">
+                                class="dashboard-metric-footer">
                                 Lihat transfer
                                 <i class="fa fa-arrow-circle-right"></i>
                             </a>
@@ -377,30 +358,29 @@
                     </div>
                 </div>
 
-                <div class="col-md-4 col-sm-6 col-xs-12">
-                    <div class="info-box bg-blue">
-                        <span class="info-box-icon">
+                <div class="dashboard-metric-column">
+                    <div class="dashboard-metric-card metric-blue">
+                        <span class="dashboard-metric-icon">
                             <i class="fa fa-users"></i>
                         </span>
 
-                        <div class="info-box-content">
-                            <span class="info-box-text">
+                        <div class="dashboard-metric-content">
+                            <span class="dashboard-metric-label">
                                 Total Nasabah
                             </span>
 
-                            <span class="info-box-number">
+                            <span class="dashboard-metric-value">
                                 <?= number_format($total_nasabah) ?>
                             </span>
 
                             <?php if (!empty($is_koordinator)): ?>
-                                <span class="progress-description">
+                                <span class="dashboard-metric-footer">
                                     Dalam cakupan audit
                                 </span>
                             <?php else: ?>
                                 <a
                                     href="<?= base_url('admin/user') ?>"
-                                    class="progress-description"
-                                    style="color:#fff;">
+                                    class="dashboard-metric-footer">
                                     Lihat nasabah
                                     <i class="fa fa-arrow-circle-right"></i>
                                 </a>
