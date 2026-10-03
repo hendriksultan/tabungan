@@ -81,59 +81,152 @@
                 white-space: normal;
             }
 
-            .dashboard-finance-row {
-                display: flex;
-                flex-wrap: wrap;
+            .dashboard-metrics {
+                display: grid;
+                grid-template-columns: repeat(3, minmax(0, 1fr));
+                grid-auto-rows: 1fr;
+                gap: 18px;
+                margin: 0 0 20px;
             }
 
-            .dashboard-finance-row > div {
-                display: flex;
-                margin-bottom: 20px;
+            .dashboard-metrics > div {
+                width: auto;
+                min-width: 0;
+                padding: 0;
             }
 
-            .dashboard-finance-row .info-box {
+            .dashboard-metrics .info-box {
+                position: relative;
+                min-height: 154px;
+                height: 100%;
+                margin: 0;
+                background: #fff !important;
+                color: #243447 !important;
+                border: 1px solid #e4e9ef;
+                border-radius: 10px;
+                box-shadow: 0 2px 6px rgba(24, 39, 58, .05);
                 display: flex;
-                width: 100%;
-                margin-bottom: 0;
             }
 
-            .dashboard-finance-row .info-box-icon {
-                flex: 0 0 70px;
-                height: auto;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                font-size: 36px;
+            .dashboard-metrics .info-box:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 5px 12px rgba(24, 39, 58, .08);
             }
 
-            .dashboard-finance-row .info-box-content {
+            .dashboard-metrics .info-box-icon {
+                position: absolute;
+                top: 16px;
+                right: 16px;
+                width: 36px;
+                height: 36px;
+                line-height: 36px;
+                font-size: 18px;
+                border-radius: 8px;
+            }
+
+            .dashboard-metrics .bg-green .info-box-icon {
+                color: #21834a;
+                background: #eaf7ee;
+            }
+
+            .dashboard-metrics .bg-red .info-box-icon {
+                color: #c64450;
+                background: #fceef0;
+            }
+
+            .dashboard-metrics .bg-orange .info-box-icon {
+                color: #b66a13;
+                background: #fff3e3;
+            }
+
+            .dashboard-metrics .bg-purple .info-box-icon {
+                color: #7650ba;
+                background: #f2edfb;
+            }
+
+            .dashboard-metrics .bg-blue .info-box-icon {
+                color: #2878c5;
+                background: #eaf3fc;
+            }
+
+            .dashboard-metrics .info-box-content {
+                display: flex;
+                flex-direction: column;
                 flex: 1;
                 min-width: 0;
-                margin-left: 0;
-                padding: 10px 12px;
+                margin: 0;
+                padding: 18px;
             }
 
-            .dashboard-finance-row .progress-description {
+            .dashboard-metrics .info-box-text {
+                padding-right: 44px;
+                font-size: 12px;
+                font-weight: 600;
+                color: #64748b;
                 white-space: normal;
             }
 
-            .dashboard-balance-details {
-                margin-top: 8px;
-                padding-top: 7px;
-                border-top: 1px solid rgba(255, 255, 255, .4);
+            .dashboard-metrics .info-box-number {
+                margin: 6px 0 12px;
+                font-size: 24px;
+                font-weight: 700;
+                line-height: 1.3;
+                overflow-wrap: anywhere;
+            }
+
+            .dashboard-metrics .progress-description {
+                margin-top: auto;
                 font-size: 12px;
                 line-height: 1.6;
+                color: #64748b;
+                white-space: normal;
+            }
+
+            .dashboard-metrics a.progress-description {
+                color: #2878c5;
+            }
+
+            .dashboard-metrics a.progress-description:hover {
+                text-decoration: underline;
+            }
+
+            .dashboard-balance-details {
+                display: grid;
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 12px;
+                margin-top: auto;
+                padding-top: 8px;
+                border-top: 1px solid #edf0f4;
+                font-size: 12px;
+                line-height: 1.5;
             }
 
             .dashboard-balance-details > div {
-                display: flex;
-                flex-wrap: wrap;
-                justify-content: space-between;
-                column-gap: 8px;
+                min-width: 0;
+            }
+
+            .dashboard-balance-details span {
+                display: block;
+                color: #64748b;
             }
 
             .dashboard-balance-details strong {
-                white-space: nowrap;
+                display: block;
+                color: #334155;
+                overflow-wrap: anywhere;
+            }
+
+            @media (max-width: 991px) {
+                .dashboard-metrics {
+                    grid-template-columns: repeat(2, minmax(0, 1fr));
+                }
+            }
+
+            @media (max-width: 767px) {
+                .dashboard-metrics {
+                    grid-template-columns: minmax(0, 1fr);
+                    gap: 12px;
+                }
             }
         </style>
 
@@ -144,7 +237,7 @@
         </div>
 
         <?php if ($is_pengelola): ?>
-            <div class="row dashboard-finance-row">
+            <div class="dashboard-metrics">
                 <div class="col-md-4 col-sm-6 col-xs-12">
                     <div class="info-box bg-green">
                         <span class="info-box-icon">
@@ -234,9 +327,6 @@
                         </div>
                     </div>
                 </div>
-            </div>
-
-            <div class="row">
                 <div class="col-md-4 col-sm-6 col-xs-12">
                     <div class="info-box bg-red">
                         <span class="info-box-icon">
@@ -254,8 +344,7 @@
 
                             <a
                                 href="<?= base_url('admin/transaksi') ?>"
-                                class="progress-description"
-                                style="color:#fff;">
+                                class="progress-description">
                                 Lihat transaksi
                                 <i class="fa fa-arrow-circle-right"></i>
                             </a>
@@ -280,8 +369,7 @@
 
                             <a
                                 href="<?= base_url('admin/transfer') ?>"
-                                class="progress-description"
-                                style="color:#fff;">
+                                class="progress-description">
                                 Lihat transfer
                                 <i class="fa fa-arrow-circle-right"></i>
                             </a>
